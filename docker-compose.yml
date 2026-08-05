@@ -1,0 +1,55 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: chat-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: chat
+      POSTGRES_DB: chat
+    ports:
+      # 暴露到宿主机，方便本地跑 psql / 不走容器直接跑后端
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    container_name: chat-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # 覆盖 .env 里的宿主机地址 —— 容器内要走 compose 网络的服务名和内部端口。
+      # 环境变量优先级高于 .env 文件，所以这行一定生效。
+      DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chat
+      RELOAD: "1"
+      # 容器默认 UTC，会让「今天」的判断和注入给模型的日期都差 8 小时，
+      # 也会让 local_day_bounds 失效（每日整理按错误的窗口切天）。
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂源码实现热重载。只挂需要的目录，不整个挂项目根：
+      # 那样宿主机的 .venv（darwin/arm64）会盖掉容器里的依赖。
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./tests:/app/tests
+      - ./pyproject.toml:/app/pyproject.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  pgdata:

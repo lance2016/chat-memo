@@ -1,0 +1,12 @@
+# 不要把密钥烤进镜像层，配置一律走 compose 的 env_file
+.env
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.git/
+.claude/
+web/node_modules/
+web/.next/
