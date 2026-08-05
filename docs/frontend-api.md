@@ -881,6 +881,38 @@ POST /api/jobs/consolidate?day=2026-08-05
 点开展开内容 diff（和记忆管理页复用同一个 diff 组件）。已删除的记忆也在这里，
 可以给个「恢复」按钮：拿该版本的 `content` 去 `PUT` 回原路径。
 
+### 4. 设置页 `/settings` 🆕 第 4 批
+
+之前只能只读展示，现在可以真的编辑了。
+
+**照着 `fields` 动态渲染**，不要写死字段列表——后端加配置项时前端不用改：
+
+```tsx
+{settings.fields
+  .filter(f => !f.provider || f.provider === settings.values.provider)
+  .map(f => {
+    const changed = settings.sources[f.key] === "db";
+    switch (f.kind) {
+      case "bool":  return <Switch ... />;
+      case "enum":  return <Select options={f.choices} ... />;
+      case "int":   return <NumberInput min={f.minimum} max={f.maximum} ... />;
+      default:      return <Input maxLength={f.maximum ?? undefined} ... />;
+    }
+  })}
+```
+
+几个要点：
+
+- `sources[key] === "db"` 的项显示「已修改」标记 + 「恢复默认」按钮
+  （恢复 = `PATCH {"<key>": null}`）
+- 按 `fields[].provider` 过滤：`effort` / `max_tokens` 只在 anthropic 下显示，
+  `deepseek_*` 只在 deepseek 下显示
+- provider 下拉用 `providers[]`，`available: false` 的置灰并显示 `reason`
+- `env_only` 里的字段**不要给编辑入口**，可以只读展示并注明「需改 .env 后重启」
+- 400 的 `detail` 是可直接展示的中文，贴在对应字段下面即可
+- 加一个「立即备份」按钮调 `POST /api/jobs/backup`，**会阻塞几秒**，要 loading；
+  成功后显示 `dump_file` 和 `memory_files`
+
 ### 聊天页要补的交互
 
 新接口解锁的：
@@ -903,13 +935,47 @@ export interface Conversation {
   thinking: boolean | null;
 }
 
-/** 🆕 第 3 批 */
+/** 🆕 第 4 批：GET /api/settings 的完整响应（第 3 批那四个平铺字段仍然保留） */
 export interface RuntimeSettings {
+  /** 当前生效值（数据库覆盖已叠加在 .env 之上） */
+  values: Record<string, string | number | boolean>;
+  /** 每项来自哪层：db = 你改过，env = .env 默认 */
+  sources: Record<string, "db" | "env">;
+  /** 照着它渲染表单，别硬编码字段清单 */
+  fields: SettingField[];
+  providers: { value: string; available: boolean; reason: string }[];
+  /** 这些只能改 .env，界面上不要给入口 */
+  env_only: string[];
+
+  // 运行时卡片用的平铺字段，保持不变
   provider: string;
   model: string;
   thinking_default: boolean;
-  /** false 时思考开关应置灰 */
   thinking_toggle: boolean;
+}
+
+export interface SettingField {
+  key: string;
+  label: string;
+  kind: "str" | "int" | "bool" | "enum";
+  /** kind=enum 时的候选值 */
+  choices: string[];
+  /** 数字是取值范围，字符串是长度范围 */
+  minimum: number | null;
+  maximum: number | null;
+  /** 非空表示只在该 provider 下有意义（如 effort 只对 anthropic） */
+  provider: string;
+}
+
+/** 🆕 第 4 批 */
+export interface BackupResult {
+  dump_file: string;
+  dump_bytes: number;
+  memory_files: number;
+  memory_dir: string;
+  created_at: string;
+  /** 非空表示 dump 出了问题，但记忆文件仍导出成功 */
+  detail: string;
 }
 
 export type ContentBlock =

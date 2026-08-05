@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { diffLines } from "diff";
-import { Activity, BarChart3, CalendarDays, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RotateCcw, Save, Settings2, Trash2 } from "lucide-react";
+import { Activity, BarChart3, CalendarDays, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, MessageSquare, RotateCcw, Save, Settings2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { deleteMemory, errorMessage, getMemory, getMemoryStats, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
@@ -215,8 +215,10 @@ export function MemoriesPage() {
 
   return (
     <div className="memory-shell">
+      <header className="memory-topbar"><Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link><div className="memory-topbar-tools"><nav className="memory-nav"><Link href="/"><MessageSquare size={14} />聊天</Link><span className="active"><FileText size={14} />记忆管理</span><Link href="/review"><CalendarDays size={14} />每日回顾</Link><Link href="/settings"><Settings2 size={14} />设置</Link></nav><ThemeControl /></div></header>
+      <div className="memory-workspace">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
-        <div className="memory-header"><Link className="brand memory-brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link><div className="memory-links"><Link className="back-link" href="/"><ChevronRight size={13} style={{ transform: "rotate(180deg)" }} />返回聊天</Link><Link className="back-link" href="/review"><CalendarDays size={13} />每日回顾</Link><Link className="back-link" href="/settings"><Settings2 size={13} />设置</Link><ThemeControl /></div><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
+        <div className="memory-header"><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
         <div className="tree">{loadingTree ? <div className="centered-empty">加载中…</div> : tree.length ? tree.map((entry) => <TreeEntryView key={entry.path} entry={entry} selected={selectedPath} onSelect={selectFile} onDeleteDirectory={(entry) => void removePath(entry.path, true)} />) : <div className="centered-empty">还没有记忆文件</div>}</div>
       </aside>
       {treeOpen && <button className="sidebar-backdrop" aria-label="关闭记忆树" onClick={() => setTreeOpen(false)} />}
@@ -232,6 +234,7 @@ export function MemoriesPage() {
           {(message || error) && <div className={`editor-notice ${error ? "danger-text" : ""}`}>{error || message}</div>}
         </>}
       </main>
+      </div>
     </div>
   );
 }
