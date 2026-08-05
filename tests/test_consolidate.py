@@ -123,7 +123,7 @@ async def test_transcript_ignores_thinking_and_tool_blocks(
             Message(
                 conversation_id=conversation.id,
                 role="user",
-                content=[{"type": "text", "text": "记住我住在杭州"}],
+                content=[{"type": "text", "text": "记住我住在示例市"}],
             ),
             Message(
                 conversation_id=conversation.id,
@@ -137,9 +137,9 @@ async def test_transcript_ignores_thinking_and_tool_blocks(
     )
     await session.commit()
 
-    provider = provider_with([text_turn("用户住在杭州"), text_turn("整理完成")])
+    provider = provider_with([text_turn("用户住在示例市"), text_turn("整理完成")])
     await Consolidator(session, provider).run(TODAY)
 
     transcript = provider.client.messages.calls[0]["messages"][0]["content"]
-    assert "杭州" in transcript
+    assert "示例市" in transcript
     assert "内部推理" not in transcript

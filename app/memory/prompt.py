@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+from app.config import Settings, get_settings
 from app.db.models import Memory
 from app.memory.paths import INDEX_PATH, MEMORY_ROOT
 from app.memory.store import MemoryStore
 
-PERSONA = """你是 Lance 的私人助手，只服务他一个人。你们已经认识很久了。
+PERSONA_TEMPLATE = """你是{owner}的私人助手，只服务他一个人。你们已经认识很久了。
 
 说话直接，不用客套话开场。有多个方案时先比较再给明确推荐，不要罗列一堆让他自己挑。
 他是做 AI 应用开发的，技术话题不用铺垫基础概念。除非在写英文文档或读英文代码，都用中文回答。
@@ -18,7 +19,7 @@ PERSONA = """你是 Lance 的私人助手，只服务他一个人。你们已经
 
 MEMORY_INSTRUCTIONS = f"""# 记忆
 
-你有一份关于 Lance 的长期记忆，存在 {MEMORY_ROOT} 下，用 memory 工具读写。
+你有一份关于主人的长期记忆，存在 {MEMORY_ROOT} 下，用 memory 工具读写。
 
 下面是记忆索引（{INDEX_PATH}）。它只有摘要 —— 需要细节时用 `view` 读具体文件，
 不要凭索引里的一句话猜测内容。
@@ -53,9 +54,13 @@ MEMORY_INSTRUCTIONS = f"""# 记忆
 EMPTY_INDEX = "（记忆还是空的。遇到值得记的事情就建立第一批记忆文件，并同步写索引。）"
 
 
-async def build_system_prompt(store: MemoryStore) -> str:
+async def build_system_prompt(
+    store: MemoryStore, settings: Settings | None = None
+) -> str:
     memories = await store.list_all()
-    return f"{PERSONA}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
+    owner = (settings or get_settings()).owner_name
+    persona = PERSONA_TEMPLATE.format(owner=owner)
+    return f"{persona}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
 
 
 def _read_index(memories: list[Memory]) -> str:

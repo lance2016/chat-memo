@@ -153,7 +153,7 @@ async def test_stats_daily_series_is_gap_free(session: AsyncSession) -> None:
 async def test_unused_sorted_by_length_not_age(session: AsyncSession) -> None:
     """从未被打开的按内容长度倒序。
 
-    短记忆没被 view 是正常的 —— 索引里那行摘要（「住在杭州」）已经答完了问题。
+    短记忆没被 view 是正常的 —— 索引里那行摘要（「住在示例市」）已经答完了问题。
     真正可疑的是写了一大堆细节却从没被用到的。
     """
     store = MemoryStore(session, actor="chat")

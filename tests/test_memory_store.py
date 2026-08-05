@@ -16,9 +16,9 @@ async def versions(session: AsyncSession) -> list[MemoryVersion]:
 
 
 async def test_create_then_view(store: MemoryStore) -> None:
-    await store.create("/memories/profile/identity.md", "我叫 Lance\n做 AI 应用开发")
+    await store.create("/memories/profile/identity.md", "我叫小明\n做 AI 应用开发")
     out = await store.view("/memories/profile/identity.md")
-    assert "我叫 Lance" in out
+    assert "我叫小明" in out
     assert "1\t" in out  # 带行号
 
 

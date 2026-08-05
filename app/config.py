@@ -8,6 +8,9 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://chat:chat@localhost:5433/chat"
 
+    # 助手怎么称呼主人。写进 system prompt，不要硬编码真名在代码里。
+    owner_name: str = "用户"
+
     # anthropic | deepseek
     provider: str = "anthropic"
 

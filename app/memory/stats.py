@@ -26,7 +26,7 @@ class MemoryUsage:
     last_read_at: dt.datetime | None
     created_at: dt.datetime
     idle_days: int | None  # 距上次被读的天数；从未被读则为 None
-    # 判断噪音必须结合长度看：索引里每条都有一行摘要，短事实（「住在杭州」）
+    # 判断噪音必须结合长度看：索引里每条都有一行摘要，短事实（「用 uv 管理依赖」）
     # 靠摘要就答完了，压根不需要 view —— reads=0 是正常的。
     # 真正可疑的是「内容很长但从没被打开过」：写了一堆细节却从没用上。
     content_chars: int

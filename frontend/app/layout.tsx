@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { GlobalSearch } from "@/components/global-search";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,8 +10,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="zh-CN">
-      <body>{children}<GlobalSearch /></body>
+    <html lang="zh-CN" suppressHydrationWarning>
+      <body><ThemeProvider>{children}<GlobalSearch /></ThemeProvider></body>
     </html>
   );
 }

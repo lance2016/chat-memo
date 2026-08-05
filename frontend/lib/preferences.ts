@@ -1,11 +1,21 @@
+export type ThemeMode = "system" | "light" | "dark";
+
 export interface UserPreferences {
   enterToSend: boolean;
   autoScroll: boolean;
+  showThinking: boolean;
+  showToolActivity: boolean;
+  showUsage: boolean;
+  theme: ThemeMode;
 }
 
 export const defaultPreferences: UserPreferences = {
   enterToSend: true,
   autoScroll: true,
+  showThinking: true,
+  showToolActivity: true,
+  showUsage: true,
+  theme: "system",
 };
 
 const STORAGE_KEY = "personal-ai-assistant:preferences";
@@ -20,6 +30,10 @@ export function readPreferences(): UserPreferences {
     return {
       enterToSend: parsed.enterToSend !== false,
       autoScroll: parsed.autoScroll !== false,
+      showThinking: parsed.showThinking !== false,
+      showToolActivity: parsed.showToolActivity !== false,
+      showUsage: parsed.showUsage !== false,
+      theme: parsed.theme === "light" || parsed.theme === "dark" ? parsed.theme : "system",
     };
   } catch {
     return defaultPreferences;

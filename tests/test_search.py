@@ -49,9 +49,9 @@ async def seed(session: AsyncSession, title: str, *texts: str) -> Conversation:
 
 
 def test_extract_text_only_takes_text_blocks() -> None:
-    """thinking 和工具参数不该进搜索索引 —— 搜「杭州」不该命中模型的内部推理。"""
+    """thinking 和工具参数不该进搜索索引 —— 搜「示例市」不该命中模型的内部推理。"""
     blocks = [
-        {"type": "thinking", "thinking": "用户提到了杭州这个地方"},
+        {"type": "thinking", "thinking": "用户提到了示例市这个地方"},
         {"type": "tool_use", "id": "c1", "name": "memory", "input": {"path": "/x"}},
         {"type": "text", "text": "好的，记下了"},
     ]
@@ -67,12 +67,12 @@ def test_extract_text_joins_multiple_blocks() -> None:
 
 
 async def test_finds_chinese_substring(session: AsyncSession) -> None:
-    await seed(session, "杭州话题", "我住在杭州西湖区", "记住了")
+    await seed(session, "示例市话题", "我住在示例市", "记住了")
 
-    results = await search(session, "杭州")
+    results = await search(session, "示例市")
     assert len(results.conversations) == 1
-    assert results.conversations[0].title == "杭州话题"
-    assert "杭州" in results.conversations[0].snippet
+    assert results.conversations[0].title == "示例市话题"
+    assert "示例市" in results.conversations[0].snippet
 
 
 async def test_finds_english_and_is_case_insensitive(session: AsyncSession) -> None:
@@ -88,7 +88,7 @@ async def test_no_match_returns_empty(session: AsyncSession) -> None:
 
 async def test_short_query_rejected(session: AsyncSession) -> None:
     """单字查询会命中几乎所有内容，直接拒掉。"""
-    await seed(session, "话题", "我住在杭州")
+    await seed(session, "话题", "我住在示例市")
     assert (await search(session, "我")).conversations == []
     assert (await search(session, " ")).conversations == []
 
@@ -98,26 +98,26 @@ async def test_short_query_rejected(session: AsyncSession) -> None:
 
 async def test_groups_by_conversation_with_match_count(session: AsyncSession) -> None:
     """一个会话里命中多条，应该是一个结果 + 计数，而不是多行重复。"""
-    await seed(session, "反复提到", "杭州天气不错", "杭州确实好", "杭州的房价呢")
+    await seed(session, "反复提到", "示例市天气不错", "示例市确实好", "示例市的房价呢")
 
-    results = await search(session, "杭州")
+    results = await search(session, "示例市")
     assert len(results.conversations) == 1
     assert results.conversations[0].matches == 3
 
 
 async def test_multiple_conversations_returned(session: AsyncSession) -> None:
-    await seed(session, "会话一", "聊聊杭州")
-    await seed(session, "会话二", "杭州怎么样")
+    await seed(session, "会话一", "聊聊示例市")
+    await seed(session, "会话二", "示例市怎么样")
 
-    titles = {c.title for c in (await search(session, "杭州")).conversations}
+    titles = {c.title for c in (await search(session, "示例市")).conversations}
     assert titles == {"会话一", "会话二"}
 
 
 async def test_limit_applies_to_conversations(session: AsyncSession) -> None:
     for i in range(5):
-        await seed(session, f"会话{i}", "都提到了杭州")
+        await seed(session, f"会话{i}", "都提到了示例市")
 
-    assert len((await search(session, "杭州", limit=2)).conversations) == 2
+    assert len((await search(session, "示例市", limit=2)).conversations) == 2
 
 
 # ---------- 记忆搜索 ----------
@@ -125,13 +125,13 @@ async def test_limit_applies_to_conversations(session: AsyncSession) -> None:
 
 async def test_searches_memories_too(session: AsyncSession) -> None:
     await MemoryStore(session, actor="chat").create(
-        "/memories/profile/location.md", "住在杭州，西湖区"
+        "/memories/profile/location.md", "住在示例市，某某区"
     )
     await session.commit()
 
-    results = await search(session, "杭州")
+    results = await search(session, "示例市")
     assert [m.path for m in results.memories] == ["/memories/profile/location.md"]
-    assert "杭州" in results.memories[0].snippet
+    assert "示例市" in results.memories[0].snippet
 
 
 # ---------- 通配符转义 ----------
@@ -174,12 +174,12 @@ def test_snippet_without_match_falls_back_to_head() -> None:
 
 
 async def test_search_endpoint(client: AsyncClient, session: AsyncSession) -> None:
-    await seed(session, "杭州话题", "我住在杭州")
-    await MemoryStore(session, actor="chat").create("/memories/a.md", "杭州相关记忆")
+    await seed(session, "示例市话题", "我住在示例市")
+    await MemoryStore(session, actor="chat").create("/memories/a.md", "示例市相关记忆")
     await session.commit()
 
-    body = (await client.get("/api/search", params={"q": "杭州"})).json()
-    assert body["query"] == "杭州"
+    body = (await client.get("/api/search", params={"q": "示例市"})).json()
+    assert body["query"] == "示例市"
     assert len(body["conversations"]) == 1
     assert len(body["memories"]) == 1
     assert body["conversations"][0]["conversation_id"] > 0

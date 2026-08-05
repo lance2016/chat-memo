@@ -580,19 +580,19 @@ GET /api/memories/{path}/versions?limit=50
 同时搜对话历史和记忆，一个接口。
 
 ```http
-GET /api/search?q=杭州&limit=20
+GET /api/search?q=依赖&limit=20
 ```
 
 ```json
 {
-  "query": "杭州",
+  "query": "依赖",
   "conversations": [
-    {"conversation_id": 12, "title": "杭州测试", "message_id": 41,
-     "role": "user", "snippet": "我搬到杭州西湖区了", "matches": 2,
+    {"conversation_id": 12, "title": "依赖管理", "message_id": 41,
+     "role": "user", "snippet": "我用 uv 管理 Python 依赖", "matches": 2,
      "created_at": "..."}
   ],
   "memories": [
-    {"path": "/memories/profile/location.md", "snippet": "# 居住地 住在杭州。"}
+    {"path": "/memories/profile/preferences.md", "snippet": "# 工具偏好 用 uv 管理依赖"}
   ]
 }
 ```
@@ -602,10 +602,10 @@ GET /api/search?q=杭州&limit=20
 
 几个行为要知道：
 
-- **子串匹配，不分词**。搜「杭州」命中「我搬到杭州西湖区」✅；
+- **子串匹配，不分词**。搜「依赖」命中「我用 uv 管理 Python 依赖」✅；
   搜「运行」不会命中「跑」——没有同义词和词干还原
 - **大小写不敏感**，中英文一视同仁
-- **只搜正文**。模型的 thinking 和工具参数不进搜索——搜「杭州」不该命中模型的内部推理
+- **只搜正文**。模型的 thinking 和工具参数不进搜索——搜「依赖」不该命中模型的内部推理
 - **查询短于 2 个字符直接返回空**。单字会命中几乎所有内容，没有意义
 - `%` `_` 这些 LIKE 通配符**已在后端转义**，可以放心把用户输入直接传进来。
   搜「76%」能正常命中含百分号的内容
@@ -647,8 +647,8 @@ GET /api/memories/stats?days=30&top=10
 **`reads` 统计的是模型主动 `view` 打开文件的次数，不是「这条记忆被用上的次数」。**
 
 因为索引（`MEMORY.md`）每轮都会全量注入 system prompt，里面每条记忆都有一行摘要。
-短事实靠摘要就答完了——实测中模型回答「我住在哪个城市」时，
-索引里「住在杭州」这一行就够了，**根本没有打开 `location.md`**。
+短事实靠摘要就答完了——实测中模型回答「我用什么管理依赖」时，
+索引里「用 uv 管理依赖」这一行就够了，**根本没有打开 `preferences.md`**。
 
 所以：
 

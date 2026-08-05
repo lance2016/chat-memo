@@ -36,7 +36,7 @@ def extract_text(blocks: list[dict[str, Any]]) -> str:
     """抽出 content 里的纯文本，供搜索用。
 
     只取 text 块 —— thinking 和 tool_use 参数进了搜索索引全是噪音，
-    搜「杭州」不该命中模型的内部推理。
+    搜某个词不该命中模型的内部推理。
     """
     return "\n".join(
         b.get("text", "")
