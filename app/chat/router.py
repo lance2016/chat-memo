@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -23,6 +24,13 @@ from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
 from app.search import search as run_search
+from app.settings_store import (
+    SettingError,
+    apply,
+    describe,
+    load_overrides,
+    resolve_settings,
+)
 from app.security import require_api_key
 from app.timeutils import local_day_bounds
 
@@ -45,31 +53,53 @@ class ConversationOut(BaseModel):
     thinking: bool | None = None
 
 
-class SettingsOut(BaseModel):
-    provider: str
-    model: str
-    thinking_default: bool
-    # 当前模型支不支持关闭思考。前端据此决定开关是否可用，不要硬编码模型名。
-    thinking_toggle: bool
-
-
 class ConversationUpdate(BaseModel):
     title: str | None = None
     # 传 null 表示恢复成「跟随全局默认」
     thinking: bool | None = None
 
 
-@router.get("/settings", response_model=SettingsOut)
-async def get_runtime_settings() -> SettingsOut:
-    """当前生效的模型配置。前端渲染思考开关时先读这个。"""
-    settings = get_settings()
+@router.get("/settings")
+async def get_runtime_settings(
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """设置页要的全部信息：当前值、每项来自哪层、可选项。
+
+    ``values`` 是**合并后的生效值**（数据库覆盖叠加在 .env 之上）。
+    """
+    settings = await resolve_settings(session)
+    overrides = await load_overrides(session)
     is_anthropic = settings.provider == "anthropic"
-    return SettingsOut(
-        provider=settings.provider,
-        model=settings.model if is_anthropic else settings.deepseek_model,
-        thinking_default=True if is_anthropic else settings.deepseek_thinking,
-        thinking_toggle=True,
-    )
+    return {
+        **describe(settings, overrides),
+        # 兼容前端已有的运行时卡片
+        "provider": settings.provider,
+        "model": settings.model if is_anthropic else settings.deepseek_model,
+        "thinking_default": True if is_anthropic else settings.deepseek_thinking,
+        "thinking_toggle": True,
+    }
+
+
+@router.patch("/settings")
+async def update_runtime_settings(
+    payload: dict[str, Any],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """部分更新。传 ``null`` 表示删掉该覆盖、恢复 .env 默认。
+
+    改完立刻生效，不需要重启 —— 每个请求都会重新解析一次配置。
+    """
+    base = get_settings()
+    try:
+        await apply(session, payload, await resolve_settings(session, base))
+    except SettingError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    await session.flush()
+    settings = await resolve_settings(session, base)
+    overrides = await load_overrides(session)
+    logger.info("⚙ 设置已更新: %s", ", ".join(payload) or "(空)")
+    return describe(settings, overrides)
 
 
 class MessageOut(BaseModel):
@@ -334,25 +364,48 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
     )
 
 
+# 按会话串行化。并发跑同一个会话会让历史错乱：两个请求各自读到同一份历史，
+# 各自追加，结果变成 user说B → user说A → assistant B → assistant A，
+# 两条回复都只看到半边上下文。双击发送按钮就能触发。
+_locks: dict[int, asyncio.Lock] = {}
+
+
+def _conversation_lock(conversation_id: int) -> asyncio.Lock:
+    lock = _locks.get(conversation_id)
+    if lock is None:
+        lock = _locks[conversation_id] = asyncio.Lock()
+    return lock
+
+
 async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
     """SSE 生成器自己持有数据库会话。
 
     不能用 Depends(get_session)：请求处理函数返回后依赖就会被清理，而生成器此时才刚开始跑。
     """
-    async with get_sessionmaker()() as session:
+    lock = _conversation_lock(payload.conversation_id)
+    if lock.locked():
+        # 直接拒绝而不排队：双击场景下第二条本来就是误触，
+        # 让它排队等上一轮跑完再答一遍反而莫名其妙。
+        yield _sse({"type": "error", "message": "该会话正在生成中，请等当前回答结束"})
+        return
+
+    async with lock, get_sessionmaker()() as session:
         try:
             conversation = await session.get(Conversation, payload.conversation_id)
             if conversation is None:
                 yield _sse({"type": "error", "message": "会话不存在"})
                 return
 
+            # 每轮重新解析：设置页改完不用重启就能生效
+            settings = await resolve_settings(session)
             store = MemoryStore(session, actor="chat", conversation_id=conversation.id)
             service = ChatService(
                 session=session,
-                provider=get_provider(),
+                provider=get_provider(settings),
                 executor=MemoryToolExecutor(store),
+                settings=settings,
             )
-            system = await build_system_prompt(store)
+            system = await build_system_prompt(store, settings)
 
             async for event in service.stream_reply(
                 conversation=conversation, system=system, user_text=payload.content

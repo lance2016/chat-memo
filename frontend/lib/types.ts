@@ -12,6 +12,11 @@ export interface RuntimeSettings {
   model: string;
   thinking_default: boolean;
   thinking_toggle: boolean;
+  /** Optional until the backend exposes editable consolidation settings. */
+  consolidate_auto?: boolean;
+  consolidate_hour?: number;
+  consolidate_model?: string | null;
+  timezone?: string;
 }
 
 export interface HealthStatus {

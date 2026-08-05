@@ -9,6 +9,7 @@ import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserP
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, RuntimeSettings, ToolActivity, Turn } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
+import { ThemeControl } from "@/components/theme-control";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -32,22 +33,22 @@ function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usa
   return typeof output === "number" ? `${output.toLocaleString()} output tokens` : "";
 }
 
-function TurnView({ turn, streaming = false, highlighted = false, turnRef, onEdit, onRegenerate }: { turn: Turn; streaming?: boolean; highlighted?: boolean; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void }) {
+function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, turnRef, onEdit, onRegenerate }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void }) {
   if (turn.kind === "user") {
     return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div>{onEdit && <div className="turn-actions"><button onClick={onEdit}><Pencil size={12} />编辑重发</button></div>}</div></div>;
   }
   return (
     <div className={`turn assistant-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
-      {turn.thinking && (
+      {showThinking && turn.thinking && (
         <details className="thinking">
           <summary>{streaming ? "思考中…" : "思考过程"}</summary>
           <div className="thinking-body">{turn.thinking}</div>
         </details>
       )}
-      {turn.tools.map((tool) => displayTool(tool))}
+      {showToolActivity && turn.tools.map((tool) => displayTool(tool))}
       {turn.text && <div className="assistant-content"><Markdown>{turn.text}</Markdown></div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>回答被中断，已保留已生成的内容</span></div>}
-      {!turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
+      {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
       {onRegenerate && <div className="turn-actions assistant-actions"><button onClick={onRegenerate}><RefreshCw size={12} />重新生成</button></div>}
     </div>
   );
@@ -362,9 +363,9 @@ export function ChatPage() {
 
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
       <main className="main-panel">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div><div className="topbar-title-row"><div className="topbar-title">{selected?.title ?? "新对话"}</div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-meta">{selected ? "与你的私人记忆相连" : ""}</div></div></div><div className="topbar-actions">{selected && <label className="thinking-control"><Brain size={14} /><span>思考</span><select aria-label="本会话思考模式" value={selected.thinking === null ? "default" : selected.thinking ? "on" : "off"} onChange={(event) => void changeThinking(event.target.value)} disabled={!runtimeSettings || !runtimeSettings.thinking_toggle || updatingThinking || sending}><option value="default">跟随默认{runtimeSettings ? `（${runtimeSettings.thinking_default ? "开" : "关"}）` : ""}</option><option value="on">始终开启</option><option value="off" disabled={runtimeSettings ? !runtimeSettings.thinking_toggle : true}>关闭思考</option></select></label>}<Bot size={18} color="var(--accent)" /></div></header>
+        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div><div className="topbar-title-row"><div className="topbar-title">{selected?.title ?? "新对话"}</div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-meta">{selected ? "与你的私人记忆相连" : ""}</div></div></div><div className="topbar-actions">{selected && <label className="thinking-control"><Brain size={14} /><span>思考</span><select aria-label="本会话思考模式" value={selected.thinking === null ? "default" : selected.thinking ? "on" : "off"} onChange={(event) => void changeThinking(event.target.value)} disabled={!runtimeSettings || !runtimeSettings.thinking_toggle || updatingThinking || sending}><option value="default">跟随默认{runtimeSettings ? `（${runtimeSettings.thinking_default ? "开" : "关"}）` : ""}</option><option value="on">始终开启</option><option value="off" disabled={runtimeSettings ? !runtimeSettings.thinking_toggle : true}>关闭思考</option></select></label>}<ThemeControl /><Bot size={18} color="var(--accent)" /></div></header>
         <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
-          {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.length === 0 ? <div className="welcome"><div className="eyebrow">Personal intelligence</div><h1>把想法交给<br />一个记得住的助手。</h1><p>聊天中的重要信息会被整理进长期记忆。你可以直接提问，也可以告诉我你的偏好、计划和正在做的事。</p><div className="suggestions"><button className="suggestion" onClick={() => setInput("帮我整理一下今天的工作计划")}>整理今天的工作计划</button><button className="suggestion" onClick={() => setInput("记住我喜欢简洁、直接的回答")}>记住一个偏好</button></div></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; return <TurnView turn={turn} highlighted={turn.messageId === highlightedMessageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
+          {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.length === 0 ? <div className="welcome"><div className="eyebrow">Personal intelligence</div><h1>把想法交给<br />一个记得住的助手。</h1><p>聊天中的重要信息会被整理进长期记忆。你可以直接提问，也可以告诉我你的偏好、计划和正在做的事。</p><div className="suggestions"><button className="suggestion" onClick={() => setInput("帮我整理一下今天的工作计划")}>整理今天的工作计划</button><button className="suggestion" onClick={() => setInput("记住我喜欢简洁、直接的回答")}>记住一个偏好</button></div></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
         </div>
         <div className="composer-wrap">
           {error && <div className="error-banner">{error}</div>}

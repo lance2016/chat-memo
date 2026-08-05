@@ -10,6 +10,7 @@ import { ReviewMemoryChanges } from "@/components/review/review-memory-changes";
 import { ReviewOverview } from "@/components/review/review-overview";
 import { ReviewSummaryList } from "@/components/review/review-summary-list";
 import { ReviewUsageCard } from "@/components/review/review-usage-card";
+import { ThemeControl } from "@/components/theme-control";
 
 type SectionKey = "conversations" | "changes" | "summaries" | "usage";
 type SectionErrors = Partial<Record<SectionKey, string>>;
@@ -121,7 +122,7 @@ export function ReviewPage() {
   const isToday = day === today();
 
   return <div className="review-shell">
-    <header className="review-topbar"><Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Daily review</div></div></Link><nav className="review-nav"><Link href="/"><MessageSquare size={14} />聊天</Link><Link href="/memories"><BookOpen size={14} />记忆管理</Link><span className="active"><CalendarDays size={14} />每日回顾</span><Link href="/settings"><Settings2 size={14} />设置</Link></nav></header>
+    <header className="review-topbar"><Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Daily review</div></div></Link><div className="review-topbar-tools"><nav className="review-nav"><Link href="/"><MessageSquare size={14} />聊天</Link><Link href="/memories"><BookOpen size={14} />记忆管理</Link><span className="active"><CalendarDays size={14} />每日回顾</span><Link href="/settings"><Settings2 size={14} />设置</Link></nav><ThemeControl /></div></header>
     <main className="review-content">
       <div className="review-heading"><div><div className="eyebrow">Daily review</div><h1>{isToday ? "回看今天。" : "回看这一天。"}</h1><p>{formatDayTitle(day)} · 把对话、记忆和使用情况放在同一条脉络里。</p></div><div className="review-controls"><div className="date-control"><button className="icon-button date-step" aria-label="前一天" onClick={() => setDay((value) => moveDay(value, -1))}><ChevronLeft size={16} /></button><label htmlFor="review-day">选择日期</label><input id="review-day" type="date" value={day} onChange={(event) => setDay(event.target.value)} /><button className="icon-button date-step" aria-label="后一天" onClick={() => setDay((value) => moveDay(value, 1))}><ChevronRight size={16} /></button></div>{latestSummary && <span className="review-status-chip"><CheckCircle2 size={12} />已整理 · {new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(latestSummary.created_at))}</span>}{!isToday && <button className="ghost-button today-button" onClick={() => setDay(today())}><RefreshCw size={13} />今天</button>}<button className="primary-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />整理中…</> : <><Play size={14} />{latestSummary ? "重新整理这一天" : "整理这一天"}</>}</button></div></div>
       {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />重试</button></div>}

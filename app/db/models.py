@@ -154,5 +154,22 @@ class MemoryRead(Base):
     )
 
 
+class AppSetting(Base):
+    """可在设置页修改的运行时配置，覆盖 .env 里的同名默认值。
+
+    做成 key-value 而不是固定列：加一个配置项不需要迁移。
+    只有白名单里的 key 能写（见 app/settings_store.py），密钥和基础设施配置
+    永远只存在于 .env —— 改坏 cors_origins 或 api_key 会把自己锁在门外。
+    """
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 Index("ix_memory_versions_path_created", MemoryVersion.path, MemoryVersion.created_at)
 Index("ix_memory_reads_path_created", MemoryRead.path, MemoryRead.created_at)

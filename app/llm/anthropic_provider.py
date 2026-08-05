@@ -75,7 +75,7 @@ class AnthropicProvider:
                 final = None
                 async with self.client.messages.stream(
                     # 传快照：本轮之后还会往 working 里追加，不能让调用方持有活引用。
-                    messages=list(working),
+                    messages=strip_unsigned_thinking(working),
                     tools=tools,
                     **self._request_kwargs(system, want_thinking),
                 ) as stream:
@@ -172,6 +172,42 @@ class AnthropicProvider:
                 "补全被 max_tokens 截断，产出可能不完整（已产出 %d 字符）", len(text)
             )
         return text
+
+
+def strip_unsigned_thinking(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """丢掉没有 signature 的 thinking 块。
+
+    Anthropic 要求 thinking 块带签名才能回传，而这些块可能来自别处：
+    DeepSeek 生成的 thinking 没有 signature（那是 Anthropic 特有的），
+    中断兜底保存的半截回答也不带。同一个会话换到 Claude 时，
+    这些块会让整个请求 400 —— 而且历史里一直留着，等于会话永久不可用。
+
+    丢掉它们是安全的：思考内容本来就是临时的，丢了不影响对话语义。
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+
+        kept = [
+            block
+            for block in content
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "thinking"
+                and not block.get("signature")
+            )
+        ]
+        if len(kept) == len(content):
+            out.append(message)
+        elif kept:
+            out.append({**message, "content": kept})
+        # 整条消息只有无签名 thinking 时直接丢弃，不留空 content（API 会拒绝）
+    return out
 
 
 def _accumulate(total: dict[str, int], usage: dict[str, Any]) -> None:

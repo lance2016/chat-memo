@@ -25,11 +25,13 @@ Available pages:
 - `/` — conversations and streaming chat
 - `/memories` — memory files, Markdown editor, versions and diff
 - `/review` — daily conversations, memory changes and manual consolidation
-- `/settings` — runtime model status and browser-side chat preferences
+- `/settings` — runtime model status, browser-side chat preferences, and light/dark/system appearance
 
 Global search is available on every page with the search button or `Cmd/Ctrl + K`.
 Conversation results open the matching conversation and jump to the matched message;
 memory results open the matching file.
+
+The settings page stores appearance and chat interaction preferences in the current browser only. The theme can follow the macOS/system appearance or be fixed to light/dark; model, provider, timezone, and automatic consolidation settings remain backend-managed.
 
 The chat page reads `/api/settings` for the runtime thinking capability and uses
 `PATCH /api/conversations/{id}` for the three-state per-conversation thinking

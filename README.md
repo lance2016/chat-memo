@@ -188,6 +188,9 @@ GET    /api/memories/versions?day=&actor=                 全局记忆变更（�
 GET    /api/memories/stats?days=30                        记忆使用率统计
 GET    /api/usage?days=7                                  按天用量，已跨 provider 归一化
 GET    /api/search?q=&limit=20                            搜对话历史 + 记忆
+GET    /api/settings                                      当前配置 + 可选项 + 每项来源
+PATCH  /api/settings                                      改配置，立刻生效不用重启
+POST   /api/jobs/backup                                   pg_dump + 记忆导出成 .md 文件树
 ```
 
 ## 前端建议范围（Next.js 15 + Tailwind + shadcn/ui）
@@ -227,6 +230,29 @@ app/
     scheduler.py            lifespan 里的定时循环
 ```
 
+## 配置在哪改
+
+分三层，后面覆盖前面：
+
+```
+会话覆盖   conversations.thinking          PATCH /api/conversations/{id}
+数据库设置 app_settings 表                  PATCH /api/settings（设置页，立刻生效）
+.env 默认  Settings                        改完要重启容器
+```
+
+**密钥和基础设施只能改 `.env`**：`*_API_KEY`、`DATABASE_URL`、`API_KEY`、`CORS_ORIGINS`、
+`LOG_*`、`TZ`。接口一律拒绝写这些——改坏 `api_key` 或 `cors_origins` 会把设置页自己锁在门外。
+
+## 备份
+
+```bash
+curl -X POST localhost:8000/api/jobs/backup
+```
+
+产出在宿主机 `backups/`：`.dump`（`pg_restore` 可完整恢复）+ `memories/` 真实文件树
+（可读、可 grep、可 git）。**记忆平时只以数据库行存在，磁盘上没有 .md 文件**，
+这里是唯一落成文件的地方。
+
 ## 几个容易踩的坑
 
 - **消息必须整块存整块回传**。`content` 里的 thinking 块带签名，只抽 text 回传下一轮会 400。
@@ -235,7 +261,11 @@ app/
 - **`max_tokens` 大时必须流式**，否则撞 SDK 的 HTTP 超时。
 - **SSE 生成器要自己管数据库会话**，不能用 `Depends(get_session)` —— 请求函数返回后依赖就清理了，
   而生成器那时才刚开始跑。
-- 记忆路径来自模型输出，`validate_path` 的穿越校验不能省。
+- 记忆路径来自模型输出，`validate_path` 的穿越校验不能省。导出成真实文件时**再验一次**。
+- **同一会话不能并发生成**。两个请求各读一份历史再各自追加，顺序会错乱成
+  `user,user,assistant,assistant`，两条回复各看到半边上下文。已加按会话的锁。
+- **无签名的 thinking 块发给 Anthropic 会 400**。DeepSeek 产生的和中断兜底存的都没有签名，
+  `strip_unsigned_thinking` 在发请求前滤掉。这是切 provider 的前置条件。
 - **搜索用三元组子串匹配，不是全文检索**。Postgres 的中文分词要装 zhparser/pg_jieba，
   镜像里没有；`pg_trgm` 不需要分词，中英文一视同仁（实测 20 万行 cost 4612 → 108）。
   代价是没有词干还原和同义词。消息正文冗余在 `messages.search_text` 列上才能建索引。

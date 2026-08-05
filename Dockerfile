@@ -13,6 +13,10 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# pg_dump / pg_restore 用于备份与恢复，是标准工具，比自己写导出可靠
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # 先只拷依赖清单，让依赖层能被缓存 —— 改业务代码时不会重装依赖。

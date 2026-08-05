@@ -11,7 +11,19 @@
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
 
-### 第 3 批 · 待前端实现 🆕
+### 第 4 批 · 待前端实现 🆕
+
+| 变化 | 位置 | 前端要做什么 |
+|---|---|---|
+| `GET /api/settings` **响应扩展** | [运行时设置](#运行时设置) | 设置页从只读变成可编辑；按 `fields` 渲染表单，按 `sources` 标出「已修改」 |
+| `PATCH /api/settings` | [修改设置](#修改设置) | 改完**立刻生效，不用重启**；传 `null` 恢复默认 |
+| `POST /api/jobs/backup` | [备份](#备份) | 设置页加「立即备份」按钮 |
+| 并发被拒的新错误 | [聊天 SSE](#聊天sse-流) | 同一会话正在生成时再发会收到 `error`，提示用户等待即可 |
+
+**行为变化**：同一会话不再允许并发生成（之前会让历史错乱）。前端发送时禁用按钮即可，
+真撞上了会收到 `error` 事件而不是坏数据。
+
+### 第 3 批 · 已实现 ✅
 
 | 变化 | 位置 | 前端要做什么 |
 |---|---|---|
@@ -74,20 +86,86 @@ X-API-Key: <key>
 GET /api/settings
 ```
 
+> 🆕 第 4 批：响应扩展了，设置页现在可以做成**可编辑**的。
+
 ```json
 {
-  "provider": "deepseek",
-  "model": "deepseek-v4-flash",
-  "thinking_default": true,
-  "thinking_toggle": true
+  "values":  {"owner_name": "用户", "provider": "deepseek",
+              "deepseek_model": "deepseek-v4-flash", "consolidate_hour": 4, "...": "..."},
+  "sources": {"owner_name": "db", "consolidate_hour": "env"},
+  "fields": [
+    {"key": "owner_name", "label": "助手怎么称呼你", "kind": "str",
+     "choices": [], "minimum": 1, "maximum": 32, "provider": ""},
+    {"key": "effort", "label": "推理强度", "kind": "enum",
+     "choices": ["low","medium","high","xhigh","max"], "provider": "anthropic"}
+  ],
+  "providers": [
+    {"value": "deepseek",  "available": true,  "reason": ""},
+    {"value": "anthropic", "available": false, "reason": "未配置 ANTHROPIC_API_KEY"}
+  ],
+  "env_only": ["database_url", "api_key", "cors_origins", "..."],
+
+  "provider": "deepseek", "model": "deepseek-v4-flash",
+  "thinking_default": true, "thinking_toggle": true
 }
 ```
 
-渲染思考开关前先读它。**不要在前端硬编码模型名或能力**——以后换模型、加模型，
-后端改这个响应就够了，前端一行不用动。
+**照着 `fields` 渲染表单，不要硬编码字段清单**——以后后端加配置项，前端不用改：
 
-- `thinking_default`：新会话默认思不思考
-- `thinking_toggle`：当前模型支不支持关掉思考。为 `false` 时开关应置灰
+| 字段 | 用途 |
+|---|---|
+| `values` | 当前**生效值**（数据库覆盖已叠加在 .env 之上） |
+| `sources` | `db` = 你在界面上改过，`env` = 来自 .env 默认。据此显示「已修改」标记和「恢复默认」按钮 |
+| `fields[].kind` | `str` / `int` / `bool` / `enum`，决定用输入框、数字框、开关还是下拉 |
+| `fields[].minimum/maximum` | 数字是范围，字符串是长度。前端先校验一次，后端仍会再验 |
+| `fields[].provider` | 非空表示只在该 provider 下有意义（如 `effort` 只对 anthropic），可按当前 provider 过滤或折叠 |
+| `providers[].available` | `false` 时该选项置灰并显示 `reason` |
+| `env_only` | 这些只能改 `.env`，**界面上不要给入口**（密钥、数据库、CORS、日志） |
+
+末尾四个平铺字段是给运行时卡片用的，保持不变。
+
+### 修改设置
+
+> 🆕 第 4 批新增
+
+```http
+PATCH /api/settings
+{"owner_name": "阿明"}        # 改一项
+{"owner_name": null}          # 恢复 .env 默认
+{"consolidate_hour": 6, "deepseek_thinking": false}   # 一次改多项
+```
+
+返回和 `GET` 相同结构的完整描述，前端直接拿去刷新界面。
+
+- **改完立刻生效，不需要重启容器**。每个请求都会重新解析配置
+- **部分更新**：只传要改的字段，其余不受影响
+- 非法值返回 400，`detail` 是可以直接展示给用户的中文说明，例如
+  「自动整理时间（点）不能大于 23」「未配置 ANTHROPIC_API_KEY，无法切换到该 provider」
+- 写 `env_only` 里的字段一律 400。这是有意的：改坏 `api_key` 或 `cors_origins`
+  会把设置页自己锁在门外
+
+### 备份
+
+> 🆕 第 4 批新增
+
+```http
+POST /api/jobs/backup
+```
+
+```json
+{"dump_file": "chat-20260806-075235.dump", "dump_bytes": 27012,
+ "memory_files": 5, "memory_dir": "/backups/memories",
+ "created_at": "20260806-075235", "detail": ""}
+```
+
+生成两份东西，落在宿主机的 `backups/`：
+
+- **`.dump`** —— `pg_dump` 全量快照，能用 `pg_restore` 完整恢复（对话、记忆、版本历史、埋点）
+- **`memories/`** —— 记忆导出成真实的 `.md` 文件树，可读、可 `grep`、可以 `git` 管理
+
+`detail` 非空表示 dump 那部分出了问题（例如镜像里没装 `pg_dump`），此时记忆文件仍然导出成功。
+
+设置页放一个「立即备份」按钮，成功后显示文件名和大小即可。**这个操作会阻塞几秒**，要有 loading。
 
 ---
 
@@ -232,6 +310,10 @@ Content-Type: application/json
 | `done` | `usage` | 本轮结束 |
 | `message_id` | `message_id` | 本轮最后一条消息的 id |
 | `error` | `message` | 展示错误，结束本轮 |
+
+> 🆕 第 4 批：同一会话**正在生成时再发**，会立刻收到
+> `error`「该会话正在生成中，请等当前回答结束」。这是有意的——
+> 并发跑同一个会话会让历史错乱。前端发送时禁用按钮即可，这里是兜底。
 
 ### 顺序保证（可以依赖）
 

@@ -9,6 +9,7 @@ import { deleteMemory, errorMessage, getMemory, getMemoryStats, listMemoryNodes,
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
 import type { Memory, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
+import { ThemeControl } from "@/components/theme-control";
 
 function actorLabel(actor: MemoryVersion["actor"]) {
   return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
@@ -215,7 +216,7 @@ export function MemoriesPage() {
   return (
     <div className="memory-shell">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
-        <div className="memory-header"><Link className="brand memory-brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link><div className="memory-links"><Link className="back-link" href="/"><ChevronRight size={13} style={{ transform: "rotate(180deg)" }} />返回聊天</Link><Link className="back-link" href="/review"><CalendarDays size={13} />每日回顾</Link><Link className="back-link" href="/settings"><Settings2 size={13} />设置</Link></div><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
+        <div className="memory-header"><Link className="brand memory-brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link><div className="memory-links"><Link className="back-link" href="/"><ChevronRight size={13} style={{ transform: "rotate(180deg)" }} />返回聊天</Link><Link className="back-link" href="/review"><CalendarDays size={13} />每日回顾</Link><Link className="back-link" href="/settings"><Settings2 size={13} />设置</Link><ThemeControl /></div><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
         <div className="tree">{loadingTree ? <div className="centered-empty">加载中…</div> : tree.length ? tree.map((entry) => <TreeEntryView key={entry.path} entry={entry} selected={selectedPath} onSelect={selectFile} onDeleteDirectory={(entry) => void removePath(entry.path, true)} />) : <div className="centered-empty">还没有记忆文件</div>}</div>
       </aside>
       {treeOpen && <button className="sidebar-backdrop" aria-label="关闭记忆树" onClick={() => setTreeOpen(false)} />}

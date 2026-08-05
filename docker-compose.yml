@@ -44,6 +44,8 @@ services:
       - ./alembic.ini:/app/alembic.ini:ro
       - ./tests:/app/tests
       - ./pyproject.toml:/app/pyproject.toml:ro
+      # 备份落到宿主机，容器重建也不会丢
+      - ./backups:/backups
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
       interval: 15s
