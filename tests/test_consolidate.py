@@ -74,7 +74,7 @@ async def test_summarizes_and_writes_memory(session: AsyncSession) -> None:
 
 
 async def test_summary_watermark_prevents_reprocessing(session: AsyncSession) -> None:
-    conversation = await seed_conversation(session, "第一句", "回应")
+    await seed_conversation(session, "第一句", "回应")
 
     first = provider_with([text_turn("摘要一"), text_turn("整理完成")])
     await Consolidator(session, first).run(TODAY)

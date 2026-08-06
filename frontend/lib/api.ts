@@ -1,5 +1,6 @@
 import type {
   ApiMessage,
+  AsrStatus,
   BackupResult,
   ChatEvent,
   Conversation,
@@ -19,6 +20,8 @@ import type {
   SearchResults,
   SpeechRequest,
   TtsStatus,
+  TtsVoices,
+  TranscriptionResult,
   TtsNextRequest,
   TtsNextResult,
   TruncateResult,
@@ -119,6 +122,14 @@ export function getTtsStatus() {
   return request<TtsStatus>("/api/tts/status");
 }
 
+export function getAsrStatus() {
+  return request<AsrStatus>("/api/asr/status");
+}
+
+export function getTtsVoices(model: string) {
+  return request<TtsVoices>(`/api/tts/voices?model=${encodeURIComponent(model)}`);
+}
+
 export function prepareSpeech(input: SpeechRequest) {
   return request<PrepareResult>("/api/tts/prepare", {
     method: "POST",
@@ -172,6 +183,44 @@ export async function synthesizeSpeech(input: SpeechRequest) {
   return new Blob([await response.arrayBuffer()], {
     type: response.headers.get("Content-Type") ?? "audio/mpeg",
   });
+}
+
+function recordingExtension(type: string) {
+  if (type.includes("mp4")) return "m4a";
+  if (type.includes("ogg")) return "ogg";
+  if (type.includes("wav")) return "wav";
+  return "webm";
+}
+
+export async function transcribeAudio(audio: Blob) {
+  const headers = new Headers();
+  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+  if (apiKey) headers.set("X-API-Key", apiKey);
+
+  const body = new FormData();
+  body.append("file", audio, `recording.${recordingExtension(audio.type)}`);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/asr/transcriptions`, {
+      method: "POST",
+      headers,
+      body,
+    });
+  } catch (cause) {
+    throw new ApiError(0, errorMessage(cause, "无法连接语音转写服务"));
+  }
+  if (!response.ok) {
+    let message = `语音转写失败（${response.status}）`;
+    try {
+      const result = (await response.json()) as { detail?: string };
+      if (result.detail) message = result.detail;
+    } catch {
+      // Proxies may return a non-JSON error page.
+    }
+    throw new ApiError(response.status, message);
+  }
+  return response.json() as Promise<TranscriptionResult>;
 }
 
 export function createConversation() {

@@ -86,15 +86,16 @@ Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` /
 关掉思考后 `Docker Compose前端502排查` 明显比 `容器编排前端连后端502排查` 干净。
 这不是速度换质量的取舍，是纯亏。
 
-**改法**：标题单独走一条便宜的路（OpenRouter 上的小模型），并且**两条路都关掉推理**。
+**改法**：标题单独走一条便宜的路（智谱开放平台的 `glm-4.7-flash`，免费档），并且**两条路都关掉推理**。
 
-- `app/llm/title.py`（新增）：`TitleClient` 走 OpenRouter，发
-  `extra_body={"reasoning": {"enabled": False}}`。`get_title_client()` 在没配
-  `OPENROUTER_API_KEY` / `TITLE_MODEL` 时返回 `None`
+- `app/llm/title.py`（新增）：`TitleClient` 走智谱的 OpenAI 兼容端点
+  （`https://open.bigmodel.cn/api/paas/v4`），发 `extra_body={"thinking": {"type": "disabled"}}`
+  —— GLM 默认开着思考，不显式关掉标题照样白等。`get_title_client()` 在没配
+  `ZHIPU_API_KEY` / `TITLE_MODEL` 时返回 `None`
 - `complete()` 全线加 `thinking: bool = True` 开关（`app/llm/provider.py` 协议、
   DeepSeek 发 `extra_body={"thinking": {"type": "disabled"}}`、Anthropic 把写死的
   `adaptive` 改成按参数走）
-- `app/chat/service.py` 的 `_complete_title`：配了 key 走 OpenRouter，
+- `app/chat/service.py` 的 `_complete_title`：配了 key 走智谱，
   否则退回聊天 provider 并传 `thinking=False`。`max_tokens` 收到
   `TITLE_MAX_TOKENS = 500`（不敢更小：万一模型忽略关闭指令，预算太紧会只剩思考、
   标题静默变空）
@@ -104,22 +105,23 @@ Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` /
 - `TITLE_TIMEOUT` 作为兜底保留。标题降到约 0.7s 后它和正文（约 1s）并行，
   正常会**先于正文完成**，死等趋近于 0，兜底基本不触发
 
-配置：`OPENROUTER_API_KEY` 和 `OPENROUTER_BASE_URL` 是 `ENV_ONLY`（和其他 key 一致，
+配置：`ZHIPU_API_KEY` 和 `ZHIPU_BASE_URL` 是 `ENV_ONLY`（和其他 key 一致，
 界面上不给入口）；`TITLE_MODEL` 可以在设置页改。
 
 `tests/test_title_generation.py` 覆盖两条路，两个「关推理」断言都做过 RED 检查
 （去掉开关就红）。
 
-**已验证**：配好 `OPENROUTER_API_KEY` 后实测，死等从 **2.86s 降到 0.05s**。
+**已验证**（下面这组数据测于最初的 OpenRouter 小模型，换成智谱 Flash 后同属
+一个量级）：配好 key 后实测，死等从 **2.86s 降到 0.05s**。
 日志里能直接看到标题比正文早 3 秒就完成了，所以它已经完全不占用户的时间：
 
 ```
-21:13:00  🏷 解决 Docker Compose 前后端连接问题 [openrouter/google/gemma-4-31b-it:free · 1.3s]
+21:13:00  🏷 解决 Docker Compose 前后端连接问题 [zhipu/glm-4.7-flash · 1.3s]
 21:13:03  ← conv#31 4.6s · 2 工具 · 4143 tok · 缓存 3456
 ```
 
 **怎么确认标题走了哪条路**：`_complete_title` 每次都会打一行 `🏷`，带上标题、
-路由（`openrouter/<模型>` 或 `<provider> 不思考`）和耗时。
+路由（`zhipu/<模型>` 或 `<provider> 不思考`）和耗时。
 
 ```bash
 docker compose logs -f api | grep 🏷
@@ -135,7 +137,7 @@ curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/js
   -d "{\"conversation_id\":$CID,\"content\":\"你好\"}" http://localhost:13000/backend/api/chat
 ```
 
-> `:free` 档的模型有速率限制，偶尔会慢或失败。标题本来就是锦上添花 ——
+> 免费档的模型有速率限制，偶尔会慢或失败。标题本来就是锦上添花 ——
 > 失败会被 `_complete_title` 吞掉、超时有 `TITLE_TIMEOUT` 兜着，
 > 两种情况都只是保留「新对话」并在下一轮重试，不影响这次回答。
 

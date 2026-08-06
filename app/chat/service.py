@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import logging
 import re
 import time
@@ -77,6 +78,68 @@ def _summarize_turn(done: Done | None, tools: int, seconds: float) -> str:
     if cached:
         parts.append(f"缓存 {cached}")
     return " · ".join(parts)
+
+
+def _message_chars(message: dict[str, Any]) -> int:
+    """一条消息发给模型时的字符体量。
+
+    直接量 JSON 序列化后的长度：block 的结构五花八门（text / thinking / tool_use 的
+    入参 / tool_result 的正文），逐类去数迟早漏掉一种，而漏掉的那种恰恰是最容易膨胀的
+    工具结果。序列化多算的那点结构开销，方向是偏保守的，正合适。
+    """
+    return len(json.dumps(message, ensure_ascii=False))
+
+
+def _is_orphan_result(message: dict[str, Any]) -> bool:
+    """这条 user 消息是不是「只有工具结果」—— 它的 tool_use 在裁剪中被丢掉了。"""
+    content = message.get("content")
+    if not isinstance(content, list) or not content:
+        return False
+    return all(
+        isinstance(block, dict) and block.get("type") == "tool_result"
+        for block in content
+    )
+
+
+def trim_history(
+    messages: list[dict[str, Any]], max_chars: int
+) -> list[dict[str, Any]]:
+    """把历史压进字符预算，从**最老的一端**整条整条地丢。
+
+    不做就会出事：历史每轮全量发给模型，长会话线性膨胀，最终撞上下文窗口，
+    而那之后该会话每条消息都 400 —— 永久损坏。
+
+    从旧端丢有两个必须守住的边界，破了任何一条都是 400：
+
+    1. 保留窗口的**第一条必须是 user**。Anthropic 明确要求 messages 以 user 开头，
+       而按体量截断很容易正好切在 assistant 上。
+    2. 第一条不能是「只有 tool_result」的 user 消息 —— 配对的 tool_use 已经被丢了，
+       孤立的结果块两家 API 都不收。
+
+    两条合起来就是：定好切点后一路向后走，直到第一条是「真正的用户发言」。
+    最后一条无论如何都保留（哪怕它自己就超预算），否则这轮没有输入可发。
+    """
+    if max_chars <= 0 or not messages:
+        return messages
+
+    total = 0
+    start = len(messages)
+    for index in range(len(messages) - 1, -1, -1):
+        total += _message_chars(messages[index])
+        if total > max_chars and index < len(messages) - 1:
+            break
+        start = index
+
+    while start < len(messages) - 1 and (
+        messages[start]["role"] != "user" or _is_orphan_result(messages[start])
+    ):
+        start += 1
+
+    if start == 0:
+        return messages
+
+    logger.info("✂ 历史超出 %d 字预算，丢弃最老的 %d 条消息", max_chars, start)
+    return messages[start:]
 
 
 def sanitize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -206,7 +269,7 @@ class ChatService:
         self.provider = provider
         self.executor = executor
         self.settings = settings or get_settings()
-        # 由调用方（router）决定标题走不走 OpenRouter。这里**不**自己去问全局配置：
+        # 由调用方（router）决定标题走不走智谱。这里**不**自己去问全局配置：
         # 那样任何只注入了假 provider 的测试都会跟着开发机的 .env 走真实网络请求。
         # None = 用聊天 provider 兜底（同样关思考）。
         self.title_client = title_client
@@ -216,6 +279,10 @@ class ChatService:
 
         content 存的就是 Anthropic content block 数组，thinking 签名和 tool_use/tool_result
         的配对关系都在里面，直接回传即可。
+
+        先按预算裁剪、再补配对：裁剪只动旧的一端（可能留下孤立的 tool_result，
+        ``trim_history`` 自己处理），``sanitize_history`` 管的是新的一端
+        （中断留下的、没有结果的 tool_use）。两者互不干扰。
         """
         stmt = (
             select(Message)
@@ -223,9 +290,8 @@ class ChatService:
             .order_by(Message.id)
         )
         rows = (await self.session.execute(stmt)).scalars()
-        return sanitize_history(
-            [{"role": row.role, "content": row.content} for row in rows]
-        )
+        history = [{"role": row.role, "content": row.content} for row in rows]
+        return sanitize_history(trim_history(history, self.settings.history_max_chars))
 
     async def _persist(
         self,
@@ -422,14 +488,14 @@ class ChatService:
 
         两条路都**关掉思考**：标题是一句话概括，推理在这里只会让用户白等
         （这段耗时在 done 之前被 await，会原样变成禁用输入框的时间）。
-        配了 OPENROUTER_API_KEY 就走那边的小模型，否则退回聊天 provider。
+        配了 ZHIPU_API_KEY 就走智谱那边的小模型，否则退回聊天 provider。
         """
         prompt = f"用户的第一条消息：\n\n{first_text}"
         client = self.title_client
         # 走哪条路、花了多久，都要能从日志里直接看出来 —— 否则「标题到底有没有
         # 用那个小模型」只能靠猜，配错了 key 也只表现为「又变慢了」。
         route = (
-            f"openrouter/{self.settings.title_model}"
+            f"zhipu/{self.settings.title_model}"
             if client is not None
             else f"{self.settings.provider} 不思考"
         )

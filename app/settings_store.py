@@ -69,7 +69,7 @@ WRITABLE: tuple[Field, ...] = (
     Field("effort", "推理强度", "enum",
           choices=("low", "medium", "high", "xhigh", "max"), provider="anthropic"),
     Field("consolidate_model", "整理专用模型", "str", allow_empty=True),
-    # 只在配了 OPENROUTER_API_KEY 时生效；没配就退回聊天 provider。
+    # 只在配了 ZHIPU_API_KEY 时生效；没配就退回聊天 provider。
     Field("title_model", "标题专用模型", "str", allow_empty=True),
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
@@ -90,6 +90,11 @@ WRITABLE: tuple[Field, ...] = (
           group="tts"),
     Field("tts_timeout", "合成超时（秒）", "int", minimum=5, maximum=600, group="tts"),
     Field("tts_warmup", "启动时预热语音模型", "bool", group="tts"),
+    Field("asr_model", "识别模型", "str", group="asr"),
+    Field("asr_language", "识别语言", "enum",
+          choices=("Chinese", "English", "Auto"), group="asr"),
+    Field("asr_max_tokens", "识别长度上限", "int", minimum=64, maximum=2048,
+          group="asr"),
     Field("debug_prompts", "记录发给模型的请求", "bool", group="debug"),
 )
 
@@ -101,8 +106,8 @@ ENV_ONLY = (
     "anthropic_api_key",
     "deepseek_api_key",
     "deepseek_base_url",
-    "openrouter_api_key",
-    "openrouter_base_url",
+    "zhipu_api_key",
+    "zhipu_base_url",
     "api_key",
     "cors_origins",
     "log_level",
@@ -110,6 +115,12 @@ ENV_ONLY = (
     "log_access",
     # 地址算基础设施：容器内外写法不同，改错了设置页只会看到「连不上」
     "tts_base_url",
+    "tts_model_cache",
+    "asr_max_bytes",
+    "asr_timeout",
+    # 上下文预算要跟着模型窗口走，属于「换模型时才动」的配置，不适合放在设置页
+    # 随手改 —— 调大了不会立刻报错，而是等某次长会话直接 400。
+    "history_max_chars",
 )
 
 

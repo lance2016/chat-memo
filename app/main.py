@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.router import router as chat_router
+from app.asr.router import router as asr_router
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
 from app.jobs.router import router as jobs_router
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
         return {"authenticated": True}
 
     app.include_router(chat_router)
+    app.include_router(asr_router)
     app.include_router(memory_router)
     app.include_router(jobs_router)
     app.include_router(tts_router)

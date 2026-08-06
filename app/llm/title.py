@@ -1,4 +1,4 @@
-"""标题生成：走 OpenRouter，并且明确关掉推理。
+"""标题生成：走智谱的免费 Flash 模型，并且明确关掉推理。
 
 标题是「一句话概括用户想干什么」，不需要推理。但主 provider 的 `complete()`
 默认开着思考（DeepSeek 是不传就默认开，Anthropic 更是写死了 adaptive），
@@ -6,8 +6,8 @@
 并没有更好。更糟的是标题在 `done` 之前被 await，这段耗时会原样变成用户的
 等待：正文早说完了，流还开着、会话锁还占着、输入框还是禁用的。
 
-所以标题单独走一条路：OpenRouter 上的小模型（免费档就够用）+ 关闭推理。
-没配 `OPENROUTER_API_KEY` 时 `get_title_client()` 返回 None，调用方退回聊天
+所以标题单独走一条路：智谱开放平台上的 GLM Flash（免费档就够用）+ 关闭推理。
+没配 `ZHIPU_API_KEY` 时 `get_title_client()` 返回 None，调用方退回聊天
 provider，那条路同样会关掉思考。
 """
 
@@ -24,8 +24,8 @@ class TitleClient:
     ) -> None:
         self.settings = settings or get_settings()
         self.client = client or AsyncOpenAI(
-            api_key=self.settings.openrouter_api_key,
-            base_url=self.settings.openrouter_base_url,
+            api_key=self.settings.zhipu_api_key,
+            base_url=self.settings.zhipu_base_url,
         )
 
     async def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
@@ -36,9 +36,9 @@ class TitleClient:
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            # OpenRouter 的推理开关不是 OpenAI 标准字段，得走 extra_body 透传。
-            # 标题不需要推理，开着纯粹是让用户白等。
-            extra_body={"reasoning": {"enabled": False}},
+            # 智谱的推理开关不是 OpenAI 标准字段，得走 extra_body 透传，而且 GLM
+            # 默认是开着的 —— 不显式关掉，标题就会白白等一段思考。
+            extra_body={"thinking": {"type": "disabled"}},
         )
         return (response.choices[0].message.content or "").strip()
 
@@ -46,6 +46,6 @@ class TitleClient:
 def get_title_client(settings: Settings | None = None) -> TitleClient | None:
     """没配 key（或没配模型）就返回 None —— 调用方退回聊天 provider。"""
     settings = settings or get_settings()
-    if not settings.openrouter_api_key or not settings.title_model:
+    if not settings.zhipu_api_key or not settings.title_model:
         return None
     return TitleClient(settings)

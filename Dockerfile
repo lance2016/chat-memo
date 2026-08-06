@@ -22,7 +22,12 @@ WORKDIR /app
 # 先只拷依赖清单，让依赖层能被缓存 —— 改业务代码时不会重装依赖。
 # 含 dev 组：这是开发用镜像，要能在容器里直接跑 pytest。
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen
+# uv.lock 记录了生成锁文件时的制品域名；只给 frozen sync 换 index 仍可能继续
+# 请求 files.pythonhosted.org。先按构建参数刷新下载来源（保留锁定版本），再安装。
+# 默认仍是官方 PyPI；Compose 针对国内网络提供 TUNA 默认值，也可在 .env 覆盖。
+ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+RUN uv lock --refresh --default-index "$UV_DEFAULT_INDEX" \
+    && uv sync --frozen --default-index "$UV_DEFAULT_INDEX"
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

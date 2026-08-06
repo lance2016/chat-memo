@@ -23,9 +23,11 @@ from app.config import Settings
 from app.db.session import get_session
 from app.security import require_api_key
 from app.settings_store import resolve_settings
+from app.tts.cache import list_cached_models
 from app.tts.client import (
     TTSError,
     list_models,
+    list_voices,
     open_stream,
     plain_text,
     synthesize,
@@ -46,6 +48,7 @@ public = APIRouter(prefix="/api/tts", tags=["tts"])
 class SpeechIn(BaseModel):
     text: str = Field(min_length=1)
     # 设置页试听用：临时覆盖当前配置，不写库
+    model: str | None = None
     voice: str | None = None
     instruct: str | None = None
     # 关掉截断，用于「朗读全文」按钮
@@ -75,6 +78,11 @@ class NextOut(BaseModel):
     expires_in: int = TTL_SECONDS
 
 
+class CachedModelOut(BaseModel):
+    id: str
+    size_bytes: int
+
+
 class StatusOut(BaseModel):
     mode: str
     stream: bool
@@ -86,7 +94,14 @@ class StatusOut(BaseModel):
     max_chars: int
     reachable: bool
     models: list[str]
+    cached_models: list[CachedModelOut]
+    voices: list[str]
     detail: str
+
+
+class VoicesOut(BaseModel):
+    model: str
+    voices: list[str]
 
 
 async def _prepare(
@@ -97,11 +112,12 @@ async def _prepare(
     if settings.tts_mode == "off":
         raise HTTPException(status.HTTP_409_CONFLICT, "语音播放已关闭")
 
-    if payload.voice is not None or payload.instruct is not None:
+    if payload.model is not None or payload.voice is not None or payload.instruct is not None:
         settings = settings.model_copy(
             update={
                 k: v
                 for k, v in (
+                    ("tts_model", payload.model),
                     ("tts_voice", payload.voice),
                     ("tts_instruct", payload.instruct),
                 )
@@ -270,6 +286,8 @@ async def status_(session: AsyncSession = Depends(get_session)) -> StatusOut:
     if reachable and models and settings.tts_model not in models:
         detail = f"服务端未加载 {settings.tts_model}"
 
+    voices = await list_voices(settings, settings.tts_model) if reachable else []
+
     return StatusOut(
         mode=settings.tts_mode,
         stream=settings.tts_stream,
@@ -281,5 +299,14 @@ async def status_(session: AsyncSession = Depends(get_session)) -> StatusOut:
         max_chars=settings.tts_max_chars,
         reachable=reachable,
         models=models,
+        cached_models=list_cached_models(settings),
+        voices=voices,
         detail=detail,
     )
+
+
+@router.get("/voices", response_model=VoicesOut)
+async def voices_(model: str, session: AsyncSession = Depends(get_session)) -> VoicesOut:
+    """代理本地 TTS 的音色发现接口，供设置页切换模型时联动刷新。"""
+    settings = await resolve_settings(session)
+    return VoicesOut(model=model, voices=await list_voices(settings, model))

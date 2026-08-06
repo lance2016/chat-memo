@@ -11,8 +11,10 @@ import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/l
 import { Markdown } from "@/components/markdown";
 import { MemoryMark, notifyWorkspaceConversationsChanged, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
+import { resetMediaElement } from "@/lib/media-playback";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InputDialog } from "@/components/input-dialog";
+import { VoiceInputButton } from "@/components/voice-input-button";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -64,13 +66,14 @@ function greeting() {
   return "晚上好";
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, composerRef, onInput, onKeyDown, onSubmit, onOpenConversation }: {
+function HomeDashboard({ conversations, input, memoryCount, sending, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation }: {
   conversations: Conversation[];
   input: string;
   memoryCount: number | null;
   sending: boolean;
   composerRef: RefObject<HTMLTextAreaElement | null>;
   onInput: (value: string) => void;
+  onTranscription: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSubmit: (event: FormEvent) => void;
   onOpenConversation: (id: number) => void;
@@ -94,7 +97,7 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
 
       <form className="home-capture" onSubmit={onSubmit}>
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder="和我聊聊，或告诉我一件想记住的事……" disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button><span className="home-capture-hint">Enter 发送 · Shift + Enter 换行</span></div><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button><span className="home-capture-hint">Enter 发送 · Shift + Enter 换行</span></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
@@ -170,7 +173,7 @@ export function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const speechBusyRef = useRef(false);
+  const speechBusyGenerationRef = useRef<number | null>(null);
   const speechQueueRef = useRef<string[]>([]);
   const speechCursorRef = useRef(0);
   const speechPumpRef = useRef<Promise<void>>(Promise.resolve());
@@ -219,7 +222,7 @@ export function ChatPage() {
     speechFlushCompleteRef.current = false;
     speechQueueRef.current = [];
     if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
-    audioRef.current?.pause();
+    if (audioRef.current) resetMediaElement(audioRef.current);
     void stopSpeech().catch(() => undefined);
   }, []);
 
@@ -408,8 +411,7 @@ export function ChatPage() {
     }
     const audio = audioRef.current;
     if (audio) {
-      audio.pause();
-      audio.removeAttribute("src");
+      resetMediaElement(audio);
     }
     setTtsLoadingId(null);
     setTtsPlayingId(null);
@@ -437,6 +439,10 @@ export function ChatPage() {
       if (generation !== speechGenerationRef.current) return;
       setTtsPlayingId(speechAutoMessageIdRef.current);
     } catch (cause) {
+      // resetLocalSpeech deliberately interrupts a pending play(). That stale
+      // promise belongs to an invalidated playback and must not tear down or
+      // report an error for the newer playback that may already be starting.
+      if (generation !== speechGenerationRef.current) return;
       speechAudioPlayingRef.current = false;
       speechAutoActiveRef.current = false;
       speechQueueRef.current = [];
@@ -573,28 +579,33 @@ export function ChatPage() {
       setError(ttsDisabledReason);
       return;
     }
-    if (speechBusyRef.current) return;
+    if (speechBusyGenerationRef.current === speechGenerationRef.current) return;
 
-    speechBusyRef.current = true;
     resetLocalSpeech();
+    const generation = speechGenerationRef.current;
+    speechBusyGenerationRef.current = generation;
     setTtsLoadingId(messageId ?? null);
     setError("");
     try {
       await stopSpeech().catch(() => undefined);
+      if (generation !== speechGenerationRef.current) return;
       const prepared = await prepareSpeech({ text });
+      if (generation !== speechGenerationRef.current) return;
       audio.src = apiUrl(prepared.url);
       audio.currentTime = 0;
       audio.load();
       speechAudioPlayingRef.current = true;
       await audio.play();
+      if (generation !== speechGenerationRef.current) return;
       setTtsPlayingId(messageId ?? null);
     } catch (cause) {
+      if (generation !== speechGenerationRef.current) return;
       speechAudioPlayingRef.current = false;
       setTtsPlayingId(null);
       setError(cause instanceof DOMException && cause.name === "NotAllowedError" ? "浏览器阻止了自动播放，请点击消息旁的播放按钮" : errorMessage(cause, "语音播放失败"));
     } finally {
-      speechBusyRef.current = false;
-      setTtsLoadingId(null);
+      if (speechBusyGenerationRef.current === generation) speechBusyGenerationRef.current = null;
+      if (generation === speechGenerationRef.current) setTtsLoadingId(null);
     }
   };
 
@@ -666,6 +677,10 @@ export function ChatPage() {
     }
   };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
+  const appendTranscription = (text: string) => {
+    setInput((current) => current.trimEnd() ? `${current.trimEnd()}\n${text}` : text);
+    window.requestAnimationFrame(() => composerRef.current?.focus());
+  };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // 中文/日文等输入法选词阶段也会触发 Enter。此时必须交给 IME 完成
     // 合成，不能把尚未确认的拼音直接提交成一条消息。
@@ -704,7 +719,7 @@ export function ChatPage() {
   return (
     <div className="app-shell">
       <main className="main-panel">
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-title"><span>{showArchived ? "已归档对话" : "当前对话"}</span><strong>{selected?.title ?? "正在打开对话…"}</strong></div>
             {selected && <div className="chat-conversation-actions">
@@ -716,7 +731,7 @@ export function ChatPage() {
           <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
             {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>
-          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? "重发" : "发送"}</button>}</div></form></div>
+          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? "重发" : "发送"}</button>}</div></form></div>
         </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>

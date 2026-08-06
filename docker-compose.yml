@@ -19,7 +19,12 @@ services:
       retries: 10
 
   api:
-    build: .
+    build:
+      context: .
+      args:
+        # Docker 内直连 files.pythonhosted.org 经常 DNS 失败。只影响镜像构建，
+        # 不改变宿主机 uv 配置；需要官方源时在 .env 覆盖。
+        UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/}
     container_name: chat-api
     restart: unless-stopped
     depends_on:
@@ -31,8 +36,12 @@ services:
       # 环境变量优先级高于 .env 文件，所以这行一定生效。
       DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chat
       RELOAD: "1"
-      # 同理：TTS 服务跑在宿主机上，容器里的 127.0.0.1 是容器自己。
-      TTS_BASE_URL: ${TTS_BASE_URL:-http://host.docker.internal:8001}
+      # TTS_BASE_URL 是宿主机直跑后端时使用的 127.0.0.1 地址，不能直接复用：
+      # 容器里的 127.0.0.1 是容器自己。单独提供 Docker 覆盖项，避免 .env 中的
+      # TTS_BASE_URL 把 host.docker.internal 默认值意外覆盖掉。
+      TTS_BASE_URL: ${TTS_DOCKER_BASE_URL:-http://host.docker.internal:8001}
+      # 设置页读取宿主机已下载的 Hugging Face 模型，不写缓存。
+      TTS_MODEL_CACHE: /hf-cache
       # 容器默认 UTC，会让「今天」的判断和注入给模型的日期都差 8 小时，
       # 也会让 local_day_bounds 失效（每日整理按错误的窗口切天）。
       TZ: ${TZ:-Asia/Shanghai}
@@ -60,6 +69,7 @@ services:
       # Obsidian vault 只读挂载（写保护做在挂载层，不依赖 prompt 约束）。
       # 未设置 VAULT_PATH 时挂个空占位目录，此时容器内 VAULT_PATH 为空、功能整体关闭。
       - ${VAULT_PATH:-./.vault-placeholder}:/vault:ro
+      - ${HOME}/.cache/huggingface/hub:/hf-cache:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
       interval: 15s
@@ -94,6 +104,7 @@ services:
       - ./frontend/app:/app/app
       - ./frontend/components:/app/components
       - ./frontend/lib:/app/lib
+      - ./frontend/public:/app/public:ro
       - ./frontend/next.config.ts:/app/next.config.ts:ro
       - ./frontend/postcss.config.mjs:/app/postcss.config.mjs:ro
       - ./frontend/tsconfig.json:/app/tsconfig.json:ro

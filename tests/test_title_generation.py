@@ -55,7 +55,7 @@ def settings(**overrides: Any) -> Settings:
     """不读 `.env`。
 
     这些断言全都依赖「有没有配 key」，而 `Settings()` 默认会加载开发机上的
-    `.env` —— 一旦本地配了 `OPENROUTER_API_KEY`，测试就会改走真实网络请求，
+    `.env` —— 一旦本地配了 `ZHIPU_API_KEY`，测试就会改走真实网络请求，
     结果取决于谁的机器在跑。
     """
     return Settings(_env_file=None, **overrides)
@@ -73,21 +73,21 @@ async def make_conversation(session: AsyncSession) -> Conversation:
     return conversation
 
 
-# ---------- OpenRouter 这条路 ----------
+# ---------- 智谱这条路 ----------
 
 
 def test_title_client_only_when_key_configured() -> None:
     """没配 key 就不能启用 —— 否则会拿空 key 去打请求，每轮都失败。"""
-    assert get_title_client(settings(openrouter_api_key="")) is None
-    assert get_title_client(settings(openrouter_api_key="k", title_model="")) is None
-    assert get_title_client(settings(openrouter_api_key="k")) is not None
+    assert get_title_client(settings(zhipu_api_key="")) is None
+    assert get_title_client(settings(zhipu_api_key="k", title_model="")) is None
+    assert get_title_client(settings(zhipu_api_key="k")) is not None
 
 
-async def test_openrouter_title_disables_reasoning(
+async def test_zhipu_title_disables_reasoning(
     recorder: RecordingCompletions,
 ) -> None:
     client = TitleClient(
-        settings=settings(openrouter_api_key="k", title_model="vendor/small:free"),
+        settings=settings(zhipu_api_key="k", title_model="glm-4.7-flash"),
         client=FakeOpenAI(recorder),
     )
 
@@ -95,22 +95,23 @@ async def test_openrouter_title_disables_reasoning(
 
     assert title == "记住用 uv 管依赖"
     sent = recorder.calls[0]
-    assert sent["model"] == "vendor/small:free"
-    # 这是全部的重点：OpenRouter 的推理开关不是标准字段，得 extra_body 透传
-    assert sent["extra_body"] == {"reasoning": {"enabled": False}}
+    assert sent["model"] == "glm-4.7-flash"
+    # 这是全部的重点：智谱的推理开关不是标准字段，得 extra_body 透传，
+    # 而且 GLM 默认开着思考，不显式关掉标题就要白等
+    assert sent["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-async def test_service_prefers_openrouter_when_configured(
+async def test_service_prefers_zhipu_when_configured(
     session: AsyncSession, recorder: RecordingCompletions
 ) -> None:
     """注入了 title_client 时，标题不该再打到聊天 provider 上。"""
     config = settings(
-        anthropic_api_key="test", openrouter_api_key="k", title_model="vendor/small:free"
+        anthropic_api_key="test", zhipu_api_key="k", title_model="glm-4.7-flash"
     )
 
     class RefusingProvider:
         async def complete(self, **_kwargs: Any) -> str:
-            raise AssertionError("配了 OpenRouter 就不该走聊天 provider")
+            raise AssertionError("配了智谱就不该走聊天 provider")
 
     service = ChatService(
         session,
@@ -129,8 +130,8 @@ async def test_service_prefers_openrouter_when_configured(
 async def test_fallback_title_disables_thinking(
     session: AsyncSession, recorder: RecordingCompletions
 ) -> None:
-    """没配 OpenRouter 时退回聊天 provider，但仍然必须关掉思考。"""
-    config = settings(deepseek_api_key="test", openrouter_api_key="")
+    """没配智谱时退回聊天 provider，但仍然必须关掉思考。"""
+    config = settings(deepseek_api_key="test", zhipu_api_key="")
     provider = DeepSeekProvider(settings=config, client=FakeOpenAI(recorder))
     service = ChatService(session, provider=provider, settings=config)
 

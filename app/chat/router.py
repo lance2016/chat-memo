@@ -424,7 +424,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 provider=get_provider(settings),
                 executor=executor,
                 settings=settings,
-                # 配了 OPENROUTER_API_KEY 才有；没配则为 None，标题退回聊天 provider
+                # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
                 title_client=get_title_client(settings),
             )
             system = await build_system_prompt(store, settings)

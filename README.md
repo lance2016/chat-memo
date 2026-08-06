@@ -117,8 +117,10 @@ L2 逻辑上是 `/memories` 下的一棵文件树，物理上是 Postgres 的行
   timeline/2026-08.md
 ```
 
-**渐进式披露**：system prompt 里只放索引（几百 token，命中 prompt cache），
-模型需要细节时用 `view` 读具体文件。所以上下文成本恒定，记忆总量可以一直长。
+**渐进式披露**：system prompt 里只放索引（命中 prompt cache），模型需要细节时用
+`view` 读具体文件。记忆正文可以持续增长；常驻上下文只随一行一条的索引摘要缓慢增长。
+索引被包在明确的“背景数据”边界内，不参与行为指令优先级；当前请求、用户持久偏好、
+长期记忆和默认工作方式的冲突顺序由固定核心提示词统一约束。
 
 为什么不用 embedding 做主检索：个人记忆条目就几百到几千条，全量注入索引比向量召回准得多；
 而且记忆需要去重和修正（「我换工作了」要覆盖旧记录），这是写操作，让模型直接改文件才对。
@@ -248,6 +250,7 @@ POST   /api/tts/next      {"text": ..., "cursor": 0}      句级流水线：切�
 POST   /api/tts/stop                                      丢掉队列里还没播的句子
 POST   /api/tts/warmup                                    把模型权重加载进 MLX（启动时自动做）
 GET    /api/tts/status                                    语音配置 + 实时探活本地 TTS 服务
+POST   /api/asr/transcriptions                            上传录音并用本地 ASR 模型转成文字
 GET    /api/debug/prompt                                  当前 system prompt 原文
 GET    /api/debug/requests[?conversation_id=]             最近发给模型的请求，摘要
 GET    /api/debug/requests/{id}                           某一次的完整 payload
@@ -497,8 +500,9 @@ curl localhost:18000/api/debug/prompt             # 当前 system prompt 原文�
 - **中断的对话要修复再用**。tool_use 没有配对的 tool_result 会让会话之后每条消息都 400，
   `sanitize_history` 在加载历史时补齐。点停止/关标签页/热重载都会触发。
 - **容器里连不上宿主机的 TTS 服务**。容器内的 `127.0.0.1` 是容器自己，要走
-  `host.docker.internal:8001`。compose 已经覆盖成它了（Linux 上还要 `extra_hosts`
-  映射到 `host-gateway`），不用 Docker 直接跑后端时才是 `.env` 里那个 `127.0.0.1`。
+  `host.docker.internal:8001`。Compose 使用独立的 `TTS_DOCKER_BASE_URL` 覆盖它
+  （Linux 上还要 `extra_hosts` 映射到 `host-gateway`）；不用 Docker 直接跑后端时
+  才使用 `TTS_BASE_URL=http://127.0.0.1:8001`。
 - **TTS 合成必须串行**。MLX 后端一次只加载一份模型权重，并发请求只会互相拖慢并放大
   显存峰值。`app/tts/client.py` 里用一把进程内的锁排队。
 - **当前时间不能进 system prompt**（破坏缓存），走 `build_runtime_context` 注入到 user 侧。

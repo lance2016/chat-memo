@@ -54,12 +54,23 @@ async def test_instructions_go_last(store: MemoryStore) -> None:
     settings = Settings(custom_instructions="用英文回答")
     prompt = await build_system_prompt(store, settings)
 
-    assert prompt.index("用英文回答") > prompt.index("索引当前内容")
+    assert prompt.index("用英文回答") > prompt.index("</memory_index>")
+
+
+async def test_current_request_outranks_persistent_context(
+    store: MemoryStore,
+) -> None:
+    """长期偏好和记忆不能压过用户在当前消息里的明确要求。"""
+    prompt = await build_system_prompt(store, Settings())
+    assert "当前消息中的明确要求优先于长期偏好" in prompt
+    assert "长期记忆只提供背景事实" in prompt
 
 
 async def test_instructions_declared_as_overriding(store: MemoryStore) -> None:
     """必须明说优先级高于默认人格，否则和上面的「都用中文回答」冲突时行为随机。"""
-    prompt = await build_system_prompt(store, Settings(custom_instructions="用英文回答"))
+    prompt = await build_system_prompt(
+        store, Settings(custom_instructions="用英文回答")
+    )
     assert "优先级高于上面的所有默认设定" in prompt
 
 

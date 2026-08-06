@@ -25,8 +25,9 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-# 见模块 docstring：同一时刻只允许一次合成。
-_lock = asyncio.Lock()
+# TTS 和 ASR 共用同一个 MLX 服务。同一时刻只允许一次模型推理，避免加载两份
+# 权重时互相拖慢并放大统一内存峰值。ASR 客户端也会导入这把锁。
+audio_lock = asyncio.Lock()
 
 MEDIA_TYPES = {
     "mp3": "audio/mpeg",
@@ -136,7 +137,7 @@ class SpeechStream:
         self._closed = True
         await self.response.aclose()
         await self.client.aclose()
-        _lock.release()
+        audio_lock.release()
 
 
 async def open_stream(settings: Settings, text: str) -> SpeechStream:
@@ -150,7 +151,7 @@ async def open_stream(settings: Settings, text: str) -> SpeechStream:
         raise TTSError("没有可朗读的内容")
 
     url = settings.tts_base_url.rstrip("/") + "/v1/audio/speech"
-    await _lock.acquire()
+    await audio_lock.acquire()
     logger.info(
         "🔊 合成语音 %d 字 → %s%s",
         len(text),
@@ -164,19 +165,19 @@ async def open_stream(settings: Settings, text: str) -> SpeechStream:
         response = await client.send(request, stream=True)
     except httpx.HTTPError as exc:
         await client.aclose()
-        _lock.release()
+        audio_lock.release()
         logger.warning("语音服务不可用 %s: %s", url, exc)
         raise TTSError(f"连不上语音服务 {settings.tts_base_url}：{exc}") from exc
     except BaseException:
         await client.aclose()
-        _lock.release()
+        audio_lock.release()
         raise
 
     if response.status_code >= 400:
         detail = (await response.aread()).decode(errors="replace")[:300]
         await response.aclose()
         await client.aclose()
-        _lock.release()
+        audio_lock.release()
         logger.warning("语音服务返回 %s: %s", response.status_code, detail)
         raise TTSError(f"语音服务返回 {response.status_code}：{detail}")
 
@@ -233,3 +234,40 @@ async def list_models(settings: Settings) -> list[str]:
         raise TTSError(f"连不上语音服务 {settings.tts_base_url}：{exc}") from exc
 
     return [m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m]
+
+
+# CustomVoice speakers are stored in the model itself rather than as files in a
+# ``voices/`` directory, so mlx-audio's discovery endpoint returns an empty list
+# for these models. Keep this small fallback beside the service discovery code;
+# other model families continue to use the server-provided catalog.
+QWEN3_CUSTOM_VOICES = (
+    "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric",
+    "Ryan", "Aiden", "Ono_Anna", "Sohee",
+)
+
+
+async def list_voices(settings: Settings, model: str) -> list[str]:
+    """Return the voices compatible with ``model``.
+
+    mlx-audio 0.4.4+ exposes ``/v1/audio/voices``. Older installations return
+    404, and Qwen3 CustomVoice has embedded speakers that the endpoint cannot
+    enumerate, so both cases deliberately fall back without making TTS offline.
+    """
+    fallback = list(QWEN3_CUSTOM_VOICES) if "qwen3-tts" in model.lower() and "customvoice" in model.lower() else []
+    url = settings.tts_base_url.rstrip("/") + "/v1/audio/voices"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(url, params={"model": model})
+            if resp.status_code == 404:
+                return fallback
+            resp.raise_for_status()
+            data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return fallback
+
+    voices = [
+        str(item.get("id") or item.get("name"))
+        for item in data.get("data", [])
+        if isinstance(item, dict) and (item.get("id") or item.get("name"))
+    ]
+    return list(dict.fromkeys(voices)) or fallback

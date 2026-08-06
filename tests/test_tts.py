@@ -14,7 +14,8 @@ from app.config import Settings
 from app.db.session import get_session
 from app.main import create_app
 from app.settings_store import apply
-from app.tts.client import TTSError, plain_text, synthesize
+from app.tts.cache import list_cached_models
+from app.tts.client import TTSError, list_voices, plain_text, synthesize
 
 
 @pytest.fixture
@@ -28,6 +29,22 @@ async def client(session: AsyncSession) -> AsyncIterator[AsyncClient]:
 
 def tts_settings(**kw) -> Settings:
     return Settings(tts_mode="manual", **kw)
+
+
+def test_cached_tts_models_are_discovered_with_sizes(tmp_path) -> None:
+    repo = tmp_path / "models--mlx-community--Qwen3-TTS-CustomVoice-bf16"
+    (repo / "snapshots" / "revision").mkdir(parents=True)
+    (repo / "blobs").mkdir()
+    (repo / "blobs" / "weights").write_bytes(b"12345")
+    unrelated = tmp_path / "models--example--text-embedding-model"
+    (unrelated / "snapshots" / "revision").mkdir(parents=True)
+
+    assert list_cached_models(tts_settings(tts_model_cache=str(tmp_path))) == [
+        {
+            "id": "mlx-community/Qwen3-TTS-CustomVoice-bf16",
+            "size_bytes": 5,
+        }
+    ]
 
 
 @pytest.fixture
@@ -109,6 +126,49 @@ async def test_empty_voice_and_instruct_omitted(capture: dict) -> None:
     assert "voice" not in capture["json"] and "instruct" not in capture["json"]
 
 
+async def test_qwen_custom_voice_catalog_falls_back_for_old_server(monkeypatch) -> None:
+    """CustomVoice 的 speaker 内嵌在模型里，旧版服务也应能提供下拉选项。"""
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.tts.client.httpx.AsyncClient",
+        lambda **kw: real(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(404, json={"detail": "Not Found"})
+            ),
+            **kw,
+        ),
+    )
+    voices = await list_voices(
+        tts_settings(),
+        "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+    )
+    assert voices[:3] == ["Vivian", "Serena", "Uncle_Fu"]
+    assert "Sohee" in voices
+
+
+async def test_voice_catalog_uses_server_discovery(monkeypatch) -> None:
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.tts.client.httpx.AsyncClient",
+        lambda **kw: real(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "object": "list",
+                        "data": [{"id": "af_heart"}, {"name": "am_adam"}],
+                    },
+                )
+            ),
+            **kw,
+        ),
+    )
+    assert await list_voices(tts_settings(), "mlx-community/Kokoro-82M-bf16") == [
+        "af_heart",
+        "am_adam",
+    ]
+
+
 async def test_blank_text_rejected() -> None:
     with pytest.raises(TTSError):
         await synthesize(tts_settings(), "   ")
@@ -172,8 +232,10 @@ async def test_preview_overrides_do_not_persist(
     await session.commit()
 
     await client.post(
-        "/api/tts/speech", json={"text": "你好", "voice": "Ethan"}
+        "/api/tts/speech",
+        json={"text": "你好", "model": "preview-model", "voice": "Ethan"},
     )
+    assert capture["json"]["model"] == "preview-model"
     assert capture["json"]["voice"] == "Ethan"
 
     await client.post("/api/tts/speech", json={"text": "你好"})

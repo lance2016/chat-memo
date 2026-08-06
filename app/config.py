@@ -45,14 +45,14 @@ class Settings(BaseSettings):
     # 日常聊天照旧走 deepseek_model。留空表示和聊天用同一个。
     consolidate_model: str = ""
 
-    # ---- 标题生成（可选，走 OpenRouter）----
+    # ---- 标题生成（可选，走智谱）----
     # 标题就是「一句话概括用户想干什么」，要的是快，不是推理。聊天模型在这件事上
     # 太贵也太慢（实测为一个 16 字标题烧掉 127~542 个思考 token、2.4~21.5 秒，
-    # 而标题质量并没有更好），所以单独走一条便宜的路。
+    # 而标题质量并没有更好），所以单独走一条便宜的路：智谱的免费 Flash 档。
     # 配了 key 才启用；留空则退回聊天 provider，同样关掉思考。
-    openrouter_api_key: str = ""
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    title_model: str = "google/gemma-4-31b-it:free"
+    zhipu_api_key: str = ""
+    zhipu_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    title_model: str = "glm-4.7-flash"
 
     # 自动每日整理默认关闭：进程一重启计时器就从头开始，笔记本凌晨多半是睡眠状态，
     # 这个定时器很容易整天不触发。手动 POST /api/jobs/consolidate 更可靠。
@@ -61,6 +61,12 @@ class Settings(BaseSettings):
 
     # agent loop 单次请求内允许的最大工具轮次，防止失控循环。
     max_tool_iterations: int = 12
+
+    # 每轮发给模型的历史字符预算，超出就从最老的一端丢整轮（见 chat/service.trim_history）。
+    # 没有这个上限的话，长会话会一直线性膨胀，最终撞上下文窗口 —— 那之后该会话
+    # **每一条消息都 400**，等于永久损坏，和 sanitize_history 防的是同一类事故。
+    # 12 万字符对中文约合 8～10 万 token，给 128k 窗口留足了 system prompt 和输出的余量。
+    history_max_chars: int = 120_000
 
     # 记录每次发给模型的完整请求体，供 /api/debug/requests 查、日志里打轮廓。
     # 默认关：开着会把完整对话历史留在进程内存里。
@@ -73,6 +79,9 @@ class Settings(BaseSettings):
     # ---- 文字转语音（本地 mlx-audio，OpenAI 兼容接口）----
     # 地址算基础设施，只能改 .env。容器里要用 host.docker.internal 才能回到宿主机。
     tts_base_url: str = "http://127.0.0.1:8001"
+    # Hugging Face hub 缓存目录。Compose 会把宿主机缓存只读挂载到这里。
+    # 留空时直跑后端会自动使用 ~/.cache/huggingface/hub。
+    tts_model_cache: str = ""
     # off = 只出文字 | manual = 消息旁给播放按钮 | auto = 回答完自动朗读
     tts_mode: str = "off"
     tts_model: str = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"
@@ -91,6 +100,16 @@ class Settings(BaseSettings):
     # 启动后台合成一个字，把权重加载进 MLX。不预热的话这十几秒会算在
     # 用户第一次点播放的头上。服务没起来时静默跳过，不影响启动。
     tts_warmup: bool = True
+
+    # ---- 语音转文字（复用同一个 mlx-audio 服务）----
+    asr_model: str = "mlx-community/Qwen3-ASR-1.7B-8bit"
+    # 明确语言可跳过自动语言判断；需要混合语言时可在设置页切回 Auto。
+    asr_language: str = "Chinese"
+    # 浏览器语音输入通常很短。限制生成长度可避免静音/噪声导致的异常长推理。
+    asr_max_tokens: int = 512
+    # 浏览器录音先完整上传再转写。限制请求体，避免异常客户端撑爆 API 内存。
+    asr_max_bytes: int = 25 * 1024 * 1024
+    asr_timeout: int = 180
 
 
 @lru_cache

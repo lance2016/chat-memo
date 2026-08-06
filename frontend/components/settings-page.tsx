@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
-import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
-import type { BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
+import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 
@@ -16,7 +16,7 @@ const settingsSections: Array<{ key: SettingsSectionKey; label: string; descript
   { key: "assistant", label: "助手人格", description: "称呼与固定指令", icon: Sparkles },
   { key: "model", label: "模型与回答", description: "模型、思考与工具", icon: Activity },
   { key: "review", label: "记忆与回顾", description: "每日整理策略", icon: Clock3 },
-  { key: "voice", label: "语音", description: "朗读与音色", icon: Headphones },
+  { key: "voice", label: "语音", description: "语音输入与朗读", icon: Headphones },
   { key: "advanced", label: "高级与调试", description: "请求记录与 Prompt", icon: Bug },
   { key: "system", label: "系统与数据", description: "连接、备份与环境", icon: HardDriveDownload },
 ];
@@ -35,12 +35,12 @@ const fieldHelp: Record<string, string> = {
   deepseek_thinking: "新会话默认是否启用深度思考",
   max_tool_iterations: "限制模型连续调用记忆工具的轮次",
   consolidate_model: "留空时沿用日常聊天模型",
-  title_model: "生成会话标题的小模型，需在 .env 配置 OPENROUTER_API_KEY 才生效",
+  title_model: "生成会话标题的小模型，需在 .env 配置 ZHIPU_API_KEY 才生效",
   consolidate_auto: "按固定时间自动整理当天对话",
   consolidate_hour: "使用后端所在时区的整点时间",
   tts_mode: "关闭、手动播放或回答完成后自动播放",
-  tts_model: "本地语音服务加载的模型",
-  tts_voice: "语音合成使用的说话人",
+  tts_model: "选择本地语音服务已加载或当前配置的模型",
+  tts_voice: "可选音色会随语音模型自动更新",
   tts_lang_code: "语音合成的主要语言",
   tts_instruct: "控制语气、情绪与表达节奏",
   tts_format: "浏览器接收的音频编码格式",
@@ -49,8 +49,41 @@ const fieldHelp: Record<string, string> = {
   tts_max_chars: "超过长度时只朗读前面的内容",
   tts_timeout: "语音服务单次请求最长等待时间",
   tts_warmup: "后端启动时预先加载语音模型，缩短首次播放等待",
+  asr_model: "选择本地缓存的语音识别模型；0.6B 更快，1.7B 通常更准确",
+  asr_language: "固定语言可省去自动判断；中英混说时选择自动检测",
+  asr_max_tokens: "短语音建议保持 512，降低静音或噪声导致的异常长识别",
   debug_prompts: "临时保存最近请求，可能包含完整对话原文",
 };
+
+const voiceLabels: Record<string, string> = {
+  Vivian: "明亮灵动女声 · 中文",
+  Serena: "温柔年轻女声 · 中文",
+  Uncle_Fu: "低沉醇厚男声 · 中文",
+  Dylan: "清晰自然男声 · 北京话",
+  Eric: "明快微沙男声 · 四川话",
+  Ryan: "节奏感男声 · 英文",
+  Aiden: "阳光清晰男声 · 英文",
+  Ono_Anna: "轻快俏皮女声 · 日文",
+  Sohee: "温暖细腻女声 · 韩文",
+};
+
+const settingChoiceLabels: Record<string, string> = {
+  off: "关闭语音",
+  manual: "手动播放",
+  auto: "回答后自动播放",
+  mp3: "MP3 · 兼容性最佳",
+  wav: "WAV · 无损",
+  flac: "FLAC · 无损压缩",
+  opus: "Opus · 体积更小",
+  Chinese: "中文 · 更快更稳定",
+  English: "英文 · 更快更稳定",
+  Auto: "自动检测 · 适合多语言",
+};
+
+function formatModelSize(bytes: number) {
+  if (bytes <= 0) return "已缓存";
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
 
 function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (checked: boolean) => void; label: string; description: string }) {
   return <label className="settings-toggle-row"><span className="settings-toggle-copy"><strong>{label}</strong><span>{description}</span></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span className="toggle-track" aria-hidden="true"><span /></span></label>;
@@ -60,25 +93,32 @@ function SettingValue({ label, value, tone = "" }: { label: string; value: strin
   return <div className="settings-value"><span>{label}</span><strong className={tone}>{value}</strong></div>;
 }
 
-function RuntimeField({ field, value, source, providers, ttsStatus, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
+function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
   const stringValue = value === null || value === undefined ? "" : String(value);
   const providerChoices = field.key === "provider" ? providers : [];
-  const modelChoices = field.key === "tts_model" && ttsStatus?.models.length ? Array.from(new Set([stringValue, ...ttsStatus.models].filter(Boolean))) : [];
-  const choices = field.key === "provider" ? providerChoices.map((item) => item.value) : modelChoices.length ? modelChoices : field.choices;
+  const isTtsModel = field.key === "tts_model";
+  const isTtsVoice = field.key === "tts_voice";
+  const isAsrModel = field.key === "asr_model";
+  const modelChoices = isTtsModel ? Array.from(new Set([stringValue, ttsStatus?.model, ...(ttsStatus?.cached_models ?? []).map((item) => item.id), ...(ttsStatus?.models ?? [])].filter((item): item is string => Boolean(item)))) : [];
+  const voiceChoices = isTtsVoice ? Array.from(new Set([stringValue, ...ttsVoices].filter(Boolean))) : [];
+  const asrModelChoices = isAsrModel ? Array.from(new Set([stringValue, asrStatus?.model, ...(asrStatus?.cached_models ?? []).map((item) => item.id), ...(asrStatus?.models ?? []).filter((item) => /asr|whisper|parakeet|voxtral/i.test(item))].filter((item): item is string => Boolean(item)))) : [];
+  const choices = field.key === "provider" ? providerChoices.map((item) => item.value) : isTtsModel ? modelChoices : isTtsVoice ? voiceChoices : isAsrModel ? asrModelChoices : field.choices;
   const providerReason = field.key === "provider" ? providerChoices.find((item) => item.value === stringValue)?.reason : "";
   const multiline = field.kind === "text" || field.key === "tts_instruct";
 
-  const controlDisabled = disabled || pendingReset;
+  const controlDisabled = disabled || pendingReset || (isTtsVoice && ttsVoicesLoading);
 
   return <div className={`runtime-setting-row ${pendingReset ? "pending-reset" : ""}`}>
     <div className="runtime-setting-label"><strong>{field.label}</strong><span>{fieldHelp[field.key] ?? (field.provider ? `仅用于 ${field.provider}` : "保存后立即生效")}</span></div>
     <div className={`runtime-setting-control ${multiline ? "multiline" : ""}`}>
       {field.kind === "bool" && <label className="runtime-checkbox"><input type="checkbox" checked={value === true} disabled={controlDisabled} onChange={(event) => onChange(event.target.checked)} /><span>{value === true ? "开启" : "关闭"}</span></label>}
-      {field.kind === "enum" && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{choices.map((choice) => { const option = providerChoices.find((item) => item.value === choice); return <option key={choice} value={choice} disabled={option ? !option.available : false}>{choice}{option && !option.available ? "（不可用）" : ""}</option>; })}</select>}
-      {field.kind === "int" && <input className="runtime-input" type="number" value={stringValue} min={field.minimum ?? undefined} max={field.maximum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))} />}
+      {field.kind === "enum" && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{choices.map((choice) => { const option = providerChoices.find((item) => item.value === choice); return <option key={choice} value={choice} disabled={option ? !option.available : false}>{settingChoiceLabels[choice] ?? choice}{option && !option.available ? "（不可用）" : ""}</option>; })}</select>}
+      {field.kind === "int" && field.key !== "tts_speed_percent" && <input className="runtime-input" type="number" value={stringValue} min={field.minimum ?? undefined} max={field.maximum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))} />}
+      {field.kind === "int" && field.key === "tts_speed_percent" && <div className="tts-speed-control"><input type="range" value={stringValue} min={field.minimum ?? 50} max={field.maximum ?? 200} step={5} disabled={controlDisabled} onChange={(event) => onChange(Number(event.target.value))} /><output>{stringValue}%</output></div>}
       {multiline && <textarea className={`runtime-textarea ${field.key === "custom_instructions" ? "runtime-textarea-tall" : ""}`} value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} placeholder={field.key === "custom_instructions" ? "例如：回答控制在三句话以内，代码优先给 diff。" : "例如：用温柔、自然、亲切的语气说话"} />}
-      {field.kind === "str" && field.key !== "tts_instruct" && modelChoices.length === 0 && <input className="runtime-input runtime-input-wide" type="text" value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} />}
-      {field.kind === "str" && modelChoices.length > 0 && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}</select>}
+      {field.kind === "str" && field.key !== "tts_instruct" && !isTtsModel && !isTtsVoice && !isAsrModel && <input className="runtime-input runtime-input-wide" type="text" value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} />}
+      {field.kind === "str" && (isTtsModel || isTtsVoice || isAsrModel) && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{isTtsVoice && !stringValue && <option value="">默认音色</option>}{choices.map((choice) => { const cached = isAsrModel ? asrStatus?.cached_models?.find((item) => item.id === choice) : ttsStatus?.cached_models?.find((item) => item.id === choice); const loaded = isAsrModel ? asrStatus?.models.includes(choice) : ttsStatus?.models.includes(choice); const modelSuffix = isTtsModel || isAsrModel ? [cached ? `已缓存 ${formatModelSize(cached.size_bytes)}` : "", loaded ? "已加载" : ""].filter(Boolean).join(" · ") : ""; return <option key={choice} value={choice}>{isTtsVoice && voiceLabels[choice] ? `${choice} · ${voiceLabels[choice]}` : `${choice}${modelSuffix ? ` · ${modelSuffix}` : ""}`}</option>; })}</select>}
+      {isTtsVoice && ttsVoicesLoading && <span className="runtime-inline-status"><RefreshCw size={11} className="spin" />读取音色</span>}
       <span className={`runtime-source ${source === "db" ? "modified" : ""} ${pendingReset ? "pending" : ""}`}>{pendingReset ? "待恢复默认" : source === "db" ? "已覆盖默认" : "环境默认"}</span>
       {source === "db" && <button className="icon-button runtime-restore" type="button" aria-label={pendingReset ? `取消恢复${field.label}` : `恢复${field.label}默认值`} title={pendingReset ? "取消恢复" : "恢复环境默认"} disabled={disabled} onClick={onRestore}><RotateCcw size={12} /></button>}
     </div>
@@ -141,6 +181,12 @@ export function SettingsPage() {
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [ttsStatusLoading, setTtsStatusLoading] = useState(false);
   const [ttsStatusError, setTtsStatusError] = useState("");
+  const [asrStatus, setAsrStatus] = useState<AsrStatus | null>(null);
+  const [asrStatusLoading, setAsrStatusLoading] = useState(false);
+  const [asrStatusError, setAsrStatusError] = useState("");
+  const [ttsVoices, setTtsVoices] = useState<string[]>([]);
+  const [ttsVoicesLoading, setTtsVoicesLoading] = useState(false);
+  const ttsVoiceRequestRef = useRef(0);
   const [ttsPreviewLoading, setTtsPreviewLoading] = useState(false);
   const [ttsPreviewMessage, setTtsPreviewMessage] = useState("");
   const previewAudioRef = useRef<HTMLAudioElement>(null);
@@ -180,12 +226,25 @@ export function SettingsPage() {
       const becameOnline = ttsReachableRef.current === false && status.reachable;
       ttsReachableRef.current = status.reachable;
       setTtsStatus(status);
+      setTtsVoices(status.voices ?? []);
       if (becameOnline) void warmupSpeech().catch(() => undefined);
     } catch (cause) {
       ttsReachableRef.current = false;
       setTtsStatusError(errorMessage(cause, "无法读取语音服务状态"));
     } finally {
       setTtsStatusLoading(false);
+    }
+  }, []);
+
+  const refreshAsrStatus = useCallback(async () => {
+    setAsrStatusLoading(true);
+    setAsrStatusError("");
+    try {
+      setAsrStatus(await getAsrStatus());
+    } catch (cause) {
+      setAsrStatusError(errorMessage(cause, "无法读取语音识别状态"));
+    } finally {
+      setAsrStatusLoading(false);
     }
   }, []);
 
@@ -205,13 +264,14 @@ export function SettingsPage() {
     setPreferences(readPreferences());
     void loadRuntime();
     void refreshTtsStatus();
+    void refreshAsrStatus();
     const handlePreferenceChange = (event: Event) => {
       const detail = (event as CustomEvent<UserPreferences>).detail;
       if (detail) setPreferences(detail);
     };
     window.addEventListener(preferencesChangeEvent(), handlePreferenceChange);
     return () => window.removeEventListener(preferencesChangeEvent(), handlePreferenceChange);
-  }, [loadRuntime, refreshTtsStatus]);
+  }, [loadRuntime, refreshAsrStatus, refreshTtsStatus]);
 
   useEffect(() => () => {
     previewAudioRef.current?.pause();
@@ -231,6 +291,9 @@ export function SettingsPage() {
   const reviewFields = useMemo(() => ungroupedFields.filter((field) => reviewFieldKeys.has(field.key)), [ungroupedFields]);
   const promptFields = useMemo(() => activeFields.filter((field) => field.group === "prompt"), [activeFields]);
   const ttsFields = useMemo(() => activeFields.filter((field) => field.group === "tts"), [activeFields]);
+  const asrFields = useMemo(() => activeFields.filter((field) => field.group === "asr"), [activeFields]);
+  const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => ["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"].includes(field.key)), [ttsFields]);
+  const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"].includes(field.key)), [ttsFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
   const changedKeys = useMemo(() => Array.from(new Set([
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
@@ -248,6 +311,12 @@ export function SettingsPage() {
   const thinkingDefault = runtime ? runtime.thinking_default ? "开启" : "关闭" : "—";
   const ttsMode = draftValues.tts_mode === "manual" || draftValues.tts_mode === "auto" ? draftValues.tts_mode : "off";
   const ttsPresentation = ttsStatusPresentation(ttsStatus, ttsStatusLoading);
+  const selectedTtsModel = typeof draftValues.tts_model === "string" ? draftValues.tts_model : ttsStatus?.model ?? "";
+  const selectedCachedModel = ttsStatus?.cached_models?.find((item) => item.id === selectedTtsModel);
+  const selectedModelLoaded = ttsStatus?.models.includes(selectedTtsModel) ?? false;
+  const selectedAsrModel = typeof draftValues.asr_model === "string" ? draftValues.asr_model : asrStatus?.model ?? "";
+  const selectedCachedAsrModel = asrStatus?.cached_models.find((item) => item.id === selectedAsrModel);
+  const selectedAsrModelLoaded = asrStatus?.models.includes(selectedAsrModel) ?? false;
 
   useEffect(() => {
     if (debugFields.length > 0) void refreshDebugRequests();
@@ -265,6 +334,7 @@ export function SettingsPage() {
       setDraftValues(updated.values ?? {});
       setPendingResets(new Set());
       void refreshTtsStatus();
+      void refreshAsrStatus();
       if (debugFields.length > 0) void refreshDebugRequests();
       setRuntimeMessage("设置已保存，已立即生效");
     } catch (cause) {
@@ -283,6 +353,30 @@ export function SettingsPage() {
       return next;
     });
     setDraftValues((current) => ({ ...current, [field.key]: value }));
+  };
+
+  const changeTtsField = (field: RuntimeSettingField, value: unknown) => {
+    changeRuntimeField(field, value);
+    if (field.key !== "tts_model" || typeof value !== "string" || !value) return;
+
+    const requestId = ++ttsVoiceRequestRef.current;
+    setTtsVoicesLoading(true);
+    setTtsPreviewMessage("");
+    void getTtsVoices(value).then((result) => {
+      if (ttsVoiceRequestRef.current !== requestId) return;
+      setTtsVoices(result.voices);
+      setDraftValues((current) => {
+        const currentVoice = typeof current.tts_voice === "string" ? current.tts_voice : "";
+        if (!result.voices.length || result.voices.includes(currentVoice)) return current;
+        return { ...current, tts_voice: result.voices[0] };
+      });
+    }).catch((cause) => {
+      if (ttsVoiceRequestRef.current !== requestId) return;
+      setTtsVoices([]);
+      setTtsPreviewMessage(errorMessage(cause, "无法读取该模型的音色"));
+    }).finally(() => {
+      if (ttsVoiceRequestRef.current === requestId) setTtsVoicesLoading(false);
+    });
   };
 
   const toggleRuntimeReset = (field: RuntimeSettingField) => {
@@ -334,6 +428,7 @@ export function SettingsPage() {
     try {
       const blob = await synthesizeSpeech({
         text: "你好，这是语音试听。",
+        model: typeof draftValues.tts_model === "string" && draftValues.tts_model ? draftValues.tts_model : undefined,
         voice: typeof draftValues.tts_voice === "string" && draftValues.tts_voice ? draftValues.tts_voice : undefined,
         instruct: typeof draftValues.tts_instruct === "string" && draftValues.tts_instruct ? draftValues.tts_instruct : undefined,
       });
@@ -416,9 +511,12 @@ export function SettingsPage() {
       source={runtime?.sources?.[field.key]}
       providers={runtime?.providers ?? []}
       ttsStatus={ttsStatus}
+      asrStatus={asrStatus}
+      ttsVoices={ttsVoices}
+      ttsVoicesLoading={ttsVoicesLoading}
       disabled={saving}
       pendingReset={pendingResets.has(field.key)}
-      onChange={(value) => changeRuntimeField(field, value)}
+      onChange={(value) => changeTtsField(field, value)}
       onRestore={() => toggleRuntimeReset(field)}
     />)}
   </div>;
@@ -452,7 +550,9 @@ export function SettingsPage() {
 
           {activeSection === "review" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>设置每日整理的触发方式、时间和专用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>打开每日回顾<ChevronRight size={13} /></Link></div><div className="settings-summary-strip"><div><span>整理方式</span><strong>{consolidationMode}</strong></div><div><span>整理时间</span><strong>{consolidationSchedule}</strong></div><div><span>整理模型</span><strong>{consolidationModel}</strong></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? renderRuntimeFields(reviewFields) : <div className="settings-empty">当前后端没有提供整理配置。</div>}<div className="settings-card-callout"><Clock3 size={14} /><span>自动整理关闭时仍可在每日回顾页手动触发，不会影响历史摘要和记忆版本。</span></div></section>}
 
-          {activeSection === "voice" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>配置朗读模式、声音、语速和合成限制。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div><button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || ttsMode === "off" || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? renderRuntimeFields(ttsFields) : <div className="settings-empty">当前后端没有提供语音配置。</div>}{(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}<audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} /></section>}
+          {activeSection === "voice" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>选择本地模型及其匹配音色，并调整表达风格。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div><button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || ttsMode === "off" || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听当前设置"}</button></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? <><div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div><div className="tts-settings-group"><div className="tts-settings-group-heading"><strong>声音与表达</strong><span>切换模型后，音色列表会自动匹配</span></div>{renderRuntimeFields(ttsPrimaryFields)}</div>{ttsAdvancedFields.length > 0 && <details className="tts-advanced-settings"><summary><span><strong>合成与播放选项</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(ttsAdvancedFields)}</details>}</> : <div className="settings-empty">当前后端没有提供语音配置。</div>}{(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}<audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} /></section>}
+
+          {activeSection === "voice" && <section className="settings-card settings-panel-card asr-settings-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE INPUT</span><h2>语音输入与识别</h2><p>模型、语言提示和输出上限保存后会在下一次录音时生效。</p></div><div className={`tts-status-badge ${asrStatusLoading ? "unknown" : !asrStatus?.reachable ? "offline" : asrStatus.loaded ? "online" : "warning"}`}><span className="tts-status-dot" />{asrStatusLoading ? "正在检查" : !asrStatus?.reachable ? "服务离线" : asrStatus.loaded ? "模型已加载" : "首次使用时加载"}</div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <><div className="tts-model-overview"><div><span>识别模型缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div><div className="tts-settings-group"><div className="tts-settings-group-heading"><strong>识别性能</strong><span>固定语言和较小模型可缩短等待</span></div>{renderRuntimeFields(asrFields)}</div><div className="settings-card-callout"><Activity size={14} /><span>追求速度可下载并选择 Qwen3-ASR-0.6B-8bit；当前 1.7B 模型通常有更好的识别质量。</span></div></> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}{(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}</section>}
 
           {activeSection === "advanced" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ADVANCED</span><h2>高级与调试</h2><p>仅在排查模型请求时开启。请求快照可能包含完整对话。</p></div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={14} className={debugRequestsLoading ? "spin" : ""} /></button></div>{debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}<div className="debug-retention-note"><Bug size={13} /><span>只在后端内存中保留最近 {debugRequests?.capacity ?? 20} 次请求，服务重启后自动清空。</span></div><div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => setClearDebugPending(true)}><Trash2 size={12} />清空</button>}</div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新的模型请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div></section>}
 

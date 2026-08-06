@@ -1091,9 +1091,31 @@ GET /api/tts/status
   "voice": "Vivian", "format": "mp3", "max_chars": 800,
   "reachable": true,
   "models": ["mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"],
+  "cached_models": [
+    {"id":"mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit","size_bytes":2696097845},
+    {"id":"mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16","size_bytes":4521233802}
+  ],
+  "voices": ["Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", "Ryan", "Aiden", "Ono_Anna", "Sohee"],
   "detail": ""
 }
 ```
+
+切换模型后可按模型读取对应音色，不需要先保存：
+
+```http
+GET /api/tts/voices?model=mlx-community%2FQwen3-TTS-12Hz-1.7B-CustomVoice-6bit
+```
+
+```json
+{"model":"mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit","voices":["Vivian","Serena","Uncle_Fu"]}
+```
+
+后端优先使用 mlx-audio 的 `/v1/audio/voices` 动态发现。旧版 mlx-audio 以及音色内嵌、
+无法从文件目录枚举的 Qwen3 CustomVoice，会自动退回模型自带音色清单。
+
+`models` 是本次 mlx-audio 进程已加载的模型；`cached_models` 是磁盘缓存，服务离线时也会返回。
+Compose 会把宿主机 `~/.cache/huggingface/hub` 只读挂载到 API 容器，因此设置页可以直接
+显示已下载模型、缓存体积和加载状态。
 
 **这个接口会实时探活**（5 秒超时），因为本地 TTS 服务是手动起的，
 「配置全对但进程没开」是最常见的失败方式。两种失败要在界面上分开显示：
@@ -1125,7 +1147,7 @@ GET /api/tts/status
 |---|---|---|---|
 | `tts_mode` | enum | `off` | `off` / `manual` / `auto`，见上 |
 | `tts_model` | str | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` | 要和 `status.models` 里的一致 |
-| `tts_voice` | str | `Vivian` | 可空。音色由模型内置，不同模型的可选值不同 |
+| `tts_voice` | str | `Vivian` | 可空。设置页应使用 `/api/tts/voices` 随模型联动显示下拉选项 |
 | `tts_lang_code` | str | `Chinese` | |
 | `tts_instruct` | str | 「用温柔、自然、亲切的语气说话…」 | 可空，≤200 字。**效果最明显的一项**，做成多行输入框 |
 | `tts_format` | enum | `mp3` | `mp3` / `wav` / `flac` / `opus`。浏览器兼容性最好的是 mp3，没理由别改 |

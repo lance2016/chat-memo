@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiUrl, clearDebugRequests, createBackup, getDebugPrompt, getDebugRequest, getNextSpeech, getTtsStatus, listDebugRequests, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getTtsStatus, getTtsVoices, listDebugRequests, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -93,6 +93,24 @@ describe("parseSseEventLine", () => {
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tts/status", expect.objectContaining({ headers: expect.any(Headers) }));
   });
 
+  it("reads the ASR status endpoint", async () => {
+    const status = { model: "mlx-community/Qwen3-ASR-1.7B-8bit", language: "Chinese", max_tokens: 512, reachable: true, loaded: false, models: [], cached_models: [], detail: "" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(status), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAsrStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/asr/status", expect.anything());
+  });
+
+  it("loads voices for the selected local model", async () => {
+    const catalog = { model: "voice/model", voices: ["Vivian", "Serena"] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(catalog), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getTtsVoices("voice/model")).resolves.toEqual(catalog);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tts/voices?model=voice%2Fmodel", expect.anything());
+  });
+
   it("returns an audio blob from the TTS speech endpoint", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(["audio"]), { status: 200, headers: { "Content-Type": "audio/mpeg" } }));
     vi.stubGlobal("fetch", fetchMock);
@@ -133,5 +151,26 @@ describe("parseSseEventLine", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(synthesizeSpeech({ text: "你好" })).rejects.toThrow("语音服务离线");
+  });
+
+  it("uploads a browser recording for transcription without overriding the multipart content type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ text: "这是语音输入" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(transcribeAudio(new Blob(["audio"], { type: "audio/webm;codecs=opus" }))).resolves.toEqual({ text: "这是语音输入" });
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/asr/transcriptions", expect.objectContaining({ method: "POST", body: expect.any(FormData), headers: expect.any(Headers) }));
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Headers).has("Content-Type")).toBe(false);
+    const body = init.body as FormData;
+    expect(body.get("model")).toBeNull();
+    expect((body.get("file") as File).name).toBe("recording.webm");
+  });
+
+  it("surfaces an ASR proxy error detail", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "ASR 模型还没有加载完成" }), { status: 503, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(transcribeAudio(new Blob(["audio"], { type: "audio/mp4" }))).rejects.toThrow("ASR 模型还没有加载完成");
   });
 });

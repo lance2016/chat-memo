@@ -70,6 +70,28 @@ export interface TtsStatus {
   max_chars: number;
   reachable: boolean;
   models: string[];
+  cached_models: Array<{ id: string; size_bytes: number }>;
+  voices: string[];
+  detail: string;
+}
+
+export interface TtsVoices {
+  model: string;
+  voices: string[];
+}
+
+export interface TranscriptionResult {
+  text: string;
+}
+
+export interface AsrStatus {
+  model: string;
+  language: string;
+  max_tokens: number;
+  reachable: boolean;
+  loaded: boolean;
+  models: string[];
+  cached_models: Array<{ id: string; size_bytes: number }>;
   detail: string;
 }
 
@@ -109,6 +131,7 @@ export interface DebugRequestList {
 
 export interface SpeechRequest {
   text: string;
+  model?: string;
   voice?: string;
   instruct?: string;
   truncate?: boolean;
