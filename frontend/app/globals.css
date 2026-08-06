@@ -130,6 +130,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingF
 .home-pills { display: flex; flex-wrap: wrap; gap: 7px; }
 .home-pills button { height: 29px; padding: 0 11px; border: 1px solid #e5e9f0; border-radius: 9px; background: #fafbfc; color: #7c8899; font-size: 10px; }
 .home-pills button:hover { border-color: #bdc9ef; color: #536dcf; background: #f5f7ff; }
+.home-capture-hint { align-self: center; color: #a1aaba; font-size: 10px; white-space: nowrap; }
 .home-send { width: 36px; height: 36px; border: 0; border-radius: 11px; display: grid; place-items: center; background: #edf0f5; color: #bcc4d0; }
 .home-send:not(:disabled) { background: #5871d1; color: #fff; }
 .memory-home-grid { margin-top: 27px; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(270px, .8fr); gap: 21px; align-items: start; }
@@ -1279,10 +1280,18 @@ summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .settings-heading-refined { align-items: center; margin-bottom: 22px; }
 .settings-heading-refined h1 { margin: 7px 0 6px; font-size: clamp(28px, 3.4vw, 38px); line-height: 1.1; letter-spacing: -.04em; }
 .settings-heading-refined p { color: var(--text-secondary); font-size: 13px; }
+.settings-header-status { display: flex; align-items: stretch; gap: 9px; }
 .settings-connection-chip { flex: none; min-width: 230px; display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 11px; background: var(--surface-primary); }
 .settings-connection-chip > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .settings-connection-chip strong { color: var(--text-primary); font-size: 12px; }
 .settings-connection-chip span:last-child { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-knowledge-chip { min-width: 188px; display: flex; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 11px; color: var(--text-tertiary); background: var(--surface-primary); }
+.settings-knowledge-chip > svg { flex: none; color: var(--text-tertiary); }
+.settings-knowledge-chip > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.settings-knowledge-chip strong { color: var(--text-primary); font-size: 12px; }
+.settings-knowledge-chip span { overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.settings-knowledge-chip.enabled { border-color: color-mix(in srgb, var(--green) 35%, var(--border-subtle)); }
+.settings-knowledge-chip.enabled > svg { color: var(--green); }
 .settings-success { display: flex; align-items: center; gap: 7px; margin: -8px 0 16px; padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--green) 28%, transparent); border-radius: 9px; color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); font-size: 12px; }
 
 .settings-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); align-items: start; gap: 22px; }
@@ -1389,7 +1398,8 @@ html[data-theme="light"] .settings-savebar { box-shadow: 0 16px 42px rgba(42, 57
   .settings-content-refined { padding: 25px 15px 55px; }
   .settings-heading-refined { align-items: flex-start; }
   .settings-heading-refined h1 { font-size: 31px; }
-  .settings-connection-chip { width: 100%; min-width: 0; }
+  .settings-header-status { width: 100%; flex-direction: column; }
+  .settings-connection-chip, .settings-knowledge-chip { width: 100%; min-width: 0; }
   .settings-layout { display: block; }
   .settings-section-nav { position: static; overflow-x: auto; flex-direction: row; margin-bottom: 12px; padding: 4px; scrollbar-width: none; }
   .settings-section-nav::-webkit-scrollbar { display: none; }

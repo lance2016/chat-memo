@@ -94,7 +94,7 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
 
       <form className="home-capture" onSubmit={onSubmit}>
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder="和我聊聊，或告诉我一件想记住的事……" disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button></div><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button><span className="home-capture-hint">Enter 发送 · Shift + Enter 换行</span></div><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div>
       </form>
 
       <section className="memory-home-grid">
@@ -180,6 +180,7 @@ export function ChatPage() {
   const speechFlushCompleteRef = useRef(false);
   const speechAudioPlayingRef = useRef(false);
   const speechAutoMessageIdRef = useRef<number | null>(null);
+  const skipNextMessageLoadRef = useRef<number | null>(null);
   const draftTextRef = useRef("");
   const draftMessageIdRef = useRef<number | null>(null);
   const streamDoneRef = useRef(false);
@@ -281,7 +282,14 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (selectedId) void loadMessages(selectedId);
+    if (!selectedId) return;
+    // 首页新建会话会立刻开始发送。跳过这里的空历史请求，避免它在流式请求
+    // 写入用户消息之前返回 []，把 pendingUser 提前清掉。
+    if (skipNextMessageLoadRef.current === selectedId) {
+      skipNextMessageLoadRef.current = null;
+      return;
+    }
+    void loadMessages(selectedId);
   }, [selectedId, loadMessages]);
 
   useEffect(() => {
@@ -648,6 +656,7 @@ export function ChatPage() {
       const created = await createConversation();
       setConversations((current) => [created, ...current]);
       notifyWorkspaceConversationsChanged();
+      skipNextMessageLoadRef.current = created.id;
       setSelectedId(created.id);
       setTurns([]);
       router.replace(`/?conversation=${created.id}`);
@@ -658,7 +667,14 @@ export function ChatPage() {
   };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && preferences.enterToSend) { event.preventDefault(); void send(); }
+    // 中文/日文等输入法选词阶段也会触发 Enter。此时必须交给 IME 完成
+    // 合成，不能把尚未确认的拼音直接提交成一条消息。
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === "Enter" && !event.shiftKey && preferences.enterToSend) {
+      event.preventDefault();
+      if (selectedId === null) event.currentTarget.form?.requestSubmit();
+      else void send();
+    }
     if (event.key === "Escape" && editingTarget !== null) { setEditingTarget(null); setInput(""); }
   };
 
@@ -698,7 +714,7 @@ export function ChatPage() {
             </div>}
           </div>
           <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
-            {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
+            {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>
           <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? "重发" : "发送"}</button>}</div></form></div>
         </>}
