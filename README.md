@@ -1,9 +1,44 @@
 # 个人 AI 助手
 
-只给自己用的 AI 聊天应用。核心不是聊天本身，而是**把每天的对话沉淀成结构化的长期记忆** ——
-模型用 memory 工具自己读写记忆文件，每天凌晨再做一次全局整理。
+<p align="center">
+  <img src="frontend/public/morning-memory-wordmark.png" alt="朝花夕拾 · Personal Memory" width="720" />
+</p>
 
-后端 FastAPI + PostgreSQL，前端 Next.js 位于 `frontend/`。
+<p align="center">
+  <strong>一个会记住你的私人 AI 助手。</strong><br />
+  对话不只停留在聊天记录里，而会逐步沉淀成可查看、可编辑、可回滚的长期记忆。
+</p>
+
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#界面导览">界面导览</a> ·
+  <a href="#记忆是怎么工作的">记忆机制</a> ·
+  <a href="#api-契约前端对接">API</a> ·
+  <a href="docs/roadmap.md">开发路线</a>
+</p>
+
+---
+
+核心不是聊天本身，而是**把每天的对话沉淀成结构化的长期记忆**。
+模型用 memory 工具自己读写记忆文件，每天凌晨再做一次全局整理。
+后端使用 FastAPI + PostgreSQL，前端使用 Next.js 15。
+
+## 界面导览
+
+| 💬 聊天 | 🧠 记忆 | 🌅 每日回顾 | ⚙️ 设置 |
+|---|---|---|---|
+| 流式回答、思考折叠、记忆工具状态，支持编辑重发、重新生成与语音播放 | 文件树 + 编辑器，记忆全文可读写，历史版本可 diff 和回滚 | 按天浏览会话摘要、记忆变更和 token 用量，也可手动触发整理 | 在界面中调整模型、思考、语音、外观和自定义指令，立即生效 |
+
+```mermaid
+flowchart LR
+    Chat["💬 聊天<br/>L0 原始对话"] --> Review["🌅 每日回顾<br/>L1 会话摘要"]
+    Review --> Memory["🧠 记忆管理<br/>L2 长期记忆"]
+    Memory -. 索引注入 + 按需读取 .-> Chat
+    Settings["⚙️ 设置<br/>自定义指令"] -. 每轮注入 .-> Chat
+```
+
+四个页面共用顶部导航与全局搜索（`Cmd/Ctrl + K`）。记忆不是黑盒：你可以在界面中看到模型记了什么、
+何时改过，并随时修正或回滚。更完整的页面行为见[前端现状](#前端现状nextjs-15frontend)。
 
 > 接着开发（尤其是换一台机器）先看 **[docs/roadmap.md](docs/roadmap.md)** ——
 > 未来规划里是评审过但还没做的事，问题修复里是已定位的缺陷，
