@@ -11,7 +11,7 @@ export const metadata: Metadata = {
 const themeBootstrap = `(() => {
   try {
     const raw = localStorage.getItem("personal-ai-assistant:preferences");
-    const stored = raw ? JSON.parse(raw).theme : "system";
+    const stored = raw ? JSON.parse(raw).theme : "light";
     const mode = stored === "light" || stored === "dark" ? stored : "system";
     const resolved = mode === "system"
       ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")

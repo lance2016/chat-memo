@@ -15,7 +15,7 @@ export const defaultPreferences: UserPreferences = {
   showThinking: true,
   showToolActivity: true,
   showUsage: true,
-  theme: "system",
+  theme: "light",
 };
 
 const STORAGE_KEY = "personal-ai-assistant:preferences";

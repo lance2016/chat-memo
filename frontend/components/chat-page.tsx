@@ -1,19 +1,20 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ChevronDown, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
-import { apiBaseLabel, apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
+import { Archive, ArchiveRestore, ArrowRight, ChevronDown, Clock3, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, UsersRound, Volume2 } from "lucide-react";
+import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
-import { WorkspaceNav } from "@/components/workspace-topbar";
+import { MemoryBrand, MemoryMark, WorkspaceNav, WorkspaceProfile } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { InputDialog } from "@/components/input-dialog";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -48,6 +49,69 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
 function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usage"]>) {
   const output = usage.completion_tokens ?? usage.output_tokens;
   return typeof output === "number" ? `${output.toLocaleString()} output tokens` : "";
+}
+
+function homeDateLabel() {
+  return new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
+}
+
+function greeting() {
+  const hour = new Date().getHours();
+  if (hour < 6) return "夜深了";
+  if (hour < 11) return "早上好";
+  if (hour < 14) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+function HomeDashboard({ conversations, input, memoryCount, sending, composerRef, onInput, onKeyDown, onSubmit, onOpenConversation }: {
+  conversations: Conversation[];
+  input: string;
+  memoryCount: number | null;
+  sending: boolean;
+  composerRef: RefObject<HTMLTextAreaElement | null>;
+  onInput: (value: string) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onSubmit: (event: FormEvent) => void;
+  onOpenConversation: (id: number) => void;
+}) {
+  const recent = conversations.slice(0, 3);
+  return <div className="memory-home-scroll">
+    <div className="memory-home">
+      <section className="memory-home-hero">
+        <div className="memory-home-copy">
+          <p className="memory-date"><i /><i /><i />{homeDateLabel()}</p>
+          <h1>{greeting()}，Lance。<br /><em>今天想留下什么？</em></h1>
+          <p>我会替你保存重要的想法、偏好和约定，在需要时帮你重新想起。</p>
+        </div>
+        <div className="memory-orbit" aria-hidden="true">
+          <i className="orbit-ring" /><i className="orbit-ring orbit-ring-wide" />
+          <span className="orbit-core"><MemoryMark compact /></span>
+          <i className="orbit-dot orbit-dot-mint" /><i className="orbit-dot orbit-dot-orange" /><i className="orbit-dot orbit-dot-blue" />
+          <span className="orbit-note"><Sparkles size={12} /><b>{memoryCount ?? "—"}</b> 条记忆</span>
+        </div>
+      </section>
+
+      <form className="home-capture" onSubmit={onSubmit}>
+        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder="和我聊聊，或告诉我一件想记住的事……" disabled={sending} /></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button></div><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div>
+      </form>
+
+      <section className="memory-home-grid">
+        <div className="home-panel">
+          <div className="home-panel-heading"><div><span>RECENT CONVERSATIONS</span><h2>最近聊过的事情</h2></div><button type="button" onClick={() => conversations[0] && onOpenConversation(conversations[0].id)}>继续最近对话 <ArrowRight size={13} /></button></div>
+          <div className="home-stream">
+            {recent.length ? recent.map((conversation, index) => <button className="home-stream-item" type="button" onClick={() => onOpenConversation(conversation.id)} key={conversation.id}><i className={`home-stream-pin tone-${index + 1}`}><span /></i><span><time>{dateLabel(conversation.updated_at)}</time><strong>{conversation.title}</strong><small>打开这段对话，继续沿着当时的想法往下聊。</small><em>{index === 0 ? "最近" : "对话"}</em></span><ArrowRight size={15} /></button>) : <div className="home-stream-empty">还没有对话，从上方写下第一件想记住的事吧。</div>}
+          </div>
+        </div>
+        <aside className="home-rail">
+          <Link className="home-review-card" href="/review"><span className="review-scene"><i className="review-sun" /><i className="review-hill back" /><i className="review-hill front" /></span><span className="home-review-copy"><small>TODAY&apos;S REVIEW</small><strong>回看今天<br />留下的脉络</strong><em>开始今日回顾 <ArrowRight size={13} /></em></span></Link>
+          <Link className="home-insight-card" href="/memories?view=people"><span><UsersRound size={17} /></span><span><small>把散落的信息连起来</small><strong>看看重要的人</strong></span><ArrowRight size={14} /></Link>
+          <Link className="home-insight-card plan-card" href="/memories?view=plans"><span><Clock3 size={17} /></span><span><small>别错过说过的话</small><strong>计划与约定</strong></span><ArrowRight size={14} /></Link>
+        </aside>
+      </section>
+    </div>
+  </div>;
 }
 
 function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason = "语音服务状态未知", turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
@@ -97,6 +161,8 @@ export function ChatPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const [deletingConversation, setDeletingConversation] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
@@ -124,6 +190,11 @@ export function ChatPage() {
   const messageRequestsRef = useRef(new LatestRequest());
   const shouldAutoScroll = useRef(true);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [memoryCount, setMemoryCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     setPreferences(readPreferences());
@@ -174,15 +245,13 @@ export function ChatPage() {
             validUrlId = fromUrl;
           }
         }
-        validUrlId ??= items[0]?.id;
         if (validUrlId) {
           setSelectedId(validUrlId);
           if (validUrlId !== fromUrl) router.replace(`/?conversation=${validUrlId}`);
         } else {
-          const created = await createConversation();
-          setConversations([created]);
-          setSelectedId(created.id);
-          router.replace(`/?conversation=${created.id}`);
+          setSelectedId(null);
+          setTurns([]);
+          if (Number.isFinite(fromUrl) && fromUrl > 0) router.replace("/");
         }
       })
       .catch((cause: unknown) => setError(errorMessage(cause, "无法连接后端")))
@@ -283,14 +352,21 @@ export function ChatPage() {
 
   const renameSelectedConversation = async () => {
     if (!selected || renaming || sending) return;
-    const nextTitle = window.prompt("修改会话标题", selected.title)?.trim();
-    if (!nextTitle || nextTitle === selected.title) return;
+    setRenameDraft(selected.title);
+    setRenameDialogOpen(true);
+  };
+
+  const confirmRename = async () => {
+    if (!selected || renaming) return;
+    const nextTitle = renameDraft.trim();
+    if (!nextTitle || nextTitle === selected.title) { setRenameDialogOpen(false); return; }
     setRenaming(true);
     setError("");
     try {
       const updated = await updateConversation(selected.id, { title: nextTitle });
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       setArchivedConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setRenameDialogOpen(false);
     } catch (cause) {
       setError(errorMessage(cause, "无法修改会话标题"));
     } finally {
@@ -522,9 +598,10 @@ export function ChatPage() {
     }
   };
 
-  const send = async (contentOverride?: string, targetIdOverride?: number) => {
+  const send = async (contentOverride?: string, targetIdOverride?: number, conversationIdOverride?: number) => {
     const content = (contentOverride ?? input).trim();
-    if (!content || !selectedId || sending) return;
+    const conversationId = conversationIdOverride ?? selectedId;
+    if (!content || !conversationId || sending) return;
     const targetId = targetIdOverride ?? editingTarget;
     setSending(true);
     setError("");
@@ -544,10 +621,10 @@ export function ChatPage() {
         const targetIndex = apiMessages.findIndex((message) => message.id === targetId);
         if (targetIndex < 0) throw new Error("找不到要重发的消息");
         const after = targetIndex > 0 ? apiMessages[targetIndex - 1].id : 0;
-        await truncateMessages(selectedId, after);
+        await truncateMessages(conversationId, after);
         setTurns(toTurns(apiMessages.slice(0, targetIndex)));
       }
-      await streamChat(selectedId, content, handleEvent, controller.signal);
+      await streamChat(conversationId, content, handleEvent, controller.signal);
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
@@ -560,13 +637,28 @@ export function ChatPage() {
       setPendingUser("");
       setDraft({ text: "", thinking: "", tools: [] });
       setEditingTarget(null);
-      await Promise.all([loadMessages(selectedId), loadConversations().catch(() => undefined)]);
+      await Promise.all([loadMessages(conversationId), loadConversations().catch(() => undefined)]);
     }
   };
 
   const stop = () => {
     abortRef.current?.abort();
     stopTtsPlayback();
+  };
+  const startHomeConversation = async (event: FormEvent) => {
+    event.preventDefault();
+    const content = input.trim();
+    if (!content || sending) return;
+    try {
+      const created = await createConversation();
+      setConversations((current) => [created, ...current]);
+      setSelectedId(created.id);
+      setTurns([]);
+      router.replace(`/?conversation=${created.id}`);
+      void send(content, undefined, created.id);
+    } catch (cause) {
+      setError(errorMessage(cause, "无法创建会话"));
+    }
   };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -594,11 +686,11 @@ export function ChatPage() {
   return (
     <div className="app-shell">
       <aside className={`sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
-        <Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link>
-        <div className="sidebar-actions"><button className="primary-button full-width" onClick={() => void newConversation()}><Plus size={15} />新对话</button></div>
+        <MemoryBrand />
+        <div className="sidebar-actions"><button className="primary-button full-width home-new-button" onClick={() => void newConversation()}><Plus size={15} />记录新想法</button></div>
         <WorkspaceNav active="chat" className="sidebar-workspace-nav" />
-        <button className={`nav-link nav-button ${showArchived ? "active" : ""}`} onClick={() => void toggleArchivedView()}><Archive size={15} />{showArchived ? "返回会话" : "已归档"}</button>
-        <div className="section-label">Conversations</div>
+        <button className={`nav-link nav-button archive-nav-link ${showArchived ? "active" : ""}`} onClick={() => void toggleArchivedView()}><Archive size={15} />{showArchived ? "返回最近对话" : "已归档对话"}</button>
+        <div className="section-label">最近对话</div>
         <div className="conversation-list">
           {visibleConversations.map((conversation) => (
             <div className={`conversation-item ${conversation.id === selectedId ? "selected" : ""}`} key={conversation.id}>
@@ -610,19 +702,18 @@ export function ChatPage() {
             </div>
           ))}
         </div>
-        <div className="sidebar-footer">后端：{apiBaseLabel()} · 长期记忆已启用</div>
+        <WorkspaceProfile />
       </aside>
 
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
       <main className="main-panel">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div><div className="topbar-title-row"><div className="topbar-title">{selected?.title ?? "新对话"}</div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-meta">{selected ? "与你的私人记忆相连" : ""}</div></div></div><div className="topbar-actions"><WorkspaceNav active="chat" className="chat-workspace-nav" /><SearchTrigger /><ThemeControl /></div></header>
-        <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
-          {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.length === 0 ? <div className="welcome"><div className="eyebrow">Personal intelligence</div><h1>把想法交给<br />一个记得住的助手。</h1><p>聊天中的重要信息会被整理进长期记忆。你可以直接提问，也可以告诉我你的偏好、计划和正在做的事。</p><div className="suggestions"><button className="suggestion" onClick={() => setInput("帮我整理一下今天的工作计划")}>整理今天的工作计划</button><button className="suggestion" onClick={() => setInput("记住我喜欢简洁、直接的回答")}>记住一个偏好</button></div></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
-        </div>
-        <div className="composer-wrap">
-          {error && <div className="error-banner">{error}</div>}
-          <form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}><Send size={14} />{editingTarget !== null ? "重发" : "发送"}</button>}</div></form>
-        </div>
+        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="home-breadcrumb"><span>我的记忆</span><b>›</b><strong>{selected?.title ?? "首页"}</strong></div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-actions"><SearchTrigger /><ThemeControl /></div></header>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
+          <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
+            {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
+          </div>
+          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? "重发" : "发送"}</button>}</div></form></div>
+        </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
       <ConfirmDialog
@@ -636,6 +727,7 @@ export function ChatPage() {
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void removeConversation()}
       />
+      <InputDialog open={renameDialogOpen} title="修改会话标题" description="给这段对话一个更容易记住的名字。标题只会影响当前会话。" value={renameDraft} onChange={setRenameDraft} onCancel={() => setRenameDialogOpen(false)} onConfirm={() => void confirmRename()} busy={renaming} />
     </div>
   );
 }

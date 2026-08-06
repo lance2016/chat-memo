@@ -35,6 +35,13 @@ function memoryLabel(path: string) {
   return name === "MEMORY" ? "记忆索引" : name.replace(/[-_]/g, " ");
 }
 
+function filterMemoryNodes(nodes: MemoryNode[], view: string | null) {
+  if (view !== "people" && view !== "plans") return nodes;
+  const terms = view === "people" ? ["people", "person", "contact", "家人", "朋友", "人物"] : ["plan", "agreement", "calendar", "计划", "约定", "待办"];
+  const matches = (path: string) => path === "/memories" || terms.some((term) => path.toLowerCase().includes(term.toLowerCase()));
+  return nodes.filter((node) => matches(node.path) || node.is_dir && nodes.some((child) => !child.is_dir && child.path.startsWith(`${node.path}/`) && matches(child.path)));
+}
+
 function TreeEntryView({ entry, selected, onSelect, onDeleteDirectory, depth = 0 }: { entry: MemoryTreeEntry; selected: string; onSelect: (entry: MemoryTreeEntry) => void; onDeleteDirectory: (entry: MemoryTreeEntry) => void; depth?: number }) {
   const [open, setOpen] = useState(entry.path === "/memories" || entry.path === "/memories/profile");
   const isIndex = entry.path === "/memories/MEMORY.md";
@@ -107,6 +114,7 @@ export function MemoriesPage() {
   const fileRequestsRef = useRef(new LatestRequest());
   const statsRequestsRef = useRef(new LatestRequest());
   const hasChanges = memory !== null && content !== memory.content;
+  const memoryView = searchParams.get("view");
 
   useNavigationGuard(hasChanges, "当前记忆文件有未保存的修改，确定放弃并离开吗？");
 
@@ -123,7 +131,7 @@ export function MemoriesPage() {
   }, []);
 
   const syncTreeSelection = useCallback((result: MemoryNode[]) => {
-    const files = result.filter((node) => !node.is_dir);
+    const files = filterMemoryNodes(result, searchParams.get("view")).filter((node) => !node.is_dir);
     const requested = searchParams.get("path");
     const fallback = files.find((file) => file.path === "/memories/MEMORY.md")?.path ?? files[0]?.path ?? "";
     setSelectedPath((current) => requested && files.some((file) => file.path === requested) ? requested : files.some((file) => file.path === current) ? current : fallback);
@@ -246,7 +254,7 @@ export function MemoriesPage() {
     }
   };
 
-  const tree = useMemo(() => buildMemoryTree(nodes), [nodes]);
+  const tree = useMemo(() => buildMemoryTree(filterMemoryNodes(nodes, memoryView)), [memoryView, nodes]);
   const deleteFileCount = deleteTarget?.isDirectory ? nodes.filter((node) => !node.is_dir && node.path.startsWith(`${deleteTarget.path}/`)).length : 0;
   const deletingCurrentWithChanges = hasChanges && deleteTarget !== null && (deleteTarget.path === memory?.path || deleteTarget.isDirectory && memory?.path.startsWith(`${deleteTarget.path}/`));
   const deleteWarning = [
@@ -275,8 +283,8 @@ export function MemoriesPage() {
       <WorkspaceTopbar active="memories" subtitle="Memory workspace" />
       <div className="memory-workspace">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
-        <div className="memory-header"><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
-        <div className="tree">{loadingTree ? <div className="centered-empty">加载中…</div> : treeError ? <div className="centered-empty"><div className="centered-state"><TriangleAlert size={20} /><strong>无法加载记忆目录</strong><span>{treeError}</span><button className="ghost-button" onClick={() => { setLoadingTree(true); void loadTree().then(syncTreeSelection).catch((cause: unknown) => setTreeError(errorMessage(cause, "无法加载记忆树"))).finally(() => setLoadingTree(false)); }}><RefreshCw size={12} />重试</button></div></div> : tree.length ? tree.map((entry) => <TreeEntryView key={entry.path} entry={entry} selected={selectedPath} onSelect={selectFile} onDeleteDirectory={(entry) => setDeleteTarget({ path: entry.path, isDirectory: true })} />) : <div className="centered-empty"><div className="centered-state"><strong>还没有长期记忆</strong><span>当助手保存值得长期保留的信息后，文件会出现在这里。</span></div></div>}</div>
+        <div className="memory-header"><h1>{memoryView === "people" ? "重要的人" : memoryView === "plans" ? "计划与约定" : "长期记忆"}</h1><p>{memoryView === "people" ? "从记忆文件中查看与你有关的人和关系。" : memoryView === "plans" ? "集中查看记忆里提到的计划、约定和待办。" : "模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。"}</p></div>
+        <div className="tree">{loadingTree ? <div className="centered-empty">加载中…</div> : treeError ? <div className="centered-empty"><div className="centered-state"><TriangleAlert size={20} /><strong>无法加载记忆目录</strong><span>{treeError}</span><button className="ghost-button" onClick={() => { setLoadingTree(true); void loadTree().then(syncTreeSelection).catch((cause: unknown) => setTreeError(errorMessage(cause, "无法加载记忆树"))).finally(() => setLoadingTree(false)); }}><RefreshCw size={12} />重试</button></div></div> : tree.length ? tree.map((entry) => <TreeEntryView key={entry.path} entry={entry} selected={selectedPath} onSelect={selectFile} onDeleteDirectory={(entry) => setDeleteTarget({ path: entry.path, isDirectory: true })} />) : <div className="centered-empty"><div className="centered-state"><strong>{memoryView ? "还没有匹配的记忆" : "还没有长期记忆"}</strong><span>{memoryView ? "当这类信息被保存后，会自动出现在这里。" : "当助手保存值得长期保留的信息后，文件会出现在这里。"}</span></div></div>}</div>
       </aside>
       {treeOpen && <button className="sidebar-backdrop" aria-label="关闭记忆树" onClick={() => setTreeOpen(false)} />}
       <main className="memory-editor-panel">
