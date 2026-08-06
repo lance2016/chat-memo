@@ -6,6 +6,8 @@
 结论都带证据和文件位置，动手前先按「怎么验证」那一栏复现一遍再改 —— 有些点可能已经
 被另一台机器上的进度做掉了。
 
+前端的体验与架构改造另有一份分阶段计划：**[roadmap-frontend.md](roadmap-frontend.md)**。
+
 ---
 
 ## 未来规划
@@ -47,7 +49,7 @@ Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` /
 
 ## 问题修复
 
-### 待修复：生成标题优化
+### 已修复：生成标题优化
 
 **症状**：第一轮对话正文已经说完，还要再等约 3 秒流才结束 —— 这段时间输入框是禁用的、
 停止按钮还挂着，后端那把会话锁也还占着。
@@ -84,23 +86,58 @@ Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` /
 关掉思考后 `Docker Compose前端502排查` 明显比 `容器编排前端连后端502排查` 干净。
 这不是速度换质量的取舍，是纯亏。
 
-**改法**：给 `complete()` 加思考开关，标题关掉、整理保持开着。
+**改法**：标题单独走一条便宜的路（OpenRouter 上的小模型），并且**两条路都关掉推理**。
 
-1. `app/llm/provider.py:48` 的协议签名加参数（如 `thinking: bool = True`）
-2. `app/llm/deepseek_provider.py:223` 的 `complete()`：关的时候发
-   `extra_body={"thinking": {"type": "disabled"}}`，复用 `run()` 里已有的写法
-3. `app/llm/anthropic_provider.py:173` 的 `complete()`：把写死的 `adaptive` 改成按参数走
-4. `app/chat/service.py` 的 `_complete_title` 传关闭；
-   `app/jobs/consolidate.py:142` **不动** —— 每日整理是质量最敏感、频率最低的活，
-   `.env` 还专门留了 `CONSOLIDATE_MODEL` 给它，思考该留着
-5. `TITLE_TIMEOUT` 作为兜底保留。标题降到约 0.7s 后，它和正文（约 1s）并行，
-   正常会**先于正文完成**，死等趋近于 0，兜底基本不触发
+- `app/llm/title.py`（新增）：`TitleClient` 走 OpenRouter，发
+  `extra_body={"reasoning": {"enabled": False}}`。`get_title_client()` 在没配
+  `OPENROUTER_API_KEY` / `TITLE_MODEL` 时返回 `None`
+- `complete()` 全线加 `thinking: bool = True` 开关（`app/llm/provider.py` 协议、
+  DeepSeek 发 `extra_body={"thinking": {"type": "disabled"}}`、Anthropic 把写死的
+  `adaptive` 改成按参数走）
+- `app/chat/service.py` 的 `_complete_title`：配了 key 走 OpenRouter，
+  否则退回聊天 provider 并传 `thinking=False`。`max_tokens` 收到
+  `TITLE_MAX_TOKENS = 500`（不敢更小：万一模型忽略关闭指令，预算太紧会只剩思考、
+  标题静默变空）
+- `app/jobs/consolidate.py` **没动** —— 每日整理是质量最敏感、频率最低的活，
+  `.env` 还专门留了 `CONSOLIDATE_MODEL` 给它，思考该留着。
+  `tests/test_title_generation.py::test_consolidation_keeps_thinking` 守着这条线
+- `TITLE_TIMEOUT` 作为兜底保留。标题降到约 0.7s 后它和正文（约 1s）并行，
+  正常会**先于正文完成**，死等趋近于 0，兜底基本不触发
 
-顺带可以把 `_complete_title` 的 `max_tokens=4000` 调小 —— 那行注释
-「adaptive thinking 也算进 max_tokens」正是为思考留的余量，关掉后没必要了。纯清理，不影响耗时。
+配置：`OPENROUTER_API_KEY` 和 `OPENROUTER_BASE_URL` 是 `ENV_ONLY`（和其他 key 一致，
+界面上不给入口）；`TITLE_MODEL` 可以在设置页改。
 
-**怎么验证**：新建会话发一条消息，量「最后一个 `text_delta`」到「流关闭」的间隔，
-应当从约 3 秒降到接近 0。
+`tests/test_title_generation.py` 覆盖两条路，两个「关推理」断言都做过 RED 检查
+（去掉开关就红）。
+
+**已验证**：配好 `OPENROUTER_API_KEY` 后实测，死等从 **2.86s 降到 0.05s**。
+日志里能直接看到标题比正文早 3 秒就完成了，所以它已经完全不占用户的时间：
+
+```
+21:13:00  🏷 解决 Docker Compose 前后端连接问题 [openrouter/google/gemma-4-31b-it:free · 1.3s]
+21:13:03  ← conv#31 4.6s · 2 工具 · 4143 tok · 缓存 3456
+```
+
+**怎么确认标题走了哪条路**：`_complete_title` 每次都会打一行 `🏷`，带上标题、
+路由（`openrouter/<模型>` 或 `<provider> 不思考`）和耗时。
+
+```bash
+docker compose logs -f api | grep 🏷
+```
+
+复现下面这段可以自己量一次：
+
+```bash
+set -a && . ./.env && set +a
+CID=$(curl -s --noproxy '*' -X POST -H "X-API-Key: $API_KEY" \
+  http://localhost:13000/backend/api/conversations | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d "{\"conversation_id\":$CID,\"content\":\"你好\"}" http://localhost:13000/backend/api/chat
+```
+
+> `:free` 档的模型有速率限制，偶尔会慢或失败。标题本来就是锦上添花 ——
+> 失败会被 `_complete_title` 吞掉、超时有 `TITLE_TIMEOUT` 兜着，
+> 两种情况都只是保留「新对话」并在下一轮重试，不影响这次回答。
 
 ```bash
 set -a && . ./.env && set +a
@@ -163,4 +200,4 @@ curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/js
 
 `app/chat/service.py` 的 `TITLE_TIMEOUT = 5.0` 把最坏等待挡住了，但这只是止血：
 标题超时后会被丢掉，会话停在「新对话」，留到下一轮重试。
-真正的治因是上面那条**待修复：生成标题优化**。
+真正的治因是上面那条**已修复：生成标题优化** —— 标题降到约 0.7s 后这个兜底基本不再触发。

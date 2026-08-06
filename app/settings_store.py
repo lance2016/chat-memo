@@ -69,6 +69,8 @@ WRITABLE: tuple[Field, ...] = (
     Field("effort", "推理强度", "enum",
           choices=("low", "medium", "high", "xhigh", "max"), provider="anthropic"),
     Field("consolidate_model", "整理专用模型", "str", allow_empty=True),
+    # 只在配了 OPENROUTER_API_KEY 时生效；没配就退回聊天 provider。
+    Field("title_model", "标题专用模型", "str", allow_empty=True),
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
     Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
@@ -99,6 +101,8 @@ ENV_ONLY = (
     "anthropic_api_key",
     "deepseek_api_key",
     "deepseek_base_url",
+    "openrouter_api_key",
+    "openrouter_base_url",
     "api_key",
     "cors_origins",
     "log_level",

@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # 日常聊天照旧走 deepseek_model。留空表示和聊天用同一个。
     consolidate_model: str = ""
 
+    # ---- 标题生成（可选，走 OpenRouter）----
+    # 标题就是「一句话概括用户想干什么」，要的是快，不是推理。聊天模型在这件事上
+    # 太贵也太慢（实测为一个 16 字标题烧掉 127~542 个思考 token、2.4~21.5 秒，
+    # 而标题质量并没有更好），所以单独走一条便宜的路。
+    # 配了 key 才启用；留空则退回聊天 provider，同样关掉思考。
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    title_model: str = "google/gemma-4-31b-it:free"
+
     # 自动每日整理默认关闭：进程一重启计时器就从头开始，笔记本凌晨多半是睡眠状态，
     # 这个定时器很容易整天不触发。手动 POST /api/jobs/consolidate 更可靠。
     consolidate_auto: bool = False

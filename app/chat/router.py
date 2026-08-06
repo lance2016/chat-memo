@@ -23,6 +23,7 @@ from app.kb.tool import KbToolExecutor
 from app.llm.composite import CompositeExecutor
 from app.llm.factory import get_provider
 from app.llm.provider import ToolExecutor
+from app.llm.title import get_title_client
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
@@ -423,6 +424,8 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 provider=get_provider(settings),
                 executor=executor,
                 settings=settings,
+                # 配了 OPENROUTER_API_KEY 才有；没配则为 None，标题退回聊天 provider
+                title_client=get_title_client(settings),
             )
             system = await build_system_prompt(store, settings)
 

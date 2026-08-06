@@ -171,7 +171,12 @@ class AnthropicProvider:
         )
 
     async def complete(
-        self, *, system: str, prompt: str, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int | None = None,
+        thinking: bool = True,
     ) -> str:
         """非流式补全，用于摘要/整理这类后台任务。
 
@@ -183,7 +188,7 @@ class AnthropicProvider:
             max_tokens=max_tokens or self.settings.max_tokens,
             system=system,
             messages=[{"role": "user", "content": prompt}],
-            thinking={"type": "adaptive"},
+            thinking={"type": "adaptive"} if thinking else {"type": "disabled"},
         ) as stream:
             message = await stream.get_final_message()
 

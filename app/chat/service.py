@@ -26,6 +26,7 @@ from app.llm.events import (
 )
 from app.logging_setup import dim, ok_mark
 from app.llm.provider import LLMProvider, ToolExecutor
+from app.llm.title import TitleClient
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,10 @@ DEFAULT_TITLE = "新对话"
 
 # 标题最多让用户多等这么久。它和正文并行跑，正常不会触顶。
 TITLE_TIMEOUT = 5.0
+
+# 标题只有十几个字，但不要卡得太死：万一模型忽略了「关闭思考」，
+# 预算太紧会只剩思考、正文被截断，结果是标题静默变空。
+TITLE_MAX_TOKENS = 500
 
 INTERRUPTED_RESULT = "（上一轮被中断，该工具未执行完成。如仍需要，请重新调用。）"
 
@@ -195,11 +200,16 @@ class ChatService:
         provider: LLMProvider,
         executor: ToolExecutor | None = None,
         settings: Settings | None = None,
+        title_client: TitleClient | None = None,
     ) -> None:
         self.session = session
         self.provider = provider
         self.executor = executor
         self.settings = settings or get_settings()
+        # 由调用方（router）决定标题走不走 OpenRouter。这里**不**自己去问全局配置：
+        # 那样任何只注入了假 provider 的测试都会跟着开发机的 .env 走真实网络请求。
+        # None = 用聊天 provider 兜底（同样关思考）。
+        self.title_client = title_client
 
     async def load_history(self, conversation_id: int) -> list[dict[str, Any]]:
         """按原样取回历史。
@@ -408,17 +418,43 @@ class ChatService:
         logger.warning("⚠ conv#%s 被中断，已保留 %d 字", conversation.id, len(text))
 
     async def _complete_title(self, first_text: str) -> str:
-        """只管问模型要标题，不碰 session —— 它和正文并行跑。"""
+        """只管问模型要标题，不碰 session —— 它和正文并行跑。
+
+        两条路都**关掉思考**：标题是一句话概括，推理在这里只会让用户白等
+        （这段耗时在 done 之前被 await，会原样变成禁用输入框的时间）。
+        配了 OPENROUTER_API_KEY 就走那边的小模型，否则退回聊天 provider。
+        """
+        prompt = f"用户的第一条消息：\n\n{first_text}"
+        client = self.title_client
+        # 走哪条路、花了多久，都要能从日志里直接看出来 —— 否则「标题到底有没有
+        # 用那个小模型」只能靠猜，配错了 key 也只表现为「又变慢了」。
+        route = (
+            f"openrouter/{self.settings.title_model}"
+            if client is not None
+            else f"{self.settings.provider} 不思考"
+        )
+        started = time.monotonic()
         try:
-            raw = await self.provider.complete(
-                system=TITLE_SYSTEM,
-                prompt=f"用户的第一条消息：\n\n{first_text}",
-                # adaptive thinking 也算进 max_tokens，给太紧会只剩思考没有正文。
-                max_tokens=4000,
-            )
+            if client is not None:
+                raw = await client.complete(
+                    system=TITLE_SYSTEM, prompt=prompt, max_tokens=TITLE_MAX_TOKENS
+                )
+            else:
+                raw = await self.provider.complete(
+                    system=TITLE_SYSTEM,
+                    prompt=prompt,
+                    max_tokens=TITLE_MAX_TOKENS,
+                    thinking=False,
+                )
         except Exception:
             # 标题只是锦上添花，失败不该影响这次对话。
-            logger.exception("生成标题失败")
+            logger.exception("生成标题失败 [%s]", route)
             return ""
 
-        return _clean_title(raw)
+        title = _clean_title(raw)
+        logger.info(
+            "  🏷 %s %s",
+            title or "（空，保留默认标题）",
+            dim(f"[{route} · {time.monotonic() - started:.1f}s]"),
+        )
+        return title

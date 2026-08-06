@@ -221,16 +221,26 @@ class DeepSeekProvider:
         out.tool_calls = [slots[i] for i in sorted(slots)]
 
     async def complete(
-        self, *, system: str, prompt: str, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int | None = None,
+        thinking: bool = True,
     ) -> str:
-        response = await self.client.chat.completions.create(
-            model=self.settings.deepseek_model,
-            max_tokens=max_tokens or self.settings.deepseek_max_tokens,
-            messages=[
+        request: dict[str, Any] = {
+            "model": self.settings.deepseek_model,
+            "max_tokens": max_tokens or self.settings.deepseek_max_tokens,
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-        )
+        }
+        if not thinking:
+            # 和 run() 同一个形状：不是 OpenAI 标准字段，必须走 extra_body 透传，
+            # 而且不传就是默认开着，所以只在要关的时候发。
+            request["extra_body"] = {"thinking": {"type": "disabled"}}
+        response = await self.client.chat.completions.create(**request)
         choice = response.choices[0]
         if choice.finish_reason == "length":
             logger.warning("补全被 max_tokens 截断，产出可能不完整")

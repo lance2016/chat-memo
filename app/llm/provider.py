@@ -46,7 +46,16 @@ class LLMProvider(Protocol):
         ...
 
     async def complete(
-        self, *, system: str, prompt: str, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int | None = None,
+        thinking: bool = True,
     ) -> str:
-        """一次性补全，用于摘要这类不需要流式和工具的场景。"""
+        """一次性补全，用于摘要这类不需要流式和工具的场景。
+
+        ``thinking`` 默认开着 —— 每日整理是质量最敏感的活，值得让它想。
+        标题这类「一句话概括」要显式关掉：思考在那里只是让用户白等。
+        """
         ...
