@@ -294,33 +294,66 @@ async def daily_usage(
     days: int = 7,
     session: AsyncSession = Depends(get_session),
 ) -> list[DailyUsageOut]:
-    """按天汇总 token 用量。字段名各家不同，这里统一归一化。"""
+    """按天汇总 token 用量。字段名各家不同，这里统一归一化。
+
+    **一条查询取回整个窗口，再在 Python 里分桶。** 原先是每天一条 SELECT，
+    days=90 就是 90 次往返，而 review 页正是拉长窗口的那个入口。
+
+    分桶不下推到 SQL 是有意的：usage 的字段名各家不同（见 ``_pick`` 的回退链），
+    用 SQL 表达那套逻辑既难读又会绑死 Postgres 的 JSONB，而测试跑在 SQLite 上。
+    单人使用，窗口内是千级的行，取回来算很划算。
+    """
+    span = min(days, 90)
+    if span <= 0:
+        return []
+
     today = dt.date.today()
-    out: list[DailyUsageOut] = []
-    for offset in range(min(days, 90)):
-        day = today - dt.timedelta(days=offset)
-        start, end = local_day_bounds(day)
-        stmt = select(Message.usage).where(
-            Message.usage.is_not(None),
-            Message.created_at >= start,
-            Message.created_at < end,
+    start, _ = local_day_bounds(today - dt.timedelta(days=span - 1))
+    _, end = local_day_bounds(today)
+
+    # 先把每一天摆好，没有消息的日子也要出现在结果里（前端按天画图，缺天会错位）
+    buckets = {
+        (today - dt.timedelta(days=offset)).isoformat(): DailyUsageOut(
+            day=(today - dt.timedelta(days=offset)).isoformat(),
+            messages=0,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
         )
-        rows = [u for u in (await session.execute(stmt)).scalars() if u]
-        out.append(
-            DailyUsageOut(
-                day=day.isoformat(),
-                messages=len(rows),
-                input_tokens=sum(_pick(u, "input_tokens", "prompt_tokens") for u in rows),
-                output_tokens=sum(
-                    _pick(u, "output_tokens", "completion_tokens") for u in rows
-                ),
-                cached_tokens=sum(
-                    _pick(u, "cache_read_input_tokens", "prompt_cache_hit_tokens")
-                    for u in rows
-                ),
-            )
+        for offset in range(span)
+    }
+
+    stmt = select(Message.created_at, Message.usage).where(
+        Message.usage.is_not(None),
+        Message.created_at >= start,
+        Message.created_at < end,
+    )
+    for created_at, usage in (await session.execute(stmt)).all():
+        if not usage:
+            continue
+        bucket = buckets.get(_local_day(created_at).isoformat())
+        if bucket is None:
+            continue
+        bucket.messages += 1
+        bucket.input_tokens += _pick(usage, "input_tokens", "prompt_tokens")
+        bucket.output_tokens += _pick(usage, "output_tokens", "completion_tokens")
+        bucket.cached_tokens += _pick(
+            usage, "cache_read_input_tokens", "prompt_cache_hit_tokens"
         )
-    return out
+
+    # 保持原来的顺序：今天在最前面
+    return list(buckets.values())
+
+
+def _local_day(moment: dt.datetime) -> dt.date:
+    """时间戳落在本地的哪一天。
+
+    时间戳按 UTC 存，但「今天用了多少」对用户是本地概念 —— 和 local_day_bounds
+    同一个理由。SQLite 不保存时区，取回来是 naive 的；Postgres 是 aware。
+    """
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=dt.UTC)
+    return moment.astimezone().date()
 
 
 def _pick(usage: dict[str, Any], *keys: str) -> int:
@@ -380,6 +413,9 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
 # 按会话串行化。并发跑同一个会话会让历史错乱：两个请求各自读到同一份历史，
 # 各自追加，结果变成 user说B → user说A → assistant B → assistant A，
 # 两条回复都只看到半边上下文。双击发送按钮就能触发。
+#
+# **这是进程内的锁**，只在单 worker 下成立 —— 本项目就是单人单进程（compose 里
+# uvicorn 不带 --workers），要上多进程的话这套得换成数据库层的咨询锁。
 _locks: dict[int, asyncio.Lock] = {}
 
 
@@ -388,6 +424,17 @@ def _conversation_lock(conversation_id: int) -> asyncio.Lock:
     if lock is None:
         lock = _locks[conversation_id] = asyncio.Lock()
     return lock
+
+
+def _release_lock(conversation_id: int) -> None:
+    """没人在用了就把锁丢掉，别让字典随会话数一直涨。
+
+    只在没上锁时删：等锁的那一方**已经持有 _locks 里的这个对象**，此时换一把新的
+    会让两个请求各拿各的锁，串行化就失效了 —— 正是这把锁要防的事。
+    """
+    lock = _locks.get(conversation_id)
+    if lock is not None and not lock.locked():
+        del _locks[conversation_id]
 
 
 async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
@@ -402,41 +449,47 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
         yield _sse({"type": "error", "message": "该会话正在生成中，请等当前回答结束"})
         return
 
-    async with lock, get_sessionmaker()() as session:
-        try:
-            conversation = await session.get(Conversation, payload.conversation_id)
-            if conversation is None:
-                yield _sse({"type": "error", "message": "会话不存在"})
-                return
+    try:
+        async with lock, get_sessionmaker()() as session:
+            try:
+                conversation = await session.get(Conversation, payload.conversation_id)
+                if conversation is None:
+                    yield _sse({"type": "error", "message": "会话不存在"})
+                    return
 
-            # 每轮重新解析：设置页改完不用重启就能生效
-            settings = await resolve_settings(session)
-            store = MemoryStore(session, actor="chat", conversation_id=conversation.id)
-            executor: ToolExecutor = MemoryToolExecutor(store)
-            if settings.vault_path:
-                # vault 挂载了才注册 kb 工具；system prompt 的知识库段受同一开关控制
-                executor = CompositeExecutor(
-                    executor,
-                    KbToolExecutor(session, settings.vault_path, conversation.id),
+                # 每轮重新解析：设置页改完不用重启就能生效
+                settings = await resolve_settings(session)
+                store = MemoryStore(
+                    session, actor="chat", conversation_id=conversation.id
                 )
-            service = ChatService(
-                session=session,
-                provider=get_provider(settings),
-                executor=executor,
-                settings=settings,
-                # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
-                title_client=get_title_client(settings),
-            )
-            system = await build_system_prompt(store, settings)
+                executor: ToolExecutor = MemoryToolExecutor(store)
+                if settings.vault_path:
+                    # vault 挂载了才注册 kb 工具；system prompt 的知识库段受同一开关控制
+                    executor = CompositeExecutor(
+                        executor,
+                        KbToolExecutor(session, settings.vault_path, conversation.id),
+                    )
+                service = ChatService(
+                    session=session,
+                    provider=get_provider(settings),
+                    executor=executor,
+                    settings=settings,
+                    # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
+                    title_client=get_title_client(settings),
+                )
+                system = await build_system_prompt(store, settings)
 
-            async for event in service.stream_reply(
-                conversation=conversation, system=system, user_text=payload.content
-            ):
-                yield _sse(_to_payload(event))
-        except Exception as exc:
-            logger.exception("对话流处理失败")
-            await session.rollback()
-            yield _sse({"type": "error", "message": f"服务端错误：{exc}"})
+                async for event in service.stream_reply(
+                    conversation=conversation, system=system, user_text=payload.content
+                ):
+                    yield _sse(_to_payload(event))
+            except Exception as exc:
+                logger.exception("对话流处理失败")
+                await session.rollback()
+                yield _sse({"type": "error", "message": f"服务端错误：{exc}"})
+    finally:
+        # 客户端断开也会走到这里（生成器被关闭）。不清理的话 _locks 会随会话数只增不减。
+        _release_lock(payload.conversation_id)
 
 
 def _to_payload(event: Any) -> dict[str, Any]:

@@ -73,11 +73,15 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
         await session.execute(text("SELECT 1"))
+        # 必须走 resolve_settings：闭包里那个 settings 是启动时的 .env 快照，
+        # 而聊天走的是「数据库覆盖叠加在 .env 之上」的合并值。在设置页把 provider
+        # 换掉之后，用快照会一直报旧的 —— 健康检查报错模型比不报还糟。
+        active = await resolve_settings(session)
         # 报当前生效的那个模型 —— 之前无论 PROVIDER 是什么都报 Anthropic 的，会误导。
         active_model = (
-            settings.model if settings.provider == "anthropic" else settings.deepseek_model
+            active.model if active.provider == "anthropic" else active.deepseek_model
         )
-        return {"status": "ok", "provider": settings.provider, "model": active_model}
+        return {"status": "ok", "provider": active.provider, "model": active_model}
 
     @app.get("/api/ping", dependencies=[Depends(require_api_key)])
     async def ping() -> dict[str, bool]:

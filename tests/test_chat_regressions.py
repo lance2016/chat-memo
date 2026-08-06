@@ -8,7 +8,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.router import ChatRequest, chat
+from app.chat.router import (
+    ChatRequest,
+    _conversation_lock,
+    _locks,
+    _release_lock,
+    chat,
+)
 from app.chat.service import DEFAULT_TITLE, ChatService
 from app.config import Settings
 from app.db.models import Conversation, Message
@@ -184,6 +190,39 @@ async def test_sse_headers_opt_out_of_proxy_compression() -> None:
 
     assert response.media_type == "text/event-stream"
     assert "no-transform" in response.headers["cache-control"]
+
+
+async def test_conversation_lock_is_dropped_once_nobody_holds_it() -> None:
+    """``_locks`` 不能随会话数只增不减 —— 每个会话留一把锁，永远不回收。"""
+    _locks.clear()
+    lock = _conversation_lock(4242)
+
+    async with lock:
+        # 持有期间不能回收，否则等锁的人会拿到另一把锁
+        _release_lock(4242)
+        assert _locks.get(4242) is lock
+
+    _release_lock(4242)
+    assert 4242 not in _locks
+
+
+async def test_releasing_a_held_lock_keeps_serialization_intact() -> None:
+    """回收若不看「是否仍被持有」，双击发送就会各拿各的锁，串行化直接失效。
+
+    这是这把锁存在的唯一理由：两个请求各读到同一份历史、各自追加，
+    结果是 user说B → user说A → assistant B → assistant A，两条回复都只看到半边上下文。
+    """
+    _locks.clear()
+    first = _conversation_lock(99)
+    await first.acquire()
+    try:
+        _release_lock(99)
+        # 第二个请求必须看到同一个对象，才会被 lock.locked() 挡下来
+        assert _conversation_lock(99) is first
+        assert _conversation_lock(99).locked()
+    finally:
+        first.release()
+        _release_lock(99)
 
 
 async def messages_of(session: AsyncSession, conversation_id: int) -> list[Message]:

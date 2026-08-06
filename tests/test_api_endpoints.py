@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, ConversationSummary, Message
@@ -258,6 +259,53 @@ async def test_daily_usage_normalizes_provider_field_names(
     assert today["output_tokens"] == 23
     assert today["cached_tokens"] == 62
     assert today["messages"] == 2
+
+
+async def test_daily_usage_runs_one_query_regardless_of_window(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """按天循环查库的话，days=90 就是 90 次往返。窗口长度不该改变查询次数。"""
+    conversation = await seed_conversation(session)
+    session.add(
+        Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=[],
+            usage={"input_tokens": 7, "output_tokens": 1},
+        )
+    )
+    await session.commit()
+
+    statements: list[str] = []
+
+    @event.listens_for(session.sync_session, "do_orm_execute")
+    def record(orm_execute_state) -> None:
+        if orm_execute_state.is_select:
+            statements.append(str(orm_execute_state.statement))
+
+    try:
+        response = await client.get("/api/usage", params={"days": 90})
+    finally:
+        event.remove(session.sync_session, "do_orm_execute", record)
+
+    assert response.status_code == 200
+    messages_query = [s for s in statements if "FROM messages" in s]
+    assert len(messages_query) == 1, f"预期 1 条消息查询，实际 {len(messages_query)} 条"
+
+
+async def test_daily_usage_covers_every_day_in_the_window(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """没有消息的日子也要出现 —— 前端按天画图，缺天会错位。"""
+    body = (await client.get("/api/usage", params={"days": 7})).json()
+
+    assert len(body) == 7
+    assert body[0]["day"] > body[-1]["day"]  # 今天在最前面
+    assert all(row["messages"] == 0 for row in body)
+
+
+async def test_daily_usage_rejects_nonpositive_window(client: AsyncClient) -> None:
+    assert (await client.get("/api/usage", params={"days": 0})).json() == []
 
 
 # ---------- 记忆回滚 ----------

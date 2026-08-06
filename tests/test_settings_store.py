@@ -186,3 +186,21 @@ async def test_get_exposes_env_only_list(client: AsyncClient) -> None:
     body = (await client.get("/api/settings")).json()
     assert "api_key" in body["env_only"]
     assert "database_url" in body["env_only"]
+
+
+async def test_health_reports_the_merged_model_not_the_env_snapshot(
+    client: AsyncClient,
+) -> None:
+    """/health 必须走 resolve_settings。
+
+    闭包里的 settings 是启动时的 .env 快照，聊天用的却是「数据库覆盖叠加在 .env 之上」
+    的合并值。用快照的话，在设置页换掉模型之后 /health 会一直报旧的 ——
+    健康检查报错模型比不报还糟。
+    """
+    patched = await client.patch("/api/settings", json={"deepseek_model": "deepseek-x"})
+    assert patched.status_code == 200
+
+    body = (await client.get("/health")).json()
+
+    assert body["model"] == "deepseek-x"
+    assert body["provider"] == "deepseek"
