@@ -1,4 +1,4 @@
-"""组装 system prompt：人格 + 记忆索引 + 用户自定义指令。
+"""组装 system prompt：人格 + 记忆索引 + 知识库说明 + 用户自定义指令。
 
 这段文本是 prompt cache 的稳定前缀，**不能包含时间戳、会话 ID 等每次都变的内容** ——
 缓存是前缀匹配，插一个变动值就整段失效。需要「今天是几号」这类信息，请放在 user 消息里。
@@ -65,6 +65,19 @@ MEMORY_INSTRUCTIONS = f"""# 记忆
 
 EMPTY_INDEX = "（记忆还是空的。遇到值得记的事情就建立第一批记忆文件，并同步写索引。）"
 
+# 稳定文本，不含任何变动内容 —— 和其余段落一样是 prompt cache 前缀的一部分。
+# 只在 vault 挂载了（settings.vault_path 非空）才出现，和 kb 工具的注册同一开关。
+KB_INSTRUCTIONS = """
+# 知识库
+
+主人的 Obsidian 笔记库对你开放了只读访问：
+
+- 找东西先用 `kb_search`（子串搜文件名和内容，`tag:#标签` 只搜标签），浏览目录才用 `kb_list`
+- `kb_read` 读具体笔记，`kb_backlinks` 沿双链找相关笔记
+- 笔记是主人亲手写的，不是你的记忆：引用时注明文件路径，不要改述成你「记得」的事
+- 知识库不可写。值得长期记住的结论，写进你自己的记忆（memory 工具）
+"""
+
 # 放在最末尾：system prompt 的结尾是指令遵循最强的位置，而这段的权威性最高。
 # 对 prompt cache 没有影响 —— 整个 system 是一个缓存块，块内顺序不影响命中。
 CUSTOM_INSTRUCTIONS_TEMPLATE = """
@@ -78,13 +91,21 @@ CUSTOM_INSTRUCTIONS_TEMPLATE = """
 
 
 async def build_system_prompt(
-    store: MemoryStore, settings: Settings | None = None
+    store: MemoryStore,
+    settings: Settings | None = None,
+    *,
+    include_kb: bool = True,
 ) -> str:
     settings = settings or get_settings()
     memories = await store.list_all()
     owner = settings.owner_name
     persona = PERSONA_TEMPLATE.format(owner=owner)
     prompt = f"{persona}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
+
+    # include_kb=False 给没挂 kb 工具的场景用（每日整理）—— 提示词里提了工具却不注册，
+    # 模型会困惑甚至试图调用。
+    if include_kb and settings.vault_path:
+        prompt += KB_INSTRUCTIONS
 
     instructions = settings.custom_instructions.strip()
     if instructions:

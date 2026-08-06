@@ -19,7 +19,10 @@ from app.chat.service import ChatService
 from app.db.models import Conversation, ConversationSummary, Message
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
+from app.kb.tool import KbToolExecutor
+from app.llm.composite import CompositeExecutor
 from app.llm.factory import get_provider
+from app.llm.provider import ToolExecutor
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
@@ -77,6 +80,8 @@ async def get_runtime_settings(
         "model": settings.model if is_anthropic else settings.deepseek_model,
         "thinking_default": True if is_anthropic else settings.deepseek_thinking,
         "thinking_toggle": True,
+        # 知识库（Obsidian vault）是否挂载。只读状态位 —— vault_path 是 .env 配置，设置页改不了
+        "kb_enabled": bool(settings.vault_path),
     }
 
 
@@ -399,10 +404,17 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
             # 每轮重新解析：设置页改完不用重启就能生效
             settings = await resolve_settings(session)
             store = MemoryStore(session, actor="chat", conversation_id=conversation.id)
+            executor: ToolExecutor = MemoryToolExecutor(store)
+            if settings.vault_path:
+                # vault 挂载了才注册 kb 工具；system prompt 的知识库段受同一开关控制
+                executor = CompositeExecutor(
+                    executor,
+                    KbToolExecutor(session, settings.vault_path, conversation.id),
+                )
             service = ChatService(
                 session=session,
                 provider=get_provider(settings),
-                executor=MemoryToolExecutor(store),
+                executor=executor,
                 settings=settings,
             )
             system = await build_system_prompt(store, settings)

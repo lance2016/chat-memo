@@ -36,11 +36,17 @@ services:
       # 容器默认 UTC，会让「今天」的判断和注入给模型的日期都差 8 小时，
       # 也会让 local_day_bounds 失效（每日整理按错误的窗口切天）。
       TZ: ${TZ:-Asia/Shanghai}
+      # 浏览器默认经 frontend 的同源代理访问 API；仍保留 CORS，方便直接调试宿主机端口。
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-13000}"]}
+      # 宿主机设置了 VAULT_PATH 才启用知识库；:+ 表示「有值就替换成容器内挂载点」，
+      # 否则为空串 —— 同时覆盖掉 env_file 里的宿主机路径，容器内那个路径不存在。
+      VAULT_PATH: ${VAULT_PATH:+/vault}
     # Docker Desktop 自带这个域名，Linux 上要显式映射到网关才解析得了
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8000:8000"
+      # 8000 是容器内部端口；宿主机映射端口只用于调试和直连。
+      - "${API_PORT:-18000}:8000"
     volumes:
       # 挂源码实现热重载。只挂需要的目录，不整个挂项目根：
       # 那样宿主机的 .venv（darwin/arm64）会盖掉容器里的依赖。
@@ -51,6 +57,9 @@ services:
       - ./pyproject.toml:/app/pyproject.toml:ro
       # 备份落到宿主机，容器重建也不会丢
       - ./backups:/backups
+      # Obsidian vault 只读挂载（写保护做在挂载层，不依赖 prompt 约束）。
+      # 未设置 VAULT_PATH 时挂个空占位目录，此时容器内 VAULT_PATH 为空、功能整体关闭。
+      - ${VAULT_PATH:-./.vault-placeholder}:/vault:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
       interval: 15s
@@ -69,14 +78,16 @@ services:
       api:
         condition: service_healthy
     environment:
-      # 这两个值会进入浏览器 bundle，所以地址必须是浏览器可访问的宿主机地址，
-      # 不能写 Compose 内部服务名 http://api:8000。
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      # 浏览器请求同源 /backend；Next 容器再通过 Compose 服务名访问 API。
+      # 这样前端不依赖宿主机 API_PORT，也没有跨域问题。
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/backend}
+      INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://api:8000}
       NEXT_PUBLIC_API_KEY: ${API_KEY:-}
       # Docker Desktop 的 bind mount 偶尔收不到文件事件，轮询可保证 HMR 稳定。
       WATCHPACK_POLLING: "true"
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      # 3000 是容器内部端口；浏览器访问的是左侧可配置的宿主机端口。
+      - "${FRONTEND_PORT:-13000}:3000"
     volumes:
       # 依赖保留在镜像中，只挂需要热更新的源码和配置，避免宿主机
       # node_modules 覆盖容器里的 Linux 依赖。

@@ -165,7 +165,8 @@ class Consolidator:
 
         store = MemoryStore(self.session, actor="consolidation")
         executor = MemoryToolExecutor(store)
-        system = await build_system_prompt(store)
+        # 整理的输入是对话摘要，用不上知识库 —— 不注册 kb 工具，提示词里也别提它
+        system = await build_system_prompt(store, include_kb=False)
         prompt = CONSOLIDATE_PROMPT.format(
             date=day.isoformat(), index=INDEX_PATH, summaries="\n\n".join(summaries)
         )

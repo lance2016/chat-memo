@@ -26,6 +26,10 @@ import type {
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
+export function apiBaseLabel() {
+  return API_BASE.startsWith("/") ? `同源代理 ${API_BASE}` : API_BASE.replace(/^https?:\/\//, "");
+}
+
 export function apiUrl(path: string) {
   return /^https?:\/\//.test(path) ? path : `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
 }
@@ -39,7 +43,7 @@ export class ApiError extends Error {
 
 export function errorMessage(cause: unknown, fallback: string) {
   if (cause instanceof ApiError && cause.status === 0) return cause.message;
-  if (cause instanceof TypeError) return "无法连接后端服务，请确认后端运行在 http://localhost:8000";
+  if (cause instanceof TypeError) return `无法连接后端服务，请确认 ${apiBaseLabel()} 可用`;
   return cause instanceof Error ? cause.message : fallback;
 }
 
@@ -162,7 +166,12 @@ export async function synthesizeSpeech(input: SpeechRequest) {
     }
     throw new ApiError(response.status, message);
   }
-  return response.blob();
+  // Read bytes and construct the Blob in the current realm. `Response.blob()`
+  // may return a Blob owned by another realm under Node/jsdom, which then
+  // fails `instanceof Blob` checks and can be rejected by browser APIs.
+  return new Blob([await response.arrayBuffer()], {
+    type: response.headers.get("Content-Type") ?? "audio/mpeg",
+  });
 }
 
 export function createConversation() {

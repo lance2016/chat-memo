@@ -4,13 +4,13 @@ import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
-import { codeToHtml } from "shiki";
 
 function ShikiCode({ code, language }: { code: string; language: string }) {
   const [html, setHtml] = useState("");
   useEffect(() => {
     let active = true;
-    codeToHtml(code, { lang: language || "text", theme: "github-dark-default" })
+    const theme = document.documentElement.dataset.theme === "light" ? "github-light-default" : "github-dark-default";
+    import("shiki").then(({ codeToHtml }) => codeToHtml(code, { lang: language || "text", theme }))
       .then((result) => { if (active) setHtml(result); })
       .catch(() => { if (active) setHtml(""); });
     return () => { active = false; };
@@ -30,6 +30,15 @@ const components: Components = {
   },
 };
 
-export function Markdown({ children }: { children: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{children}</ReactMarkdown>;
+const streamingComponents: Components = {
+  code({ className, children, ...props }) {
+    const code = String(children).replace(/\n$/, "");
+    const inline = !className && !code.includes("\n");
+    if (inline) return <code className="inline-code" {...props}>{children}</code>;
+    return <div className="code-wrap"><pre><code className={className} {...props}>{code}</code></pre></div>;
+  },
+};
+
+export function Markdown({ children, highlightCode = true }: { children: string; highlightCode?: boolean }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={highlightCode ? components : streamingComponents}>{children}</ReactMarkdown>;
 }

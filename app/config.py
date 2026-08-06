@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     custom_instructions: str = ""
 
     # anthropic | deepseek
-    provider: str = "anthropic"
+    provider: str = "deepseek"
 
     anthropic_api_key: str = ""
     model: str = "claude-opus-5"
@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # 记录每次发给模型的完整请求体，供 /api/debug/requests 查、日志里打轮廓。
     # 默认关：开着会把完整对话历史留在进程内存里。
     debug_prompts: bool = False
+
+    # Obsidian vault 的挂载点（compose 把宿主机 VAULT_PATH 只读挂到 /vault 并注入本值）。
+    # 留空 = 不启用知识库工具。基础设施配置，只能改 .env —— 挂载点本来就要改 compose 才能变。
+    vault_path: str = ""
 
     # ---- 文字转语音（本地 mlx-audio，OpenAI 兼容接口）----
     # 地址算基础设施，只能改 .env。容器里要用 host.docker.internal 才能回到宿主机。

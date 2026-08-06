@@ -69,6 +69,9 @@ class MemoryToolExecutor:
     所有失败都转成 ``is_error`` 的结果文本回给模型，让它自己纠正，而不是中断这轮对话。
     """
 
+    # 供 CompositeExecutor 按工具名路由
+    names = frozenset({"memory"})
+
     def __init__(self, store: MemoryStore) -> None:
         self.store = store
 

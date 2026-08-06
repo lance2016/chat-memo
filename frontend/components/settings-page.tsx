@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Activity, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
-import { clearDebugRequests, createBackup, errorMessage, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { WorkspaceTopbar } from "@/components/workspace-topbar";
+import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 type SettingsSectionKey = "general" | "assistant" | "model" | "review" | "voice" | "advanced" | "system";
 
@@ -153,6 +155,8 @@ export function SettingsPage() {
   const [debugDialog, setDebugDialog] = useState<"prompt" | "request" | null>(null);
   const [debugError, setDebugError] = useState("");
   const [debugCopied, setDebugCopied] = useState<"prompt" | "payload" | null>(null);
+  const [clearDebugPending, setClearDebugPending] = useState(false);
+  const [clearingDebug, setClearingDebug] = useState(false);
 
   const loadRuntime = useCallback(async () => {
     setLoading(true);
@@ -232,13 +236,14 @@ export function SettingsPage() {
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
     ...pendingResets,
   ])), [activeFields, draftValues, pendingResets, runtime]);
+  useNavigationGuard(changedKeys.length > 0, "设置页有尚未保存的修改，确定放弃并离开吗？");
   const values = runtime?.values ?? {};
   const consolidationAuto = typeof values.consolidate_auto === "boolean" ? values.consolidate_auto : undefined;
   const consolidationHour = typeof values.consolidate_hour === "number" ? values.consolidate_hour : undefined;
   const consolidationMode = consolidationAuto === undefined ? "后端配置" : consolidationAuto ? "自动整理" : "手动触发";
   const consolidationSchedule = consolidationAuto === undefined ? "后端配置" : consolidationAuto ? `${String(consolidationHour ?? 4).padStart(2, "0")}:00` : "按需触发";
   const consolidationModel = typeof values.consolidate_model === "string" && values.consolidate_model ? values.consolidate_model : runtime?.model ?? "—";
-  const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+  const apiBase = apiBaseLabel();
   const connectionLabel = health?.status === "ok" ? "已连接" : health ? health.status : "未知";
   const thinkingDefault = runtime ? runtime.thinking_default ? "开启" : "关闭" : "—";
   const ttsMode = draftValues.tts_mode === "manual" || draftValues.tts_mode === "auto" ? draftValues.tts_mode : "off";
@@ -377,15 +382,19 @@ export function SettingsPage() {
   };
 
   const clearDebug = async () => {
-    if (!window.confirm("确定清空最近的调试请求吗？调试数据只保存在后端进程内存中。")) return;
+    if (clearingDebug) return;
+    setClearingDebug(true);
     setDebugError("");
     try {
       await clearDebugRequests();
       setDebugRequests((current) => current ? { ...current, items: [] } : current);
       setDebugDetail(null);
       setDebugDialog(null);
+      setClearDebugPending(false);
     } catch (cause) {
       setDebugError(errorMessage(cause, "无法清空调试请求"));
+    } finally {
+      setClearingDebug(false);
     }
   };
 
@@ -436,11 +445,11 @@ export function SettingsPage() {
 
           {activeSection === "model" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>控制日常对话模型、思考方式、输出长度和工具轮次。</p></div><Activity size={17} /></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? renderRuntimeFields(modelFields) : <div className="settings-empty">当前后端没有提供模型配置。</div>}</section>}
 
-          {activeSection === "review" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>设置每日整理的触发方式、时间和专用模型。</p></div><Link className="ghost-button" href="/review">打开每日回顾<ChevronRight size={13} /></Link></div><div className="settings-summary-strip"><div><span>整理方式</span><strong>{consolidationMode}</strong></div><div><span>整理时间</span><strong>{consolidationSchedule}</strong></div><div><span>整理模型</span><strong>{consolidationModel}</strong></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? renderRuntimeFields(reviewFields) : <div className="settings-empty">当前后端没有提供整理配置。</div>}<div className="settings-card-callout"><Clock3 size={14} /><span>自动整理关闭时仍可在每日回顾页手动触发，不会影响历史摘要和记忆版本。</span></div></section>}
+          {activeSection === "review" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>设置每日整理的触发方式、时间和专用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>打开每日回顾<ChevronRight size={13} /></Link></div><div className="settings-summary-strip"><div><span>整理方式</span><strong>{consolidationMode}</strong></div><div><span>整理时间</span><strong>{consolidationSchedule}</strong></div><div><span>整理模型</span><strong>{consolidationModel}</strong></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? renderRuntimeFields(reviewFields) : <div className="settings-empty">当前后端没有提供整理配置。</div>}<div className="settings-card-callout"><Clock3 size={14} /><span>自动整理关闭时仍可在每日回顾页手动触发，不会影响历史摘要和记忆版本。</span></div></section>}
 
           {activeSection === "voice" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>配置朗读模式、声音、语速和合成限制。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div><button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || ttsMode === "off" || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? renderRuntimeFields(ttsFields) : <div className="settings-empty">当前后端没有提供语音配置。</div>}{(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}<audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} /></section>}
 
-          {activeSection === "advanced" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ADVANCED</span><h2>高级与调试</h2><p>仅在排查模型请求时开启。请求快照可能包含完整对话。</p></div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={14} className={debugRequestsLoading ? "spin" : ""} /></button></div>{debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}<div className="debug-retention-note"><Bug size={13} /><span>只在后端内存中保留最近 {debugRequests?.capacity ?? 20} 次请求，服务重启后自动清空。</span></div><div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => void clearDebug()}><Trash2 size={12} />清空</button>}</div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新的模型请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div></section>}
+          {activeSection === "advanced" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ADVANCED</span><h2>高级与调试</h2><p>仅在排查模型请求时开启。请求快照可能包含完整对话。</p></div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={14} className={debugRequestsLoading ? "spin" : ""} /></button></div>{debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}<div className="debug-retention-note"><Bug size={13} /><span>只在后端内存中保留最近 {debugRequests?.capacity ?? 20} 次请求，服务重启后自动清空。</span></div><div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => setClearDebugPending(true)}><Trash2 size={12} />清空</button>}</div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新的模型请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div></section>}
 
           {activeSection === "system" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">SYSTEM & DATA</span><h2>系统与数据</h2><p>查看连接状态、运行模型，并手动创建数据备份。</p></div><Settings2 size={17} /></div><div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="连接状态" value={connectionLabel} tone={health?.status === "ok" ? "value-success" : ""} /><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="模型" value={runtime?.model ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div><div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆文件的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "立即备份"}</button></div>{backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}{runtime?.env_only?.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>以下配置修改后需要重启后端</strong></div><div className="settings-env-only-list">{runtime.env_only.map((key) => <code key={key}>{key}</code>)}</div></div> : null}</section>}
         </div>
@@ -449,5 +458,6 @@ export function SettingsPage() {
       {changedKeys.length > 0 && <div className="settings-savebar" role="status"><div><strong>{changedKeys.length} 项更改尚未保存</strong><span>切换分类不会丢失当前修改</span></div><div><button className="ghost-button" type="button" onClick={discardRuntimeChanges} disabled={saving}>放弃更改</button><button className="primary-button" type="button" onClick={() => void saveRuntime()} disabled={saving}><Save size={13} />{saving ? "保存中…" : "保存更改"}</button></div></div>}
     </main>
     {debugDialog && <DebugDialog kind={debugDialog} prompt={debugPrompt} request={debugDetail} loading={debugDialog === "prompt" ? debugPromptLoading : debugDetailLoading} error={debugError} copied={debugCopied} onClose={() => setDebugDialog(null)} onCopy={(text, target) => void copyDebugText(text, target)} />}
+    <ConfirmDialog open={clearDebugPending} title="清空调试请求？" description="最近的模型请求快照会从后端内存中全部移除，服务重启后本来也会自动清空。" confirmLabel="清空请求" busy={clearingDebug} onCancel={() => setClearDebugPending(false)} onConfirm={() => void clearDebug()} />
   </div>;
 }

@@ -154,6 +154,26 @@ class MemoryRead(Base):
     )
 
 
+class KbRead(Base):
+    """模型每次访问知识库（Obsidian vault）的埋点。
+
+    知识库目前只读，这张表是将来「要不要开写权限」的决策依据：
+    用得多不多、搜了什么、有没有搜到（found=False 的 search 是内容缺口信号）。
+    """
+
+    __tablename__ = "kb_reads"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    command: Mapped[str] = mapped_column(String(16))  # search|read|list|backlinks
+    # search 存 query，其余命令存 vault 相对路径
+    target: Mapped[str] = mapped_column(String(512), index=True)
+    found: Mapped[bool] = mapped_column(Boolean, default=True)
+    conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class AppSetting(Base):
     """可在设置页修改的运行时配置，覆盖 .env 里的同名默认值。
 
@@ -173,3 +193,4 @@ class AppSetting(Base):
 
 Index("ix_memory_versions_path_created", MemoryVersion.path, MemoryVersion.created_at)
 Index("ix_memory_reads_path_created", MemoryRead.path, MemoryRead.created_at)
+Index("ix_kb_reads_target_created", KbRead.target, KbRead.created_at)

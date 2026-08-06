@@ -30,6 +30,8 @@ out/
 *.sql
 *.dump
 backups/
+# 未设置 VAULT_PATH 时 compose 挂的空占位目录
+.vault-placeholder/
 
 # ---- 编辑器 / 系统 ----
 .DS_Store

@@ -2,7 +2,7 @@
 
 给写前端的人/agent 看的。后端已经跑通并实测过，本文档里的所有 JSON 都是**真实响应**，不是示意。
 
-- Base URL：`http://localhost:8000`
+- Base URL：宿主机直连默认为 `http://localhost:18000`；Compose 前端使用同源 `/backend` 代理
 - 技术栈建议：Next.js 15 (App Router) + TypeScript + Tailwind + shadcn/ui
 - 前端**不直接调任何模型 API**，一律走后端
 
@@ -10,6 +10,17 @@
 
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
+
+### 第 7 批 · 后端已就绪，前端待做 🚧
+
+Obsidian 知识库（只读）接入：`.env` 配置 `VAULT_PATH` 后模型多了四个 `kb_*` 工具。
+接口无破坏性变化 —— 不适配也能用，只是 kb 工具的状态条文案会难看。
+
+| 变化 | 位置 | 前端要做什么 |
+|---|---|---|
+| `tool_use.name` 新增四种 `kb_*` | [知识库工具](#知识库工具kb_) | `frontend/lib/turns.ts` 的 `toolLabel()` 给 kb 工具配中文文案（kb 的 `input` **没有 `command` 字段**，按 `name` 分支） |
+| 工具组标题写死「记忆操作」 | [知识库工具](#知识库工具kb_) | `frontend/components/chat-page.tsx` 的 `ToolActivityGroup`：组内可能混着记忆和知识库操作，标题改成按内容区分（全 kb → 「知识库查询」，混合 → 「工具操作」） |
+| `GET /api/settings` 新增 `kb_enabled` | [运行时设置](#运行时设置) | 可选：设置页运行时卡片显示「知识库：已挂载/未启用」。**不是** `fields` 里的可写项，别渲染成表单 |
 
 ### 第 6 批 · 后端已就绪，前端待做 🚧
 
@@ -151,9 +162,14 @@ GET /api/settings
   "env_only": ["database_url", "api_key", "cors_origins", "..."],
 
   "provider": "deepseek", "model": "deepseek-v4-flash",
-  "thinking_default": true, "thinking_toggle": true
+  "thinking_default": true, "thinking_toggle": true,
+  "kb_enabled": false
 }
 ```
+
+> 🆕 第 7 批：`kb_enabled` 表示 Obsidian 知识库是否挂载（`.env` 的 `VAULT_PATH`，
+> 设置页**改不了**，纯只读状态位）。为 `true` 时聊天流里会出现 `kb_*` 工具事件，
+> 见 [知识库工具](#知识库工具kb_)。
 
 **照着 `fields` 渲染表单，不要硬编码字段清单**——以后后端加配置项，前端不用改：
 
@@ -350,7 +366,7 @@ Content-Type: application/json
 |---|---|---|
 | `thinking_delta` | `text` | 追加到「思考中」折叠区。分片很碎，每个字都可能是一个事件 |
 | `text_delta` | `text` | 追加到正文，逐字渲染 |
-| `tool_use` | `name`, `input` | 显示状态条：「正在读取/更新记忆…」，`input.path` 是具体文件 |
+| `tool_use` | `name`, `input` | 显示状态条。`name` 可能是 `memory`，也可能是（🆕 第 7 批）`kb_search` / `kb_read` / `kb_list` / `kb_backlinks`，各自的 `input` 结构见 [知识库工具](#知识库工具kb_) |
 | `tool_result` | `name`, `ok`, `summary` | 更新上面那条状态条；`ok=false` 显示为警告色但**不是错误**，模型通常会自行重试 |
 | `title` | `title` | 更新侧边栏该会话的标题（仅首轮出现） |
 | `done` | `usage` | 本轮结束 |
@@ -389,6 +405,33 @@ data: {"type": "message_id", "message_id": 11}
 ```
 
 注意第一次 `tool_result` 是 `ok: false` —— 模型查了个不存在的文件，然后**自己纠正**继续干活。这是正常流程，别当成失败。
+
+### 知识库工具（kb_*）
+
+> 🆕 第 7 批。仅当 `GET /api/settings` 的 `kb_enabled` 为 `true`（`.env` 配置了
+> `VAULT_PATH`，Obsidian vault 只读挂载）时才会出现。
+
+四个只读工具，`tool_use.input` 的结构：
+
+| name | input 字段 | 建议的状态条文案 |
+|---|---|---|
+| `kb_search` | `query`（必有）, `path_prefix?`, `limit?` | 搜索知识库「{query}」 |
+| `kb_read` | `path`（必有，vault 相对路径）, `view_range?` | 查阅笔记 {path} |
+| `kb_list` | `path?`（空/缺省 = 根目录） | 浏览知识库 {path ?? "/"} |
+| `kb_backlinks` | `path`（必有） | 查找 {path} 的反向链接 |
+
+和 memory 工具的两个区别：**没有 `command` 字段**（操作语义在 `name` 里）；
+`path` 是 vault 相对路径（`Projects/chat-memo.md`），不带 `/memories` 前缀。
+`tool_result` 结构不变（`name` / `ok` / `summary`，`summary` 后端已截断到 200 字符）。
+
+样例事件：
+
+```
+data: {"name": "kb_search", "input": {"query": "手冲咖啡"}, "type": "tool_use"}
+data: {"name": "kb_search", "ok": true, "summary": "搜到 1 条：\n- 咖啡笔记.md  (2026-08-06)\n  手冲参数：15g 粉，1:15 粉水比，92 度。", "type": "tool_result"}
+data: {"name": "kb_read", "input": {"path": "咖啡笔记.md"}, "type": "tool_use"}
+data: {"name": "kb_read", "ok": true, "summary": "咖啡笔记.md:\n1\t---\n2\ttags: [hobby]…", "type": "tool_result"}
+```
 
 ### 消费 SSE
 
@@ -1412,6 +1455,8 @@ export interface RuntimeSettings {
   model: string;
   thinking_default: boolean;
   thinking_toggle: boolean;
+  /** 🆕 第 7 批：Obsidian 知识库是否挂载。只读状态位，不在 fields 里 */
+  kb_enabled: boolean;
 }
 
 export interface SettingField {
@@ -1648,12 +1693,13 @@ export interface MemoryVersion {
 ```bash
 cp .env.example .env             # 首次启动：选择 provider 并填写对应 key
 docker compose up -d --build     # db + api + frontend，迁移自动执行
-curl localhost:8000/health       # {"status":"ok","provider":"deepseek",...}
+curl localhost:18000/health      # {"status":"ok","provider":"deepseek",...}
 ```
 
-浏览器打开 `http://localhost:3000`。后端日志用 `docker compose logs -f api`，
+浏览器打开 `http://localhost:13000`。后端日志用 `docker compose logs -f api`，
 前端编译和热更新日志用 `docker compose logs -f frontend`。
 
-后端 CORS 默认放行 `http://localhost:3000`，改端口的话同步改后端 `.env` 的 `CORS_ORIGINS`。
+宿主机端口由 `.env` 的 `FRONTEND_PORT` 和 `API_PORT` 控制。浏览器请求同源
+`/backend`，前端容器通过 `http://api:8000` 转发，因此调整宿主机端口不影响容器通信。
 
-`GET /health` 可以用来做前端启动时的连通性检查。完整接口列表见 `http://localhost:8000/docs`（FastAPI 自动生成）。
+`GET /health` 可以用来做前端启动时的连通性检查。完整接口列表见 `http://localhost:18000/docs`（FastAPI 自动生成）。

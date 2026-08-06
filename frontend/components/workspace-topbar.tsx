@@ -2,6 +2,7 @@ import { BookOpen, CalendarDays, MessageSquare, Settings2 } from "lucide-react";
 import Link from "next/link";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
+import { confirmAppNavigation } from "@/lib/navigation-guard";
 
 export type WorkspacePage = "chat" | "memories" | "review" | "settings";
 
@@ -14,13 +15,13 @@ const navigation: Array<{ key: WorkspacePage; href: string; label: string; icon:
 
 export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage; className?: string }) {
   return <nav className={`workspace-nav ${className}`} aria-label="主导航">
-    {navigation.map(({ key, href, label, icon: Icon }) => key === active ? <span className="active" aria-current="page" key={key}><Icon size={14} /><span>{label}</span></span> : <Link href={href} key={key}><Icon size={14} /><span>{label}</span></Link>)}
+    {navigation.map(({ key, href, label, icon: Icon }) => key === active ? <span className="active" aria-current="page" key={key}><Icon size={14} /><span>{label}</span></span> : <Link href={href} key={key} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={14} /><span>{label}</span></Link>)}
   </nav>;
 }
 
 export function WorkspaceTopbar({ active, subtitle }: { active: WorkspacePage; subtitle: string }) {
   return <header className="workspace-topbar">
-    <Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">{subtitle}</div></div></Link>
+    <Link className="brand brand-home" href="/" aria-label="返回主页" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">{subtitle}</div></div></Link>
     <div className="workspace-topbar-tools">
       <WorkspaceNav active={active} />
       <SearchTrigger />

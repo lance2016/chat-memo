@@ -10,10 +10,15 @@
 ```bash
 cp .env.example .env              # 选 PROVIDER，填对应的 key
 docker compose up -d --build      # db + api + frontend 一起起来，迁移自动执行
-curl localhost:8000/health
+curl localhost:18000/health
 ```
 
-就这两步，然后打开 <http://localhost:3000>。`api` 和 `frontend` 都挂载了源码，
+就这两步，然后打开 <http://localhost:13000>。默认宿主机端口来自根目录 `.env`：
+`FRONTEND_PORT=13000`、`API_PORT=18000`，遇到占用时直接修改这两个值即可。
+
+浏览器通过前端的 `/backend` 同源代理访问 API，前端容器再使用 Compose 服务名
+`http://api:8000` 与后端通信，因此修改 `API_PORT` 不需要同步修改前端地址或 CORS。
+`api` 和 `frontend` 都挂载了源码，
 **改代码自动热重载**，不用重启容器。三个服务都是 `restart: unless-stopped`，
 Docker 一起来就会自动拉起。
 
@@ -52,7 +57,8 @@ uv run pytest
 开发服务使用 `.next-dev`，生产构建使用 `.next-build`，因此运行构建检查不会再
 覆盖热更新缓存或导致开发服务必须重启。
 
-容器内的 `DATABASE_URL` 由 compose 覆盖成 `db:5432`，两种方式互不干扰。
+容器内的 `DATABASE_URL` 由 compose 覆盖成 `db:5432`，前后端容器也通过
+`api:8000` 通信；这些都是 Compose 内部地址，不受宿主机映射端口影响。
 </details>
 
 ## 支持的模型
@@ -122,6 +128,31 @@ pgvector 已装好，留给将来的**归档检索**（翻两个月前某次对�
 第二个更重要，因为它有全局视角；实时写只看得到当前这轮对话。
 
 每次记忆变更都在 `memory_versions` 留快照，可审计、可回滚，前端记忆页的版本历史就靠它。
+
+## 知识库（Obsidian vault）
+
+`.env` 里设了 `VAULT_PATH`（vault 在宿主机的绝对路径）后，compose 会把它**只读**挂到
+容器的 `/vault`，模型多出四个工具：
+
+| 工具 | 作用 |
+|---|---|
+| `kb_search` | 子串搜文件名和内容，`tag:#标签` 只搜标签 —— 知识库的首选入口 |
+| `kb_read` | 带行号读一篇笔记 |
+| `kb_list` | 浏览目录 |
+| `kb_backlinks` | 查哪些笔记 `[[双链]]` 到给定笔记 |
+
+设计上和记忆是两回事：**vault 是你写的知识，记忆是模型自己的工作记忆**。
+vault 内容绝不进 system prompt（那里只有一段稳定的使用说明，不破坏 prompt cache），
+模型要用就现场搜——不建索引，几千个文件的遍历只要几十毫秒，而且 vault 被 Obsidian
+随时外部改动，没有索引就没有失效问题。
+
+写保护做在挂载层（`:ro`），不依赖提示词自觉。每次 kb 调用都落 `kb_reads` 埋点
+（搜了什么、有没有搜到），将来要不要开写权限靠这张表的数据说话。
+`found=false` 的 search 是内容缺口信号——模型想查但你的笔记里没有。
+
+几个注意点：留空 `VAULT_PATH` 功能整体关闭（工具不注册、提示词不提）；
+iCloud 同步的 vault 里没下载到本地的文件容器读不到；`.obsidian/`、`.trash/`
+等点目录和非文本附件对模型不可见；每日整理任务不带 kb 工具（它的输入是对话摘要）。
 
 ## API 契约（前端对接）
 
@@ -248,7 +279,7 @@ DELETE /api/debug/requests                                清空快照
 
 ```bash
 # 先把 TTS 服务起在 8001，然后
-curl -X POST localhost:8000/api/tts/speech \
+curl -X POST localhost:18000/api/tts/speech \
   -H 'Content-Type: application/json' \
   -d '{"text":"## 你好\n**世界**"}' --output out.mp3
 ```
@@ -301,6 +332,7 @@ app/
     anthropic_provider.py   Claude 的流式 agent loop
     deepseek_provider.py    DeepSeek 的 agent loop + 消息格式互转
     factory.py              按 PROVIDER 选实现
+    composite.py            把 memory 和 kb 工具拼给同一个 agent loop
     events.py               agent 事件定义
   memory/
     paths.py                路径校验（拒绝穿越）
@@ -308,6 +340,10 @@ app/
     tool.py                 memory 工具派发
     prompt.py               system prompt 组装
     router.py               记忆管理 API
+  kb/
+    paths.py                vault 路径校验（含 realpath 防符号链接逃逸）
+    search.py               对 vault 的无状态扫描（搜索 / 读 / 列目录 / 反链）
+    tool.py                 四个 kb_* 只读工具 + kb_reads 埋点
   chat/
     service.py              对话编排 + 落库
     router.py               会话 CRUD + SSE
@@ -336,12 +372,12 @@ app/
 ```
 
 **密钥和基础设施只能改 `.env`**：`*_API_KEY`、`DATABASE_URL`、`API_KEY`、`CORS_ORIGINS`、
-`LOG_*`、`TZ`、`TTS_BASE_URL`。接口一律拒绝写这些——改坏 `api_key` 或 `cors_origins` 会把设置页自己锁在门外。
+`LOG_*`、`TZ`、`TTS_BASE_URL`、`VAULT_PATH`。接口一律拒绝写这些——改坏 `api_key` 或 `cors_origins` 会把设置页自己锁在门外。
 
 ## 备份
 
 ```bash
-curl -X POST localhost:8000/api/jobs/backup
+curl -X POST localhost:18000/api/jobs/backup
 ```
 
 产出在宿主机 `backups/`：`.dump`（`pg_restore` 可完整恢复）+ `memories/` 真实文件树
@@ -353,9 +389,9 @@ curl -X POST localhost:8000/api/jobs/backup
 设置页有一块自由文本，原样追加到 system prompt 末尾，改完立刻生效：
 
 ```bash
-curl -X PATCH localhost:8000/api/settings -H 'Content-Type: application/json' \
+curl -X PATCH localhost:18000/api/settings -H 'Content-Type: application/json' \
   -d '{"custom_instructions": "回答控制在三句话以内。代码优先给 diff，不要贴整个文件。"}'
-curl localhost:8000/api/debug/prompt      # 立刻能看到它出现在末尾
+curl localhost:18000/api/debug/prompt     # 立刻能看到它出现在末尾
 ```
 
 **它和记忆是两个正交的东西**，虽然都进 system prompt：
@@ -400,7 +436,7 @@ system prompt 是拼出来的，历史是规整过的（`sanitize_history`），
 
 ```bash
 # 设置页开「记录发给模型的请求」，或者
-curl -X PATCH localhost:8000/api/settings -H 'Content-Type: application/json' \
+curl -X PATCH localhost:18000/api/settings -H 'Content-Type: application/json' \
   -d '{"debug_prompts": true}'
 ```
 
@@ -408,9 +444,9 @@ curl -X PATCH localhost:8000/api/settings -H 'Content-Type: application/json' \
 
 ```bash
 docker compose logs -f api        # 日志里每次请求打一段轮廓
-curl localhost:8000/api/debug/requests            # 最近 20 次，摘要
-curl localhost:8000/api/debug/requests/1          # 某一次的完整 payload
-curl localhost:8000/api/debug/prompt              # 当前 system prompt 原文，不用发消息
+curl localhost:18000/api/debug/requests           # 最近 20 次，摘要
+curl localhost:18000/api/debug/requests/1         # 某一次的完整 payload
+curl localhost:18000/api/debug/prompt             # 当前 system prompt 原文，不用发消息
 ```
 
 日志里长这样，一眼能看出历史串没串、system 变没变、thinking 块滤掉没有：

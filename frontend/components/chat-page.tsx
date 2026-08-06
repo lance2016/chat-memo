@@ -4,7 +4,7 @@ import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useS
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Archive, ArchiveRestore, ChevronDown, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
+import { apiBaseLabel, apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/lib/types";
@@ -12,6 +12,8 @@ import { Markdown } from "@/components/markdown";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
 import { WorkspaceNav } from "@/components/workspace-topbar";
+import { LatestRequest } from "@/lib/latest-request";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -61,7 +63,7 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
         </details>
       )}
       {showToolActivity && turn.tools.length > 0 && <ToolActivityGroup tools={turn.tools} />}
-      {turn.text && <div className="assistant-content"><Markdown>{turn.text}</Markdown></div>}
+      {turn.text && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown></div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>回答被中断，已保留已生成的内容</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
       {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
@@ -95,6 +97,8 @@ export function ChatPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
   const [renaming, setRenaming] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const [deletingConversation, setDeletingConversation] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
@@ -117,6 +121,7 @@ export function ChatPage() {
   const draftMessageIdRef = useRef<number | null>(null);
   const streamDoneRef = useRef(false);
   const messageRefs = useRef(new Map<number, HTMLDivElement>());
+  const messageRequestsRef = useRef(new LatestRequest());
   const shouldAutoScroll = useRef(true);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
@@ -139,6 +144,7 @@ export function ChatPage() {
   }, []);
 
   useEffect(() => () => {
+    messageRequestsRef.current.invalidate();
     speechGenerationRef.current += 1;
     speechAutoActiveRef.current = false;
     speechFlushCompleteRef.current = false;
@@ -184,18 +190,21 @@ export function ChatPage() {
   }, [loadConversations, router, selectedFromUrl]);
 
   const loadMessages = useCallback(async (id: number) => {
+    const request = messageRequestsRef.current.begin();
     setLoadingMessages(true);
     setError("");
     try {
       const messages = await listMessages(id);
+      if (!messageRequestsRef.current.isCurrent(request)) return;
       messageRefs.current.clear();
       setHighlightedMessageId(null);
       setApiMessages(messages);
       setTurns(toTurns(messages));
     } catch (cause) {
+      if (!messageRequestsRef.current.isCurrent(request)) return;
       setError(errorMessage(cause, "无法加载消息"));
     } finally {
-      setLoadingMessages(false);
+      if (messageRequestsRef.current.isCurrent(request)) setLoadingMessages(false);
     }
   }, []);
 
@@ -289,8 +298,11 @@ export function ChatPage() {
     }
   };
 
-  const removeConversation = async (conversation: Conversation) => {
-    if (!window.confirm(`确定删除「${conversation.title}」吗？此操作不可撤销。`)) return;
+  const removeConversation = async () => {
+    const conversation = deleteTarget;
+    if (!conversation || deletingConversation) return;
+    setDeletingConversation(true);
+    setError("");
     try {
       await deleteConversation(conversation.id);
       const remaining = (showArchived ? archivedConversations : conversations).filter((item) => item.id !== conversation.id);
@@ -301,8 +313,11 @@ export function ChatPage() {
         if (!remaining[0]) setConversations([next]);
         selectConversation(next.id);
       }
+      setDeleteTarget(null);
     } catch (cause) {
       setError(errorMessage(cause, "无法删除会话"));
+    } finally {
+      setDeletingConversation(false);
     }
   };
 
@@ -586,14 +601,16 @@ export function ChatPage() {
         <div className="section-label">Conversations</div>
         <div className="conversation-list">
           {visibleConversations.map((conversation) => (
-            <div className={`conversation-item ${conversation.id === selectedId ? "selected" : ""}`} key={conversation.id} onClick={() => selectConversation(conversation.id)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter") selectConversation(conversation.id); }}>
-              <MessageSquare size={14} /><span className="conversation-title">{conversation.title}</span><span className="conversation-date">{dateLabel(conversation.updated_at)}</span>
+            <div className={`conversation-item ${conversation.id === selectedId ? "selected" : ""}`} key={conversation.id}>
+              <button className="conversation-open" type="button" onClick={() => selectConversation(conversation.id)} aria-current={conversation.id === selectedId ? "true" : undefined}>
+                <MessageSquare size={14} /><span className="conversation-title">{conversation.title}</span><span className="conversation-date">{dateLabel(conversation.updated_at)}</span>
+              </button>
               <button aria-label={showArchived ? `恢复${conversation.title}` : `归档${conversation.title}`} title={showArchived ? "恢复会话" : "归档会话"} className="icon-button" onClick={(event) => { event.stopPropagation(); void toggleArchived(conversation, !showArchived); }}>{showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}</button>
-              <button aria-label={`删除${conversation.title}`} className="icon-button" onClick={(event) => { event.stopPropagation(); void removeConversation(conversation); }}><Trash2 size={13} /></button>
+              <button aria-label={`删除${conversation.title}`} className="icon-button" onClick={(event) => { event.stopPropagation(); setDeleteTarget(conversation); }}><Trash2 size={13} /></button>
             </div>
           ))}
         </div>
-        <div className="sidebar-footer">后端：localhost:8000 · 长期记忆已启用</div>
+        <div className="sidebar-footer">后端：{apiBaseLabel()} · 长期记忆已启用</div>
       </aside>
 
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
@@ -608,6 +625,17 @@ export function ChatPage() {
         </div>
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="删除这段会话？"
+        description="会话中的全部消息和关联记录都会被永久删除。这个操作无法撤销。"
+        subject={deleteTarget?.title}
+        warning={selectedId === deleteTarget?.id ? "删除当前会话后，将自动切换到下一段会话。" : undefined}
+        confirmLabel="永久删除会话"
+        busy={deletingConversation}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void removeConversation()}
+      />
     </div>
   );
 }

@@ -12,7 +12,12 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Open <http://localhost:3000>. Use `docker compose logs -f frontend` to follow
+Open <http://localhost:13000> with the example configuration. The host ports are
+configured by `FRONTEND_PORT` and `API_PORT` in the repository-level `.env`.
+Browser API calls use the same-origin `/backend` path; the frontend container
+proxies them to the Compose service address `http://api:8000`.
+
+Use `docker compose logs -f frontend` to follow
 compiler output. The Compose service enables polling so file changes are detected
 reliably through Docker Desktop bind mounts.
 
