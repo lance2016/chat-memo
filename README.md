@@ -5,6 +5,10 @@
 
 后端 FastAPI + PostgreSQL，前端 Next.js 位于 `frontend/`。
 
+> 接着开发（尤其是换一台机器）先看 **[docs/roadmap.md](docs/roadmap.md)** ——
+> 未来规划里是评审过但还没做的事，问题修复里是已定位的缺陷，
+> 包含已修好的那些的原因，避免重构时又踩回去。
+
 ## 快速开始
 
 ```bash
