@@ -3,7 +3,7 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ArrowRight, ChevronDown, Clock3, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, UsersRound, Volume2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
 import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
@@ -11,7 +11,7 @@ import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/l
 import { Markdown } from "@/components/markdown";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
-import { MemoryBrand, MemoryMark, WorkspaceNav, WorkspaceProfile } from "@/components/workspace-topbar";
+import { MemoryBrand, MemoryMark, WorkspaceNav, WorkspacePageFallback, WorkspaceProfile } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InputDialog } from "@/components/input-dialog";
@@ -106,8 +106,6 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
         </div>
         <aside className="home-rail">
           <Link className="home-review-card" href="/review"><span className="review-scene"><i className="review-sun" /><i className="review-hill back" /><i className="review-hill front" /></span><span className="home-review-copy"><small>TODAY&apos;S REVIEW</small><strong>回看今天<br />留下的脉络</strong><em>开始今日回顾 <ArrowRight size={13} /></em></span></Link>
-          <Link className="home-insight-card" href="/memories?view=people"><span><UsersRound size={17} /></span><span><small>把散落的信息连起来</small><strong>看看重要的人</strong></span><ArrowRight size={14} /></Link>
-          <Link className="home-insight-card plan-card" href="/memories?view=plans"><span><Clock3 size={17} /></span><span><small>别错过说过的话</small><strong>计划与约定</strong></span><ArrowRight size={14} /></Link>
         </aside>
       </section>
     </div>
@@ -681,7 +679,7 @@ export function ChatPage() {
     return result;
   }, [draft, pendingUser, sending, turns]);
 
-  if (loadingConversations) return <div className="page-loading">正在连接助手…</div>;
+  if (loadingConversations) return <WorkspacePageFallback active="chat" message="正在连接助手…" />;
 
   return (
     <div className="app-shell">

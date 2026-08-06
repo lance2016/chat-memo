@@ -1,5 +1,10 @@
-import { BookOpen, CalendarDays, CalendarCheck2, Home, Settings2, UsersRound } from "lucide-react";
+"use client";
+
+import { useEffect, useState } from "react";
+import { BookOpen, CalendarDays, Home, MessageSquare, Plus, Settings2 } from "lucide-react";
 import Link from "next/link";
+import { listConversations } from "@/lib/api";
+import type { Conversation } from "@/lib/types";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
@@ -10,11 +15,6 @@ const navigation = [
   { key: "chat" as const, href: "/", label: "首页", icon: Home },
   { key: "memories" as const, href: "/memories", label: "记忆库", icon: BookOpen },
   { key: "review" as const, href: "/review", label: "每日回顾", icon: CalendarDays },
-];
-
-const memoryViews = [
-  { href: "/memories?view=people", label: "重要的人", icon: UsersRound },
-  { href: "/memories?view=plans", label: "计划与约定", icon: CalendarCheck2 },
 ];
 
 const pageLabels: Record<WorkspacePage, string> = {
@@ -46,7 +46,6 @@ export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage
     {navigation.map(({ key, href, label, icon: Icon }) => key === active
       ? <span className="active" aria-current="page" key={key}><Icon size={18} /><span>{label}</span></span>
       : <Link href={href} key={key} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={18} /><span>{label}</span></Link>)}
-    {memoryViews.map(({ href, label, icon: Icon }) => <Link href={href} key={href} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={18} /><span>{label}</span></Link>)}
   </nav>;
 }
 
@@ -59,10 +58,25 @@ export function WorkspaceProfile() {
 }
 
 export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
+  const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    let activeRequest = true;
+    void listConversations(3).then((items) => { if (activeRequest) setRecentConversations(items); }).catch(() => undefined);
+    return () => { activeRequest = false; };
+  }, []);
+
   return <>
     <aside className="workspace-sidebar">
       <MemoryBrand />
+      <Link className="workspace-sidebar-capture" href="/"><Plus size={15} />记录新想法</Link>
       <WorkspaceNav active={active} />
+      <Link className="workspace-sidebar-secondary" href="/"><MessageSquare size={15} />返回最近对话</Link>
+      <div className="workspace-sidebar-recent">
+        <span>最近对话</span>
+        {recentConversations.map((conversation) => <Link href={`/?conversation=${conversation.id}`} key={conversation.id}><i />{conversation.title}</Link>)}
+        {!recentConversations.length && <small>从首页开始一段新的记录</small>}
+      </div>
       <WorkspaceProfile />
     </aside>
     <header className="workspace-desktop-topbar">
@@ -74,4 +88,12 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
       <div><SearchTrigger /><ThemeControl /></div>
     </header>
   </>;
+}
+
+/** Keep the workspace chrome mounted while a route waits for client data. */
+export function WorkspacePageFallback({ active, message }: { active: WorkspacePage; message: string }) {
+  return <div className="workspace-loading-shell">
+    <WorkspaceTopbar active={active} />
+    <main className="workspace-loading-content"><div className="page-loading">{message}</div></main>
+  </div>;
 }
