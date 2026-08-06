@@ -1437,3 +1437,24 @@ html,body { background:var(--bg); color:var(--text); }
 .input-dialog-backdrop { position:fixed; inset:0; z-index:60; display:grid; place-items:center; padding:18px; background:rgba(38,50,76,.3); backdrop-filter:blur(5px); animation:soft-in .16s ease both; }
 .input-dialog { width:min(430px,100%); overflow:hidden; border:1px solid #d8e0ec; border-radius:20px; background:#fff; box-shadow:0 24px 90px rgba(54,77,121,.24); }
 .input-dialog > header { min-height:72px; padding:18px 20px; display:flex; align-items:flex-start; justify-content:space-between; border-bottom:1px solid #edf0f4; }.input-dialog h2 { margin:4px 0 0; font:600 21px "Songti SC",STSong,serif; color:#26344a; }.input-dialog-body { padding:20px; }.input-dialog-body p { margin:0 0 16px; color:#68778e; font-size:12px; line-height:1.7; }.input-dialog-body label { display:grid; gap:7px; color:#68778e; font-size:11px; }.input-dialog-body input { height:42px; padding:0 12px; border:1px solid #cbd6e7; border-radius:10px; outline:0; color:#26344a; background:#f8faff; }.input-dialog-body input:focus { border-color:#7d91d9; box-shadow:0 0 0 3px rgba(88,113,209,.13); }.input-dialog > footer { padding:0 20px 18px; display:flex; justify-content:flex-end; gap:8px; }
+
+/* Keep every tab on the same two-row workspace frame. */
+.memory-shell, .review-shell, .settings-shell { grid-template-rows: 72px minmax(0, 1fr); }
+.workspace-sidebar { grid-column: 1; grid-row: 1 / span 2; }
+.workspace-desktop-topbar { grid-column: 2; grid-row: 1; min-width: 0; height: 72px; padding: 0 37px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); background: rgba(248,249,252,.86); }
+.workspace-breadcrumb { display: flex; align-items: center; gap: 8px; color: #9aa4b4; font-size: 13px; }
+.workspace-breadcrumb b { color: #c1c7d2; font-weight: 500; }
+.workspace-breadcrumb strong { color: #536176; font-weight: 650; }
+.workspace-topbar-tools { display: flex; align-items: center; gap: 8px; }
+.workspace-topbar-tools .topbar-search-trigger { width: auto; }
+.workspace-sidebar-tools { display: none; }
+.memory-workspace, .review-content, .settings-content { grid-row: 2; }
+@media(max-width:980px) {
+  .memory-shell, .review-shell, .settings-shell { grid-template-rows: 72px minmax(0, 1fr); }
+  .workspace-desktop-topbar { padding: 0 24px; }
+}
+@media(max-width:720px) {
+  .memory-shell, .review-shell, .settings-shell { display: block; height: auto; min-height: 100vh; }
+  .workspace-desktop-topbar { display: none; }
+  .workspace-mobile-topbar { display: flex; }
+}

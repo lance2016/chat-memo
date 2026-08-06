@@ -17,6 +17,13 @@ const memoryViews = [
   { href: "/memories?view=plans", label: "计划与约定", icon: CalendarCheck2 },
 ];
 
+const pageLabels: Record<WorkspacePage, string> = {
+  chat: "首页",
+  memories: "记忆库",
+  review: "每日回顾",
+  settings: "设置",
+};
+
 export function MemoryMark({ compact = false }: { compact?: boolean }) {
   return <span className={`memory-mark ${compact ? "compact" : ""}`} aria-hidden="true">
     <svg viewBox="0 0 48 48" fill="none">
@@ -56,9 +63,12 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     <aside className="workspace-sidebar">
       <MemoryBrand />
       <WorkspaceNav active={active} />
-      <div className="workspace-sidebar-tools"><SearchTrigger /><ThemeControl /></div>
       <WorkspaceProfile />
     </aside>
+    <header className="workspace-desktop-topbar">
+      <div className="workspace-breadcrumb"><span>我的记忆</span><b>›</b><strong>{pageLabels[active]}</strong></div>
+      <div className="workspace-topbar-tools"><SearchTrigger /><ThemeControl /></div>
+    </header>
     <header className="workspace-mobile-topbar">
       <MemoryBrand />
       <div><SearchTrigger /><ThemeControl /></div>
