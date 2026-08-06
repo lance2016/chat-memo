@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "新对话"
 
+# 标题最多让用户多等这么久。它和正文并行跑，正常不会触顶。
+TITLE_TIMEOUT = 5.0
+
 INTERRUPTED_RESULT = "（上一轮被中断，该工具未执行完成。如仍需要，请重新调用。）"
 
 
@@ -336,7 +339,19 @@ class ChatService:
             if failed:
                 title_task.cancel()
             else:
-                title = await title_task
+                # 裸 await 会让标题的尾延迟直接变成用户的等待时间：正文说完了，
+                # 流还开着、会话锁还占着，输入框也还是禁用的（前端要等流关闭）。
+                # 实测见过正文 1.4s 说完、标题又拖了 7.7s 的情况。
+                # 等不到就放手：标题仍是 DEFAULT_TITLE，下一轮会自动再试一次。
+                try:
+                    title = await asyncio.wait_for(title_task, TITLE_TIMEOUT)
+                except TimeoutError:
+                    logger.info(
+                        "conv#%s 标题生成超过 %ss，本轮先跳过",
+                        conversation.id,
+                        TITLE_TIMEOUT,
+                    )
+                    title = ""
                 if title:
                     conversation.title = title
                     await self.session.commit()

@@ -365,7 +365,14 @@ async def chat(payload: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
         _stream(payload),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        # no-transform 是拦住中间层压缩的标准信号，这里必须有：前端容器用 Next 的
+        # /backend 代理转发，而 Next 在代理前无条件挂了 gzip 中间件，它只认
+        # no-transform（X-Accel-Buffering 只有 nginx 认）。少了它，分片会攒到
+        # gzip 的 1KB 阈值才发一次，前端看着就不是流式的。
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

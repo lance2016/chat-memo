@@ -1,11 +1,14 @@
 """针对复查中发现的具体缺陷的回归测试。"""
 
+import asyncio
 import datetime as dt
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.chat.router import ChatRequest, chat
 from app.chat.service import DEFAULT_TITLE, ChatService
 from app.config import Settings
 from app.db.models import Conversation, Message
@@ -90,6 +93,34 @@ async def test_title_arrives_before_done(session: AsyncSession) -> None:
     assert events[-1][0] == "message_id"
 
 
+async def test_slow_title_does_not_hold_the_stream_open(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """标题拖太久就放手：它不该延长用户的等待。
+
+    正文说完后流还开着，会话锁就还占着、前端的输入框也还是禁用的（要等流关闭）。
+    裸 await 会把标题的尾延迟原样转嫁给用户，实测见过多等 7.7s。
+    超时后标题保持 DEFAULT_TITLE，下一轮会自动再试。
+    """
+    monkeypatch.setattr("app.chat.service.TITLE_TIMEOUT", 0.05)
+    conversation = await make_conversation(session)
+    service = ChatService(session, provider_with([text_turn("答")]))
+
+    async def never_returns(_first_text: str) -> str:
+        await asyncio.sleep(30)
+        return "来不及的标题"
+
+    monkeypatch.setattr(service, "_complete_title", never_returns)
+
+    events = await drain(service, conversation, "问")
+    kinds = [e[0] if isinstance(e, tuple) else type(e).__name__ for e in events]
+
+    assert "title" not in kinds  # 没等到，就不推给前端
+    assert isinstance(events[-2], Done)  # 但这一轮照常收尾
+    assert events[-1][0] == "message_id"
+    assert conversation.title == DEFAULT_TITLE  # 留给下一轮重试
+
+
 async def test_interrupted_turn_keeps_streamed_text(session: AsyncSession) -> None:
     """中断时用户已经看到的正文必须留下，否则刷新页面就凭空消失。"""
     conversation = await make_conversation(session)
@@ -138,6 +169,21 @@ async def test_interrupted_before_any_text_saves_no_empty_reply(
 
     rows = await messages_of(session, conversation.id)
     assert [r.role for r in rows] == ["user"]
+
+
+async def test_sse_headers_opt_out_of_proxy_compression() -> None:
+    """SSE 响应必须带 ``no-transform``，否则中间层的 gzip 会把流式压没了。
+
+    容器里浏览器走 Next 的 ``/backend`` 代理，而 Next 在转发前无条件挂了 gzip
+    中间件：``text/event-stream`` 会被判定为可压缩，分片攒到 1KB 阈值才发一次，
+    且它从不主动 flush —— 前端看到的就是「转圈很久，然后整段蹦出来」。
+    这个中间件只认 ``no-transform``（``X-Accel-Buffering`` 只有 nginx 认），
+    所以少了这个 token，真流式的后端在浏览器里依然表现成伪流式。
+    """
+    response = await chat(ChatRequest(conversation_id=1, content="问"))
+
+    assert response.media_type == "text/event-stream"
+    assert "no-transform" in response.headers["cache-control"]
 
 
 async def messages_of(session: AsyncSession, conversation_id: int) -> list[Message]:
