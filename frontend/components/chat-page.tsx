@@ -3,15 +3,13 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
 import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
-import { SearchTrigger } from "@/components/global-search";
-import { ThemeControl } from "@/components/theme-control";
-import { MemoryBrand, MemoryMark, WorkspaceNav, WorkspacePageFallback, WorkspaceProfile } from "@/components/workspace-topbar";
+import { MemoryMark, notifyWorkspaceConversationsChanged, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InputDialog } from "@/components/input-dialog";
@@ -37,7 +35,9 @@ function displayTool(tool: LiveTool | ToolActivity) {
 function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
   const runningCount = tools.filter((tool) => "status" in tool && tool.status === "running").length;
   const failedCount = tools.filter((tool) => !("status" in tool && tool.status === "running") && !tool.ok).length;
-  const label = runningCount ? `正在处理 ${tools.length} 项记忆操作` : `记忆操作 ${tools.length} 次`;
+  const knowledgeBaseCount = tools.filter((tool) => tool.name.startsWith("kb_")).length;
+  const groupName = knowledgeBaseCount === tools.length ? "知识库查询" : knowledgeBaseCount > 0 ? "工具操作" : "记忆操作";
+  const label = runningCount ? `正在处理 ${tools.length} 项${groupName}` : `${groupName} ${tools.length} 次`;
   const state = runningCount ? `${runningCount} 项进行中` : failedCount ? `${failedCount} 项需注意` : "已完成";
 
   return <details className={`tool-group ${failedCount ? "has-failure" : ""}`} open={runningCount > 0}>
@@ -125,7 +125,7 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
         </details>
       )}
       {showToolActivity && turn.tools.length > 0 && <ToolActivityGroup tools={turn.tools} />}
-      {turn.text && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown></div>}
+      {(turn.text || streaming) && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown>{streaming && <span className="streaming-cursor" />}</div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>回答被中断，已保留已生成的内容</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
       {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
@@ -155,7 +155,6 @@ export function ChatPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -256,9 +255,11 @@ export function ChatPage() {
       .finally(() => setLoadingConversations(false));
   }, [loadConversations, router, selectedFromUrl]);
 
-  const loadMessages = useCallback(async (id: number) => {
+  // silent：刚流完一轮时用。此时屏幕上已经有完整的回答（draft），再挂一次
+  // 「加载消息中…」会把整个列表替换掉一瞬再换回来，看着就像正文是一次性蹦出来的。
+  const loadMessages = useCallback(async (id: number, silent = false) => {
     const request = messageRequestsRef.current.begin();
-    setLoadingMessages(true);
+    if (!silent) setLoadingMessages(true);
     setError("");
     try {
       const messages = await listMessages(id);
@@ -267,6 +268,10 @@ export function ChatPage() {
       setHighlightedMessageId(null);
       setApiMessages(messages);
       setTurns(toTurns(messages));
+      // 和 setTurns 同一批状态更新里清掉临时态，换帧才是原子的：
+      // 分开清会先渲染出「权威历史 + 尚未清掉的 draft」这一帧，也就是重影。
+      setPendingUser("");
+      setDraft({ text: "", thinking: "", tools: [] });
     } catch (cause) {
       if (!messageRequestsRef.current.isCurrent(request)) return;
       setError(errorMessage(cause, "无法加载消息"));
@@ -305,27 +310,14 @@ export function ChatPage() {
     if (sending) return;
     stopTtsPlayback();
     setSelectedId(id);
-    setSidebarOpen(false);
     setEditingTarget(null);
     setInput("");
     router.push(`/?conversation=${id}`);
   };
 
-  const newConversation = async () => {
-    try {
-      setShowArchived(false);
-      const created = await createConversation();
-      setConversations((current) => [created, ...current]);
-      selectConversation(created.id);
-      setTurns([]);
-    } catch (cause) {
-      setError(errorMessage(cause, "无法创建会话"));
-    }
-  };
-
   const toggleArchived = async (conversation: Conversation, archived: boolean) => {
     try {
-      await archiveConversation(conversation.id, archived);
+      const updated = await archiveConversation(conversation.id, archived);
       if (archived) {
         const remaining = conversations.filter((item) => item.id !== conversation.id);
         setConversations(remaining);
@@ -336,16 +328,13 @@ export function ChatPage() {
         }
       } else {
         setArchivedConversations((current) => current.filter((item) => item.id !== conversation.id));
+        setConversations((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
+        setShowArchived(false);
       }
+      notifyWorkspaceConversationsChanged();
     } catch (cause) {
       setError(errorMessage(cause, archived ? "归档失败" : "恢复会话失败"));
     }
-  };
-
-  const toggleArchivedView = async () => {
-    const next = !showArchived;
-    setShowArchived(next);
-    try { await loadConversations(next); } catch (cause) { setError(errorMessage(cause, next ? "无法加载归档会话" : "无法刷新会话列表")); }
   };
 
   const renameSelectedConversation = async () => {
@@ -365,6 +354,7 @@ export function ChatPage() {
       setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       setArchivedConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
       setRenameDialogOpen(false);
+      notifyWorkspaceConversationsChanged();
     } catch (cause) {
       setError(errorMessage(cause, "无法修改会话标题"));
     } finally {
@@ -388,6 +378,7 @@ export function ChatPage() {
         selectConversation(next.id);
       }
       setDeleteTarget(null);
+      notifyWorkspaceConversationsChanged();
     } catch (cause) {
       setError(errorMessage(cause, "无法删除会话"));
     } finally {
@@ -532,7 +523,10 @@ export function ChatPage() {
       if (speechAudioPlayingRef.current) setTtsPlayingId(event.message_id);
     }
     if (event.type === "done") streamDoneRef.current = true;
-    if (event.type === "title") setConversations((current) => current.map((item) => item.id === selectedId ? { ...item, title: event.title } : item));
+    if (event.type === "title") {
+      setConversations((current) => current.map((item) => item.id === selectedId ? { ...item, title: event.title } : item));
+      notifyWorkspaceConversationsChanged();
+    }
     if (event.type === "tool_use") {
       setDraft((current) => ({ ...current, tools: [...current.tools, { name: event.name, input: event.input, ok: true, summary: "", status: "running" }] }));
     }
@@ -632,10 +626,13 @@ export function ChatPage() {
     } finally {
       abortRef.current = null;
       setSending(false);
-      setPendingUser("");
-      setDraft({ text: "", thinking: "", tools: [] });
       setEditingTarget(null);
-      await Promise.all([loadMessages(conversationId), loadConversations().catch(() => undefined)]);
+      // 临时态由 loadMessages 在换上权威历史的同一帧里清掉，这里不要提前清 ——
+      // 提前清会让刚说完的回答先消失，等 fetch 回来再出现。
+      await Promise.all([
+        loadMessages(conversationId, true),
+        loadConversations().catch(() => undefined),
+      ]);
     }
   };
 
@@ -650,6 +647,7 @@ export function ChatPage() {
     try {
       const created = await createConversation();
       setConversations((current) => [created, ...current]);
+      notifyWorkspaceConversationsChanged();
       setSelectedId(created.id);
       setTurns([]);
       router.replace(`/?conversation=${created.id}`);
@@ -675,7 +673,13 @@ export function ChatPage() {
   const displayTurns = useMemo(() => {
     const result = [...turns] as Turn[];
     if (pendingUser) result.push({ kind: "user", text: pendingUser });
-    if (sending && (draft.text || draft.thinking || draft.tools.length)) result.push({ kind: "assistant", text: draft.text, thinking: draft.thinking, tools: draft.tools });
+    // sending 期间无条件给出助手气泡：首个 token 之前它只有一个闪烁光标，
+    // 否则从发送到首字之间界面上没有任何「在回答」的迹象，看着像卡死。
+    // 流结束后不看 sending，让 draft 一直留在屏幕上，直到 loadMessages
+    // 把权威历史换进来（见 loadMessages）—— 中间不能有空档，否则正文会闪一下。
+    if (sending || draft.text || draft.thinking || draft.tools.length) {
+      result.push({ kind: "assistant", text: draft.text, thinking: draft.thinking, tools: draft.tools });
+    }
     return result;
   }, [draft, pendingUser, sending, turns]);
 
@@ -683,30 +687,16 @@ export function ChatPage() {
 
   return (
     <div className="app-shell">
-      <aside className={`sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
-        <MemoryBrand />
-        <div className="sidebar-actions"><button className="primary-button full-width home-new-button" onClick={() => void newConversation()}><Plus size={15} />记录新想法</button></div>
-        <WorkspaceNav active="chat" className="sidebar-workspace-nav" />
-        <button className={`nav-link nav-button archive-nav-link ${showArchived ? "active" : ""}`} onClick={() => void toggleArchivedView()}><Archive size={15} />{showArchived ? "返回最近对话" : "已归档对话"}</button>
-        <div className="section-label">最近对话</div>
-        <div className="conversation-list">
-          {visibleConversations.map((conversation) => (
-            <div className={`conversation-item ${conversation.id === selectedId ? "selected" : ""}`} key={conversation.id}>
-              <button className="conversation-open" type="button" onClick={() => selectConversation(conversation.id)} aria-current={conversation.id === selectedId ? "true" : undefined}>
-                <MessageSquare size={14} /><span className="conversation-title">{conversation.title}</span><span className="conversation-date">{dateLabel(conversation.updated_at)}</span>
-              </button>
-              <button aria-label={showArchived ? `恢复${conversation.title}` : `归档${conversation.title}`} title={showArchived ? "恢复会话" : "归档会话"} className="icon-button" onClick={(event) => { event.stopPropagation(); void toggleArchived(conversation, !showArchived); }}>{showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}</button>
-              <button aria-label={`删除${conversation.title}`} className="icon-button" onClick={(event) => { event.stopPropagation(); setDeleteTarget(conversation); }}><Trash2 size={13} /></button>
-            </div>
-          ))}
-        </div>
-        <WorkspaceProfile />
-      </aside>
-
-      {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
       <main className="main-panel">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="home-breadcrumb"><span>我的记忆</span><b>›</b><strong>{selected?.title ?? "首页"}</strong></div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-actions"><SearchTrigger /><ThemeControl /></div></header>
         {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
+          <div className="chat-conversation-toolbar">
+            <div className="chat-conversation-title"><span>{showArchived ? "已归档对话" : "当前对话"}</span><strong>{selected?.title ?? "正在打开对话…"}</strong></div>
+            {selected && <div className="chat-conversation-actions">
+              <button type="button" className="icon-button" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
+              <button type="button" className="icon-button" aria-label={showArchived ? "恢复会话" : "归档会话"} title={showArchived ? "恢复会话" : "归档会话"} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
+              <button type="button" className="icon-button chat-delete-button" aria-label="删除会话" title="删除会话" onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
+            </div>}
+          </div>
           <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
             {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>

@@ -11,7 +11,6 @@ import { ReviewMemoryChanges } from "@/components/review/review-memory-changes";
 import { ReviewOverview } from "@/components/review/review-overview";
 import { ReviewSummaryList } from "@/components/review/review-summary-list";
 import { ReviewUsageCard } from "@/components/review/review-usage-card";
-import { WorkspaceTopbar } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 
@@ -168,7 +167,6 @@ export function ReviewPage() {
   const isToday = day === today();
 
   return <div className="review-shell">
-    <WorkspaceTopbar active="review" subtitle="Daily review" />
     <main className="review-content">
       <div className="review-heading"><div><div className="eyebrow">Daily review</div><h1>{isToday ? "回看今天。" : "回看这一天。"}</h1><p>{formatDayTitle(day)} · 把对话、记忆和使用情况放在同一条脉络里。</p></div><div className="review-controls"><div className="date-control"><button className="icon-button date-step" aria-label="前一天" onClick={() => selectDay(moveDay(day, -1))}><ChevronLeft size={16} /></button><label htmlFor="review-day">选择日期</label><input id="review-day" type="date" value={day} onChange={(event) => selectDay(event.target.value)} /><button className="icon-button date-step" aria-label="后一天" onClick={() => selectDay(moveDay(day, 1))}><ChevronRight size={16} /></button></div>{latestSummary && <span className="review-status-chip"><CheckCircle2 size={12} />已整理 · {new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(latestSummary.created_at))}</span>}{!isToday && <button className="ghost-button today-button" onClick={() => selectDay(today())}><RefreshCw size={13} />今天</button>}<Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />整理设置</Link><button className="primary-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />整理中…</> : <><Play size={14} />{latestSummary ? "重新整理这一天" : "整理这一天"}</>}</button></div></div>
       {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />重试</button></div>}

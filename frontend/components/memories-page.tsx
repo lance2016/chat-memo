@@ -8,7 +8,6 @@ import { deleteMemory, errorMessage, getMemory, getMemoryStats, listMemoryNodes,
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
 import type { Memory, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
-import { WorkspaceTopbar } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -272,7 +271,6 @@ export function MemoriesPage() {
 
   return (
     <div className="memory-shell">
-      <WorkspaceTopbar active="memories" subtitle="Memory workspace" />
       <div className="memory-workspace">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
         <div className="memory-header"><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>

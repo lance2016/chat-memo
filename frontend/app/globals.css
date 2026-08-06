@@ -1502,3 +1502,373 @@ html,body { background:var(--bg); color:var(--text); }
   .memory-orbit { height: 180px; margin-top: 12px; transform: scale(.82); }
   .memory-home-grid { grid-template-columns: 1fr; }
 }
+
+/* Final interaction polish -------------------------------------------------
+ * Keep the capture action identical in every sidebar, then give the live
+ * conversation its own readable canvas so it does not feel like the legacy
+ * dark chat screen underneath the new light workspace.
+ */
+.workspace-capture-button {
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  min-height: 48px;
+  box-sizing: border-box;
+  margin: 30px 0 20px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  line-height: 1;
+  font-size: 12px;
+  font-weight: 650;
+  color: #fff;
+  background: linear-gradient(135deg, #667edc, #526ccf);
+  box-shadow: 0 12px 22px #526ccf38;
+}
+.workspace-capture-button:hover { color: #fff; background: linear-gradient(135deg, #7187e2, #5a73d5); }
+.sidebar-actions { margin: 0; padding: 0; }
+.workspace-sidebar-capture { margin-top: 30px; }
+.home-new-button::after { content: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .orbit-core { animation: memory-orbit-float 5s ease-in-out infinite; }
+  .orbit-dot { animation: memory-orbit-float 4.5s ease-in-out infinite reverse; }
+  @keyframes memory-orbit-float {
+    50% { transform: translateY(-7px); }
+  }
+}
+
+/* Conversation canvas */
+.app-shell {
+  background: radial-gradient(circle at 82% -10%, #e7ebff 0, transparent 34%), var(--bg);
+}
+.message-scroll {
+  min-height: 0;
+  padding: 34px clamp(24px, 5vw, 70px) 190px;
+  overflow-y: auto;
+  background: linear-gradient(180deg, rgba(255,255,255,.24), transparent 250px);
+  /* 这里的 scroll-behavior 必须保持默认的 auto。流式跟随靠每个 delta 赋值
+     scrollTop，平滑滚动会把赋值变成动画，而动画自身派发的 scroll 事件和用户
+     上滚无法区分，会触发「用户上滚了就停止跟随」的判定，正文于是长到视口外。
+     需要平滑的那处跳转在 chat-page.tsx 里显式传 behavior 参数。 */
+}
+.message-scroll > .turn,
+.message-scroll > .centered-empty {
+  width: min(900px, 100%);
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.message-scroll > .centered-empty {
+  min-height: 260px;
+  height: 100%;
+}
+.turn {
+  max-width: 900px;
+  margin-bottom: 24px;
+}
+.user-message-group { max-width: min(78%, 680px); }
+.user-bubble {
+  padding: 13px 16px;
+  border: 1px solid #c8d6f4;
+  border-radius: 17px 17px 5px 17px;
+  color: #20304e;
+  background: #e5edff;
+  box-shadow: 0 7px 18px rgba(66, 91, 157, .08);
+  line-height: 1.7;
+}
+.assistant-turn {
+  padding: 18px 20px 15px;
+  border: 1px solid #e6eaf1;
+  border-radius: 17px;
+  background: rgba(255,255,255,.82);
+  box-shadow: 0 9px 24px rgba(50,66,105,.055);
+}
+.assistant-content {
+  color: #26344a;
+  line-height: 1.78;
+  font-size: 14px;
+}
+.assistant-content p { margin: 0 0 13px; }
+.assistant-content blockquote { color: #5e6e87; border-left-color: #9eaddb; }
+.thinking {
+  margin: -2px 0 13px;
+  border-color: #dbe3f0;
+  background: #f7f9fc;
+}
+.thinking summary { color: #66758c; }
+.thinking-body { color: #728198; }
+.tool-group {
+  margin: -2px 0 14px;
+  border-color: #ccd7e8;
+  background: #f7f9fc;
+}
+.tool-group > summary { color: #52647f; }
+.tool-activity { color: #52647f; }
+.tool-activity-state, .tool-group-state, .tool-summary { color: #68778e; }
+.message-usage { color: #8794a8; }
+.turn-actions { opacity: .82; }
+.turn-actions button { color: #7d8da5; }
+.turn-actions button:hover { color: var(--accent); background: #f0f3ff; }
+.composer-wrap {
+  left: 0;
+  right: 0;
+  padding: 18px clamp(24px, 5vw, 70px) 24px;
+  background: linear-gradient(transparent, var(--bg) 30%);
+}
+.composer {
+  width: min(900px, 100%);
+  max-width: 900px;
+  min-height: 72px;
+  padding: 8px 8px 8px 16px;
+  border: 1px solid #dfe5ef;
+  border-radius: 20px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 15px 36px rgba(50,66,105,.12);
+}
+.composer:focus-within {
+  border-color: #b8c6e5;
+  box-shadow: 0 16px 38px rgba(50,66,105,.15);
+}
+.composer textarea { min-height: 42px; color: var(--text); }
+.composer textarea::placeholder { color: #9aa7b9; }
+.composer-bottom { padding-bottom: 2px; }
+.composer-hint { color: #8996aa; }
+.composer .primary-button,
+.composer .stop-button {
+  min-width: 72px;
+  height: 36px;
+  padding: 0 13px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+.error-banner { width: min(900px, 100%); max-width: 900px; }
+
+@media (max-width: 980px) {
+  .workspace-capture-button { width: 56px; margin-left: auto; margin-right: auto; padding: 0; font-size: 0; }
+  .home-new-button::after { content: none; }
+  .message-scroll, .composer-wrap { padding-left: 24px; padding-right: 24px; }
+}
+@media (max-width: 720px) {
+  .message-scroll, .composer-wrap { padding-left: 16px; padding-right: 16px; }
+  .message-scroll { padding-top: 24px; padding-bottom: 170px; }
+  .assistant-turn { padding: 15px 16px 13px; }
+  .user-message-group { max-width: 88%; }
+  .composer-wrap { padding-bottom: 16px; }
+  .composer { border-radius: 17px; }
+}
+
+html[data-theme="dark"] .message-scroll {
+  background: linear-gradient(180deg, rgba(24,33,58,.32), transparent 250px);
+}
+html[data-theme="dark"] .user-bubble {
+  color: #e5ebf7;
+  border-color: #2e3c5b;
+  background: #202a41;
+  box-shadow: none;
+}
+html[data-theme="dark"] .assistant-turn {
+  border-color: #252d3b;
+  background: rgba(16,20,28,.82);
+  box-shadow: none;
+}
+html[data-theme="dark"] .assistant-content { color: #e5eaf2; }
+html[data-theme="dark"] .assistant-content blockquote { color: #aab6ca; border-left-color: #536996; }
+html[data-theme="dark"] .thinking { border-color: #252d3b; background: rgba(17,22,31,.65); }
+html[data-theme="dark"] .thinking summary { color: #a2acc0; }
+html[data-theme="dark"] .thinking-body { color: #8996aa; }
+html[data-theme="dark"] .tool-group { border-color: rgba(83,105,149,.38); background: rgba(18,24,34,.48); }
+html[data-theme="dark"] .tool-group > summary { color: #aab8ce; }
+html[data-theme="dark"] .tool-activity { color: #9ca9be; }
+html[data-theme="dark"] .tool-activity-state,
+html[data-theme="dark"] .tool-group-state,
+html[data-theme="dark"] .tool-summary { color: #74839a; }
+html[data-theme="dark"] .message-usage { color: #66748b; }
+html[data-theme="dark"] .turn-actions button { color: #77849a; }
+html[data-theme="dark"] .turn-actions button:hover { background: #151a24; }
+html[data-theme="dark"] .composer-wrap { background: linear-gradient(transparent, var(--bg) 32%); }
+html[data-theme="dark"] .composer {
+  border-color: var(--border-subtle);
+  background: rgba(20,26,37,.96);
+  box-shadow: 0 18px 50px rgba(0,0,0,.25);
+}
+html[data-theme="dark"] .composer:focus-within { border-color: var(--border-strong); box-shadow: 0 18px 50px rgba(0,0,0,.25); }
+html[data-theme="dark"] .composer textarea { color: var(--text); }
+html[data-theme="dark"] .composer textarea::placeholder { color: var(--text-tertiary); }
+html[data-theme="dark"] .composer-hint { color: var(--text-tertiary); }
+
+/* Persistent workspace frame ---------------------------------------------
+ * The route layout owns these three regions. They stay mounted while only
+ * .workspace-route-content is replaced by Next.js during tab navigation.
+ */
+.workspace-frame {
+  width: 100%;
+  height: 100vh;
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-rows: 72px minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--bg);
+}
+.workspace-frame > .workspace-sidebar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 264px;
+  min-height: 0;
+  height: 100vh;
+}
+.workspace-frame > .workspace-desktop-topbar {
+  grid-column: 2;
+  grid-row: 1;
+}
+.workspace-frame > .workspace-mobile-topbar { display: none; }
+.workspace-route-content {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at 82% -10%, #e7ebff 0, transparent 34%), var(--bg);
+}
+.workspace-route-content > .app-shell,
+.workspace-route-content > .memory-shell,
+.workspace-route-content > .review-shell,
+.workspace-route-content > .settings-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  animation: none;
+}
+.workspace-route-content > .app-shell { display: block; }
+.workspace-route-content > .memory-shell,
+.workspace-route-content > .review-shell,
+.workspace-route-content > .settings-shell { display: block; }
+.workspace-route-content .main-panel,
+.workspace-route-content .memory-workspace,
+.workspace-route-content .review-content,
+.workspace-route-content .settings-content {
+  grid-column: auto;
+  grid-row: auto;
+  min-height: 0;
+  height: 100%;
+}
+.workspace-route-content .memory-workspace { width: 100%; }
+.workspace-route-content .review-content,
+.workspace-route-content .settings-content { scrollbar-gutter: stable; }
+.workspace-content-loading {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+.workspace-content-loading .page-loading { min-height: 0; }
+
+/* Supplied brand artwork is shared by the sidebar and animated home orbit. */
+.memory-mark {
+  overflow: hidden;
+  background: transparent;
+  box-shadow: none;
+}
+.memory-mark-image {
+  width: 145%;
+  height: 145%;
+  max-width: none;
+  display: block;
+  object-fit: contain;
+}
+.memory-mark.compact .memory-mark-image { width: 142%; height: 142%; }
+.workspace-sidebar .memory-brand-link,
+.sidebar .memory-brand-link {
+  width: 100%;
+  min-height: 57px;
+  padding: 0;
+  overflow: hidden;
+  justify-content: flex-start;
+  gap: 0;
+}
+.memory-brand-lockup {
+  width: 210px;
+  height: auto;
+  max-width: none;
+  flex: none;
+  display: block;
+}
+
+.workspace-sidebar-secondary {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.chat-conversation-toolbar {
+  height: 58px;
+  min-height: 58px;
+  padding: 0 clamp(24px, 5vw, 70px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(225,230,238,.9);
+  background: rgba(248,249,252,.72);
+}
+.chat-conversation-title { min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.chat-conversation-title span { flex: none; color: #99a3b1; font-size: 10px; font-weight: 700; letter-spacing: .1em; }
+.chat-conversation-title strong { overflow: hidden; color: #536176; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.chat-conversation-actions { flex: none; display: flex; align-items: center; gap: 4px; }
+.chat-conversation-actions .icon-button { width: 34px; height: 34px; border: 1px solid transparent; border-radius: 10px; }
+.chat-conversation-actions .icon-button:hover { border-color: #dfe5ef; background: #fff; }
+.chat-conversation-actions .chat-delete-button:hover { color: var(--red); background: #fff7f7; }
+
+html[data-theme="dark"] .workspace-route-content {
+  background: radial-gradient(circle at 75% 0%, #18213a 0, transparent 36%), var(--bg);
+}
+html[data-theme="dark"] .chat-conversation-toolbar { border-bottom-color: var(--border); background: rgba(13,17,24,.72); }
+html[data-theme="dark"] .chat-conversation-title span { color: var(--text-tertiary); }
+html[data-theme="dark"] .chat-conversation-title strong { color: var(--text-secondary); }
+html[data-theme="dark"] .chat-conversation-actions .icon-button:hover { border-color: var(--border); background: var(--panel-2); }
+
+@media (max-width: 980px) {
+  .workspace-frame { grid-template-columns: 82px minmax(0, 1fr); }
+  .workspace-frame > .workspace-sidebar { width: 82px; }
+  .workspace-frame > .workspace-sidebar .memory-brand-link { width: 56px; min-height: 50px; }
+  .workspace-frame > .workspace-sidebar .memory-brand-lockup { width: 210px; }
+  .chat-conversation-toolbar { padding-left: 24px; padding-right: 24px; }
+}
+@media (max-width: 720px) {
+  .workspace-frame {
+    height: 100vh;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .workspace-frame > .workspace-sidebar,
+  .workspace-frame > .workspace-desktop-topbar { display: none; }
+  .workspace-frame > .workspace-mobile-topbar { flex: none; display: flex; }
+  .workspace-mobile-topbar .memory-brand-link { width: 180px; min-height: 48px; padding: 0; overflow: hidden; }
+  .workspace-mobile-topbar .memory-brand-lockup { width: 180px; }
+  .workspace-route-content {
+    width: 100%;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+  .workspace-route-content > .app-shell,
+  .workspace-route-content > .memory-shell,
+  .workspace-route-content > .review-shell,
+  .workspace-route-content > .settings-shell {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .chat-conversation-toolbar { height: 54px; min-height: 54px; padding: 0 16px; }
+  .chat-conversation-title span { display: none; }
+}

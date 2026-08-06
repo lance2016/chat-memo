@@ -38,4 +38,11 @@ describe("toolLabel", () => {
     expect(toolLabel({ name: "memory", input: { command: "view", path: "/memories/MEMORY.md" } })).toBe("查阅记忆 /memories/MEMORY.md");
     expect(toolLabel({ name: "memory", input: { command: "delete", path: "/memories/x.md" } })).toBe("删除记忆 /memories/x.md");
   });
+
+  it("uses knowledge-base tool copy without a command field", () => {
+    expect(toolLabel({ name: "kb_search", input: { query: "手冲咖啡" } })).toBe("搜索知识库「手冲咖啡」");
+    expect(toolLabel({ name: "kb_read", input: { path: "咖啡笔记.md" } })).toBe("查阅笔记 咖啡笔记.md");
+    expect(toolLabel({ name: "kb_list", input: {} })).toBe("浏览知识库 /");
+    expect(toolLabel({ name: "kb_backlinks", input: { path: "项目/chat-memo.md" } })).toBe("查找 项目/chat-memo.md 的反向链接");
+  });
 });

@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import { GlobalSearch } from "@/components/global-search";
 import { ThemeProvider } from "@/components/theme-provider";
+import { WorkspaceFrame } from "@/components/workspace-frame";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "个人 AI 助手",
   description: "带有长期记忆的个人 AI 助手",
+  icons: { icon: "/morning-memory-logo.png" },
 };
 
 const themeBootstrap = `(() => {
@@ -25,7 +27,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeBootstrap }} /></head>
-      <body><ThemeProvider>{children}<GlobalSearch /></ThemeProvider></body>
+      <body><ThemeProvider><WorkspaceFrame>{children}</WorkspaceFrame><GlobalSearch /></ThemeProvider></body>
     </html>
   );
 }

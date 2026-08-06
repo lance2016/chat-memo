@@ -12,6 +12,8 @@ export interface RuntimeSettings {
   model: string;
   thinking_default: boolean;
   thinking_toggle: boolean;
+  /** 是否已挂载只读知识库（由后端 VAULT_PATH 决定）。 */
+  kb_enabled?: boolean;
   values: Record<string, unknown>;
   sources: Record<string, "db" | "env">;
   fields: RuntimeSettingField[];
