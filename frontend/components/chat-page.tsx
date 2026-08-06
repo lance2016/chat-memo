@@ -3,13 +3,15 @@
 import { FormEvent, KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, BookOpen, Bot, CalendarDays, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Settings2, Square, Trash2, TriangleAlert, Brain } from "lucide-react";
-import { archiveConversation, createConversation, deleteConversation, errorMessage, getRuntimeSettings, listConversations, listMessages, streamChat, truncateMessages, updateConversation } from "@/lib/api";
+import { Archive, ArchiveRestore, ChevronDown, ListChecks, LoaderCircle, Menu, MessageSquare, Pencil, Plus, RefreshCw, Send, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
-import type { ChatEvent, Conversation, RuntimeSettings, ToolActivity, Turn } from "@/lib/types";
+import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
+import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
+import { WorkspaceNav } from "@/components/workspace-topbar";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -21,11 +23,24 @@ function displayTool(tool: LiveTool | ToolActivity) {
   const running = "status" in tool && tool.status === "running";
   return (
     <div className={`tool-activity ${running ? "running" : tool.ok ? "" : "failed"}`} key={`${tool.name}-${tool.summary}-${JSON.stringify(tool.input)}`}>
-      {running ? <LoaderCircle size={13} className="spin" /> : tool.ok ? <span>✓</span> : <span>!</span>}
-      <span>{toolLabel(tool)}</span>
-      {!running && tool.summary && <span className="tool-summary">{tool.summary}</span>}
+      <span className="tool-activity-icon" aria-hidden="true">{running ? <LoaderCircle size={13} className="spin" /> : tool.ok ? "✓" : "!"}</span>
+      <span className="tool-activity-label">{toolLabel(tool)}</span>
+      <span className="tool-activity-state">{running ? "处理中" : tool.ok ? "已完成" : "需注意"}</span>
+      {!running && tool.summary && <span className="tool-summary" title={tool.summary}>{tool.summary}</span>}
     </div>
   );
+}
+
+function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
+  const runningCount = tools.filter((tool) => "status" in tool && tool.status === "running").length;
+  const failedCount = tools.filter((tool) => !("status" in tool && tool.status === "running") && !tool.ok).length;
+  const label = runningCount ? `正在处理 ${tools.length} 项记忆操作` : `记忆操作 ${tools.length} 次`;
+  const state = runningCount ? `${runningCount} 项进行中` : failedCount ? `${failedCount} 项需注意` : "已完成";
+
+  return <details className={`tool-group ${failedCount ? "has-failure" : ""}`} open={runningCount > 0}>
+    <summary><span className="tool-group-icon"><ListChecks size={13} /></span><span className="tool-group-label">{label}</span><span className="tool-group-state">{state}</span><ChevronDown size={13} className="tool-group-chevron" /></summary>
+    <div className="tool-group-list">{tools.map((tool) => displayTool(tool))}</div>
+  </details>;
 }
 
 function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usage"]>) {
@@ -33,7 +48,7 @@ function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usa
   return typeof output === "number" ? `${output.toLocaleString()} output tokens` : "";
 }
 
-function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, turnRef, onEdit, onRegenerate }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void }) {
+function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason = "语音服务状态未知", turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
   if (turn.kind === "user") {
     return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div>{onEdit && <div className="turn-actions"><button onClick={onEdit}><Pencil size={12} />编辑重发</button></div>}</div></div>;
   }
@@ -45,11 +60,16 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
           <div className="thinking-body">{turn.thinking}</div>
         </details>
       )}
-      {showToolActivity && turn.tools.map((tool) => displayTool(tool))}
+      {showToolActivity && turn.tools.length > 0 && <ToolActivityGroup tools={turn.tools} />}
       {turn.text && <div className="assistant-content"><Markdown>{turn.text}</Markdown></div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>回答被中断，已保留已生成的内容</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
-      {onRegenerate && <div className="turn-actions assistant-actions"><button onClick={onRegenerate}><RefreshCw size={12} />重新生成</button></div>}
+      {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
+        {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? "停止播放" : "播放这条回答") : ttsDisabledReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? "停止播放" : "播放这条回答") : ttsDisabledReason}>
+          {ttsLoading ? <LoaderCircle size={12} className="spin" /> : <Volume2 size={12} />}{ttsLoading ? "合成中…" : ttsPlaying ? "停止播放" : "播放语音"}
+        </button>}
+        {onRegenerate && <button onClick={onRegenerate}><RefreshCw size={12} />重新生成</button>}
+      </div>}
     </div>
   );
 }
@@ -74,18 +94,33 @@ export function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
-  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
-  const [updatingThinking, setUpdatingThinking] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
+  const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
+  const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
+  const [ttsPlayingId, setTtsPlayingId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const speechBusyRef = useRef(false);
+  const speechQueueRef = useRef<string[]>([]);
+  const speechCursorRef = useRef(0);
+  const speechPumpRef = useRef<Promise<void>>(Promise.resolve());
+  const speechPumpTimerRef = useRef<number | null>(null);
+  const speechGenerationRef = useRef(0);
+  const speechAutoActiveRef = useRef(false);
+  const speechFlushCompleteRef = useRef(false);
+  const speechAudioPlayingRef = useRef(false);
+  const speechAutoMessageIdRef = useRef<number | null>(null);
+  const draftTextRef = useRef("");
+  const draftMessageIdRef = useRef<number | null>(null);
+  const streamDoneRef = useRef(false);
   const messageRefs = useRef(new Map<number, HTMLDivElement>());
   const shouldAutoScroll = useRef(true);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
 
   useEffect(() => {
-    void getRuntimeSettings().then(setRuntimeSettings).catch(() => undefined);
     setPreferences(readPreferences());
     const handlePreferenceChange = (event: Event) => {
       const detail = (event as CustomEvent<UserPreferences>).detail;
@@ -93,6 +128,24 @@ export function ChatPage() {
     };
     window.addEventListener(preferencesChangeEvent(), handlePreferenceChange);
     return () => window.removeEventListener(preferencesChangeEvent(), handlePreferenceChange);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void getTtsStatus()
+      .then((status) => { if (active) setTtsStatus(status); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => () => {
+    speechGenerationRef.current += 1;
+    speechAutoActiveRef.current = false;
+    speechFlushCompleteRef.current = false;
+    speechQueueRef.current = [];
+    if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
+    audioRef.current?.pause();
+    void stopSpeech().catch(() => undefined);
   }, []);
 
   const loadConversations = useCallback(async (archived = false) => {
@@ -165,8 +218,16 @@ export function ChatPage() {
     if (element && preferences.autoScroll && shouldAutoScroll.current) element.scrollTop = element.scrollHeight;
   }, [draft, pendingUser, preferences.autoScroll, turns]);
 
+  useEffect(() => {
+    const element = composerRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
+  }, [input]);
+
   const selectConversation = (id: number) => {
     if (sending) return;
+    stopTtsPlayback();
     setSelectedId(id);
     setSidebarOpen(false);
     setEditingTarget(null);
@@ -211,22 +272,6 @@ export function ChatPage() {
     try { await loadConversations(next); } catch (cause) { setError(errorMessage(cause, next ? "无法加载归档会话" : "无法刷新会话列表")); }
   };
 
-  const changeThinking = async (value: string) => {
-    if (!selectedId || !selected || updatingThinking || sending) return;
-    const thinking = value === "default" ? null : value === "on";
-    setUpdatingThinking(true);
-    setError("");
-    try {
-      const updated = await updateConversation(selectedId, { thinking });
-      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setArchivedConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
-    } catch (cause) {
-      setError(errorMessage(cause, "无法更新思考模式"));
-    } finally {
-      setUpdatingThinking(false);
-    }
-  };
-
   const renameSelectedConversation = async () => {
     if (!selected || renaming || sending) return;
     const nextTitle = window.prompt("修改会话标题", selected.title)?.trim();
@@ -261,9 +306,143 @@ export function ChatPage() {
     }
   };
 
+  function resetLocalSpeech() {
+    speechGenerationRef.current += 1;
+    speechAutoActiveRef.current = false;
+    speechFlushCompleteRef.current = false;
+    speechQueueRef.current = [];
+    speechCursorRef.current = 0;
+    speechAutoMessageIdRef.current = null;
+    speechAudioPlayingRef.current = false;
+    if (speechPumpTimerRef.current !== null) {
+      window.clearTimeout(speechPumpTimerRef.current);
+      speechPumpTimerRef.current = null;
+    }
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+    }
+    setTtsLoadingId(null);
+    setTtsPlayingId(null);
+  }
+
+  function stopTtsPlayback() {
+    resetLocalSpeech();
+    void stopSpeech().catch(() => undefined);
+  }
+
+  async function playNextSpeech(generation = speechGenerationRef.current) {
+    if (generation !== speechGenerationRef.current || speechAudioPlayingRef.current) return;
+    const nextUrl = speechQueueRef.current.shift();
+    if (!nextUrl) {
+      if (speechFlushCompleteRef.current) speechAutoActiveRef.current = false;
+      return;
+    }
+    const audio = audioRef.current;
+    if (!audio) return;
+    speechAudioPlayingRef.current = true;
+    audio.src = nextUrl;
+    audio.load();
+    try {
+      await audio.play();
+      if (generation !== speechGenerationRef.current) return;
+      setTtsPlayingId(speechAutoMessageIdRef.current);
+    } catch (cause) {
+      speechAudioPlayingRef.current = false;
+      speechAutoActiveRef.current = false;
+      speechQueueRef.current = [];
+      void stopSpeech().catch(() => undefined);
+      setTtsPlayingId(null);
+      setError(cause instanceof DOMException && cause.name === "NotAllowedError" ? "浏览器阻止了自动播放，请点击消息旁的播放按钮" : errorMessage(cause, "语音播放失败"));
+    }
+  }
+
+  function enqueueAutoSpeech(flush = false) {
+    const generation = speechGenerationRef.current;
+    const run = async () => {
+      if (!speechAutoActiveRef.current || generation !== speechGenerationRef.current) return;
+      const text = draftTextRef.current;
+      for (;;) {
+        const result = await getNextSpeech({ text, cursor: speechCursorRef.current, flush });
+        if (!speechAutoActiveRef.current || generation !== speechGenerationRef.current) return;
+        speechCursorRef.current = result.cursor;
+        if (!result.url) break;
+        speechQueueRef.current.push(apiUrl(result.url));
+        void playNextSpeech(generation);
+        if (flush) break;
+      }
+    };
+    const next = speechPumpRef.current.catch(() => undefined).then(run);
+    speechPumpRef.current = next.catch((cause) => {
+      if (generation !== speechGenerationRef.current) return;
+      speechAutoActiveRef.current = false;
+      speechQueueRef.current = [];
+      setError(errorMessage(cause, "自动朗读失败"));
+      void stopSpeech().catch(() => undefined);
+    });
+    return speechPumpRef.current;
+  }
+
+  function scheduleAutoSpeech() {
+    if (!speechAutoActiveRef.current || speechPumpTimerRef.current !== null) return;
+    speechPumpTimerRef.current = window.setTimeout(() => {
+      speechPumpTimerRef.current = null;
+      void enqueueAutoSpeech();
+    }, 300);
+  }
+
+  async function startAutoSpeech() {
+    resetLocalSpeech();
+    await stopSpeech().catch(() => undefined);
+    speechAutoActiveRef.current = true;
+    speechFlushCompleteRef.current = false;
+    speechCursorRef.current = 0;
+    speechAutoMessageIdRef.current = null;
+  }
+
+  async function flushAutoSpeech() {
+    if (speechPumpTimerRef.current !== null) {
+      window.clearTimeout(speechPumpTimerRef.current);
+      speechPumpTimerRef.current = null;
+    }
+    await enqueueAutoSpeech(true);
+    speechFlushCompleteRef.current = true;
+    if (!speechAudioPlayingRef.current && speechQueueRef.current.length === 0) {
+      speechAutoActiveRef.current = false;
+    }
+  }
+
+  function handleSpeechEnded() {
+    speechAudioPlayingRef.current = false;
+    setTtsPlayingId(null);
+    if (speechQueueRef.current.length > 0) void playNextSpeech();
+    else if (speechFlushCompleteRef.current) speechAutoActiveRef.current = false;
+  }
+
+  function handleSpeechError() {
+    if (!speechAudioPlayingRef.current) return;
+    speechAudioPlayingRef.current = false;
+    speechAutoActiveRef.current = false;
+    speechQueueRef.current = [];
+    setTtsPlayingId(null);
+    setError("语音流播放失败，请在设置页试听并检查语音服务");
+    void stopSpeech().catch(() => undefined);
+  }
+
   const handleEvent = (event: ChatEvent) => {
     if (event.type === "thinking_delta") setDraft((current) => ({ ...current, thinking: current.thinking + event.text }));
-    if (event.type === "text_delta") setDraft((current) => ({ ...current, text: current.text + event.text }));
+    if (event.type === "text_delta") {
+      draftTextRef.current += event.text;
+      setDraft((current) => ({ ...current, text: current.text + event.text }));
+      scheduleAutoSpeech();
+    }
+    if (event.type === "message_id") {
+      draftMessageIdRef.current = event.message_id;
+      speechAutoMessageIdRef.current = event.message_id;
+      if (speechAudioPlayingRef.current) setTtsPlayingId(event.message_id);
+    }
+    if (event.type === "done") streamDoneRef.current = true;
     if (event.type === "title") setConversations((current) => current.map((item) => item.id === selectedId ? { ...item, title: event.title } : item));
     if (event.type === "tool_use") {
       setDraft((current) => ({ ...current, tools: [...current.tools, { name: event.name, input: event.input, ok: true, summary: "", status: "running" }] }));
@@ -278,7 +457,54 @@ export function ChatPage() {
         return { ...current, tools };
       });
     }
-    if (event.type === "error") setError(event.message);
+    if (event.type === "error") {
+      streamDoneRef.current = false;
+      setError(event.message);
+    }
+  };
+
+  const ttsAvailable = Boolean(ttsStatus && ttsStatus.mode !== "off" && ttsStatus.enabled);
+  const ttsDisabledReason = !ttsStatus
+    ? "正在检查语音服务"
+    : !ttsStatus.enabled
+      ? "语音播放未启用"
+      : "语音播放已关闭";
+
+  const speakText = async (text: string, messageId?: number) => {
+    if (!text.trim() || !ttsStatus || ttsStatus.mode === "off") return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (messageId !== undefined && ttsPlayingId === messageId) {
+      stopTtsPlayback();
+      return;
+    }
+    if (!ttsAvailable) {
+      setError(ttsDisabledReason);
+      return;
+    }
+    if (speechBusyRef.current) return;
+
+    speechBusyRef.current = true;
+    resetLocalSpeech();
+    setTtsLoadingId(messageId ?? null);
+    setError("");
+    try {
+      await stopSpeech().catch(() => undefined);
+      const prepared = await prepareSpeech({ text });
+      audio.src = apiUrl(prepared.url);
+      audio.currentTime = 0;
+      audio.load();
+      speechAudioPlayingRef.current = true;
+      await audio.play();
+      setTtsPlayingId(messageId ?? null);
+    } catch (cause) {
+      speechAudioPlayingRef.current = false;
+      setTtsPlayingId(null);
+      setError(cause instanceof DOMException && cause.name === "NotAllowedError" ? "浏览器阻止了自动播放，请点击消息旁的播放按钮" : errorMessage(cause, "语音播放失败"));
+    } finally {
+      speechBusyRef.current = false;
+      setTtsLoadingId(null);
+    }
   };
 
   const send = async (contentOverride?: string, targetIdOverride?: number) => {
@@ -290,10 +516,15 @@ export function ChatPage() {
     setInput("");
     setPendingUser(content);
     setDraft({ text: "", thinking: "", tools: [] });
+    draftTextRef.current = "";
+    draftMessageIdRef.current = null;
+    streamDoneRef.current = false;
     shouldAutoScroll.current = true;
     const controller = new AbortController();
     abortRef.current = controller;
     try {
+      if (ttsStatus?.mode === "auto") await startAutoSpeech();
+      else stopTtsPlayback();
       if (targetId !== null && targetId !== undefined) {
         const targetIndex = apiMessages.findIndex((message) => message.id === targetId);
         if (targetIndex < 0) throw new Error("找不到要重发的消息");
@@ -302,7 +533,11 @@ export function ChatPage() {
         setTurns(toTurns(apiMessages.slice(0, targetIndex)));
       }
       await streamChat(selectedId, content, handleEvent, controller.signal);
+      if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
+        await flushAutoSpeech();
+      }
     } catch (cause) {
+      if (!streamDoneRef.current) stopTtsPlayback();
       if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(errorMessage(cause, "聊天失败"));
     } finally {
       abortRef.current = null;
@@ -314,7 +549,10 @@ export function ChatPage() {
     }
   };
 
-  const stop = () => abortRef.current?.abort();
+  const stop = () => {
+    abortRef.current?.abort();
+    stopTtsPlayback();
+  };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && preferences.enterToSend) { event.preventDefault(); void send(); }
@@ -343,11 +581,8 @@ export function ChatPage() {
       <aside className={`sidebar ${sidebarOpen ? "mobile-open" : ""}`}>
         <Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link>
         <div className="sidebar-actions"><button className="primary-button full-width" onClick={() => void newConversation()}><Plus size={15} />新对话</button></div>
-        <Link className="nav-link active" href="/"><MessageSquare size={15} />聊天</Link>
-        <Link className="nav-link" href="/memories"><BookOpen size={15} />记忆管理</Link>
-        <Link className="nav-link" href="/review"><CalendarDays size={15} />每日回顾</Link>
+        <WorkspaceNav active="chat" className="sidebar-workspace-nav" />
         <button className={`nav-link nav-button ${showArchived ? "active" : ""}`} onClick={() => void toggleArchivedView()}><Archive size={15} />{showArchived ? "返回会话" : "已归档"}</button>
-        <Link className="nav-link" href="/settings"><Settings2 size={15} />设置</Link>
         <div className="section-label">Conversations</div>
         <div className="conversation-list">
           {visibleConversations.map((conversation) => (
@@ -363,14 +598,15 @@ export function ChatPage() {
 
       {sidebarOpen && <button className="sidebar-backdrop" aria-label="关闭导航" onClick={() => setSidebarOpen(false)} />}
       <main className="main-panel">
-        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div><div className="topbar-title-row"><div className="topbar-title">{selected?.title ?? "新对话"}</div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-meta">{selected ? "与你的私人记忆相连" : ""}</div></div></div><div className="topbar-actions">{selected && <label className="thinking-control"><Brain size={14} /><span>思考</span><select aria-label="本会话思考模式" value={selected.thinking === null ? "default" : selected.thinking ? "on" : "off"} onChange={(event) => void changeThinking(event.target.value)} disabled={!runtimeSettings || !runtimeSettings.thinking_toggle || updatingThinking || sending}><option value="default">跟随默认{runtimeSettings ? `（${runtimeSettings.thinking_default ? "开" : "关"}）` : ""}</option><option value="on">始终开启</option><option value="off" disabled={runtimeSettings ? !runtimeSettings.thinking_toggle : true}>关闭思考</option></select></label>}<ThemeControl /><Bot size={18} color="var(--accent)" /></div></header>
+        <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div><div className="topbar-title-row"><div className="topbar-title">{selected?.title ?? "新对话"}</div>{selected && <button className="icon-button topbar-edit" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={13} /></button>}</div><div className="topbar-meta">{selected ? "与你的私人记忆相连" : ""}</div></div></div><div className="topbar-actions"><WorkspaceNav active="chat" className="chat-workspace-nav" /><SearchTrigger /><ThemeControl /></div></header>
         <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
-          {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.length === 0 ? <div className="welcome"><div className="eyebrow">Personal intelligence</div><h1>把想法交给<br />一个记得住的助手。</h1><p>聊天中的重要信息会被整理进长期记忆。你可以直接提问，也可以告诉我你的偏好、计划和正在做的事。</p><div className="suggestions"><button className="suggestion" onClick={() => setInput("帮我整理一下今天的工作计划")}>整理今天的工作计划</button><button className="suggestion" onClick={() => setInput("记住我喜欢简洁、直接的回答")}>记住一个偏好</button></div></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
+          {loadingMessages ? <div className="centered-empty">加载消息中…</div> : displayTurns.length === 0 ? <div className="welcome"><div className="eyebrow">Personal intelligence</div><h1>把想法交给<br />一个记得住的助手。</h1><p>聊天中的重要信息会被整理进长期记忆。你可以直接提问，也可以告诉我你的偏好、计划和正在做的事。</p><div className="suggestions"><button className="suggestion" onClick={() => setInput("帮我整理一下今天的工作计划")}>整理今天的工作计划</button><button className="suggestion" onClick={() => setInput("记住我喜欢简洁、直接的回答")}>记住一个偏好</button></div></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
         </div>
         <div className="composer-wrap">
           {error && <div className="error-banner">{error}</div>}
-          <form className="composer" onSubmit={onSubmit}><textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}><Send size={14} />{editingTarget !== null ? "重发" : "发送"}</button>}</div></form>
+          <form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span>{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}><Send size={14} />{editingTarget !== null ? "重发" : "发送"}</button>}</div></form>
         </div>
+        <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
     </div>
   );

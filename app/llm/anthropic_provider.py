@@ -6,7 +6,9 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from app import debug
 from app.config import Settings, get_settings
+from app.debug.log import log_request
 from app.llm.events import (
     AgentEvent,
     AssistantTurn,
@@ -70,15 +72,31 @@ class AnthropicProvider:
         tools = executor.anthropic_definitions if executor is not None else []
         total_usage: dict[str, int] = {}
 
-        for _ in range(self.settings.max_tool_iterations):
+        for iteration in range(self.settings.max_tool_iterations):
+            # 组好再发，**调试记录的就是这一个 dict** —— 另拼一份给调试看，
+            # 迟早和真正发出去的那份不一致，那样的调试信息比没有更糟。
+            payload: dict[str, Any] = {
+                # 传快照：本轮之后还会往 working 里追加，不能让调用方持有活引用。
+                "messages": strip_unsigned_thinking(working),
+                "tools": tools,
+                **self._request_kwargs(system, want_thinking),
+            }
+            snapshot = (
+                debug.recorder.record(
+                    provider="anthropic",
+                    model=self.settings.model,
+                    payload=payload,
+                    iteration=iteration,
+                )
+                if self.settings.debug_prompts
+                else None
+            )
+            if snapshot is not None:
+                log_request(logger, snapshot)
+
             try:
                 final = None
-                async with self.client.messages.stream(
-                    # 传快照：本轮之后还会往 working 里追加，不能让调用方持有活引用。
-                    messages=strip_unsigned_thinking(working),
-                    tools=tools,
-                    **self._request_kwargs(system, want_thinking),
-                ) as stream:
+                async with self.client.messages.stream(**payload) as stream:
                     async for event in stream:
                         if event.type != "content_block_delta":
                             continue
@@ -90,10 +108,14 @@ class AnthropicProvider:
                     final = await stream.get_final_message()
             except Exception as exc:  # 网络/API 错误，转成事件而不是打断 SSE
                 logger.exception("模型调用失败")
+                if snapshot is not None:
+                    snapshot.finish(error=str(exc))
                 yield Error(message=f"模型调用失败：{exc}")
                 return
 
             usage = final.usage.model_dump(exclude_none=True)
+            if snapshot is not None:
+                snapshot.finish(usage=usage, stop_reason=final.stop_reason)
             _accumulate(total_usage, usage)
 
             # 必须原样保留整个 content 数组（含 thinking 块及其签名），

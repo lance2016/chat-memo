@@ -1,21 +1,34 @@
 import type {
   ApiMessage,
+  BackupResult,
   ChatEvent,
   Conversation,
   ConversationSummary,
   ConsolidateResult,
   DailyUsage,
+  DebugPrompt,
+  DebugRequestDetail,
+  DebugRequestList,
   HealthStatus,
   Memory,
   MemoryNode,
   MemoryStats,
   MemoryVersion,
+  PrepareResult,
   RuntimeSettings,
   SearchResults,
+  SpeechRequest,
+  TtsStatus,
+  TtsNextRequest,
+  TtsNextResult,
   TruncateResult,
 } from "./types";
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000").replace(/\/$/, "");
+
+export function apiUrl(path: string) {
+  return /^https?:\/\//.test(path) ? path : `${API_BASE}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) {
@@ -67,6 +80,89 @@ export function getHealth() {
 
 export function getRuntimeSettings() {
   return request<RuntimeSettings>("/api/settings");
+}
+
+export function updateRuntimeSettings(changes: Record<string, unknown>) {
+  return request<RuntimeSettings>("/api/settings", {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export function createBackup() {
+  return request<BackupResult>("/api/jobs/backup", { method: "POST" });
+}
+
+export function getDebugPrompt() {
+  return request<DebugPrompt>("/api/debug/prompt");
+}
+
+export function listDebugRequests(conversationId?: number, limit = 20) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (conversationId !== undefined) query.set("conversation_id", String(conversationId));
+  return request<DebugRequestList>(`/api/debug/requests?${query.toString()}`);
+}
+
+export function getDebugRequest(id: number) {
+  return request<DebugRequestDetail>(`/api/debug/requests/${id}`);
+}
+
+export function clearDebugRequests() {
+  return request<void>("/api/debug/requests", { method: "DELETE" });
+}
+
+export function getTtsStatus() {
+  return request<TtsStatus>("/api/tts/status");
+}
+
+export function prepareSpeech(input: SpeechRequest) {
+  return request<PrepareResult>("/api/tts/prepare", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function getNextSpeech(input: TtsNextRequest) {
+  return request<TtsNextResult>("/api/tts/next", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function stopSpeech() {
+  return request<{ dropped: number }>("/api/tts/stop", { method: "POST" });
+}
+
+export function warmupSpeech() {
+  return request<{ seconds: number }>("/api/tts/warmup", { method: "POST" });
+}
+
+export async function synthesizeSpeech(input: SpeechRequest) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+  if (apiKey) headers.set("X-API-Key", apiKey);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/tts/speech`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input),
+    });
+  } catch (cause) {
+    throw new ApiError(0, errorMessage(cause, "无法连接语音服务"));
+  }
+  if (!response.ok) {
+    let message = `语音合成失败（${response.status}）`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body.detail) message = body.detail;
+    } catch {
+      // Error responses are documented as JSON, but keep a useful fallback for proxies.
+    }
+    throw new ApiError(response.status, message);
+  }
+  return response.blob();
 }
 
 export function createConversation() {

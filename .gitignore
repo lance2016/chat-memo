@@ -20,6 +20,8 @@ __pycache__/
 # frontend/ 下另有一份 .gitignore，这里是兜底
 node_modules/
 .next/
+.next-dev/
+.next-build/
 out/
 *.tsbuildinfo
 

@@ -44,6 +44,10 @@ function MemoryResult({ hit, query, onOpen }: { hit: SearchMemoryHit; query: str
   </button>;
 }
 
+export function SearchTrigger() {
+  return <button className="topbar-search-trigger" type="button" aria-label="全局搜索" title="全局搜索（⌘K / Ctrl+K）" onClick={() => window.dispatchEvent(new Event("open-global-search"))}><Search size={14} /><span>搜索</span><kbd><Command size={10} />K</kbd></button>;
+}
+
 export function GlobalSearch() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -55,14 +59,19 @@ export function GlobalSearch() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    const openSearch = () => setOpen(true);
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setOpen(true);
+        openSearch();
       }
     };
+    window.addEventListener("open-global-search", openSearch);
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("open-global-search", openSearch);
+      window.removeEventListener("keydown", onKeyDown);
+    };
   }, []);
 
   useEffect(() => {
@@ -123,7 +132,6 @@ export function GlobalSearch() {
   };
 
   return <>
-    <button className="global-search-trigger" aria-label="全局搜索" title="全局搜索（⌘K / Ctrl+K）" onClick={() => setOpen(true)}><Search size={14} /><span>搜索</span><kbd><Command size={10} />K</kbd></button>
     {open && <div className="search-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
       <section className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索">
         <div className="search-input-wrap"><Search size={17} /><input ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") close(); }} placeholder="搜索对话和记忆…" /><kbd>ESC</kbd><button className="icon-button" aria-label="关闭搜索" onClick={close}><X size={16} /></button></div>

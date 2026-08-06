@@ -1,7 +1,19 @@
-"""组装 system prompt：人格 + 记忆索引。
+"""组装 system prompt：人格 + 记忆索引 + 用户自定义指令。
 
 这段文本是 prompt cache 的稳定前缀，**不能包含时间戳、会话 ID 等每次都变的内容** ——
 缓存是前缀匹配，插一个变动值就整段失效。需要「今天是几号」这类信息，请放在 user 消息里。
+
+**自定义指令和记忆是两回事**，虽然都进 system prompt：
+
+| | 谁写 | 谁能改 | 会不会被整理 |
+|---|---|---|---|
+| 记忆（`/memories`） | 模型自己 | 模型 + 用户 | 会，每日整理去重修正 |
+| 自定义指令 | 用户 | **只有用户** | 不会 |
+
+分开的理由是**权威性**：自定义指令是「我说了算」的那部分，模型不能覆盖、
+每日整理不能改写。混进记忆层的话，整理任务会把它当成一条普通记忆去重掉。
+主流方案都是这么切的 —— ChatGPT 的 custom instructions vs memory、
+Claude Projects 的 instructions vs knowledge、Claude Code 的 CLAUDE.md。
 """
 
 from __future__ import annotations
@@ -53,14 +65,33 @@ MEMORY_INSTRUCTIONS = f"""# 记忆
 
 EMPTY_INDEX = "（记忆还是空的。遇到值得记的事情就建立第一批记忆文件，并同步写索引。）"
 
+# 放在最末尾：system prompt 的结尾是指令遵循最强的位置，而这段的权威性最高。
+# 对 prompt cache 没有影响 —— 整个 system 是一个缓存块，块内顺序不影响命中。
+CUSTOM_INSTRUCTIONS_TEMPLATE = """
+# {owner}的额外指令
+
+以下是他自己写的指令，**优先级高于上面的所有默认设定**，冲突时以这里为准。
+这段由他手动维护，不属于你的记忆，你既不能也不需要用 memory 工具修改它。
+
+{instructions}
+"""
+
 
 async def build_system_prompt(
     store: MemoryStore, settings: Settings | None = None
 ) -> str:
+    settings = settings or get_settings()
     memories = await store.list_all()
-    owner = (settings or get_settings()).owner_name
+    owner = settings.owner_name
     persona = PERSONA_TEMPLATE.format(owner=owner)
-    return f"{persona}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
+    prompt = f"{persona}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
+
+    instructions = settings.custom_instructions.strip()
+    if instructions:
+        prompt += CUSTOM_INSTRUCTIONS_TEMPLATE.format(
+            owner=owner, instructions=instructions
+        )
+    return prompt
 
 
 def _read_index(memories: list[Memory]) -> str:

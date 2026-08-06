@@ -35,20 +35,29 @@ class Field:
 
     key: str
     label: str
-    kind: str  # str | int | bool | enum
+    # str | text | int | bool | enum。text 和 str 的校验完全一样，
+    # 只是告诉前端渲染成多行文本框而不是单行输入。
+    kind: str
     choices: tuple[str, ...] = ()
     minimum: int | None = None
     maximum: int | None = None
     allow_empty: bool = False
     # 只在特定 provider 下有意义，前端可据此分组显示
     provider: str = ""
+    # 界面分区。空 = 模型与整理（历史默认区），"tts" = 语音
+    group: str = ""
 
 
 # 白名单。**不在这里的字段一律拒绝写入**，包括密钥、数据库连接、CORS、日志。
 # 判据是三类：密钥、基础设施、以及改错会把自己锁在门外的东西
 # （改坏 cors_origins 或 api_key，设置页自己就打不开了）。
 WRITABLE: tuple[Field, ...] = (
-    Field("owner_name", "助手怎么称呼你", "str", minimum=1, maximum=32),
+    Field("owner_name", "助手怎么称呼你", "str", minimum=1, maximum=32,
+          group="prompt"),
+    # 每轮都进 system prompt，所以要有上限。4000 字大约 4000 token，
+    # 首轮之后命中缓存，成本可以接受；再长就该写成记忆文件让模型按需 view 了。
+    Field("custom_instructions", "自定义指令", "text", allow_empty=True,
+          maximum=4000, group="prompt"),
     Field("provider", "模型厂商", "enum", choices=("anthropic", "deepseek")),
     Field("deepseek_model", "DeepSeek 模型", "str", provider="deepseek"),
     Field("deepseek_max_tokens", "输出上限", "int", minimum=256, maximum=128000,
@@ -63,6 +72,23 @@ WRITABLE: tuple[Field, ...] = (
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
     Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
+    Field("tts_mode", "语音播放", "enum", choices=("off", "manual", "auto"),
+          group="tts"),
+    Field("tts_model", "语音模型", "str", group="tts"),
+    Field("tts_voice", "音色", "str", allow_empty=True, group="tts"),
+    Field("tts_lang_code", "语种", "str", group="tts"),
+    Field("tts_instruct", "语气指令", "str", allow_empty=True, maximum=200,
+          group="tts"),
+    Field("tts_format", "音频格式", "enum", choices=("mp3", "wav", "flac", "opus"),
+          group="tts"),
+    Field("tts_stream", "流式合成", "bool", group="tts"),
+    Field("tts_speed_percent", "语速（%）", "int", minimum=50, maximum=200,
+          group="tts"),
+    Field("tts_max_chars", "单次朗读字数上限", "int", minimum=50, maximum=5000,
+          group="tts"),
+    Field("tts_timeout", "合成超时（秒）", "int", minimum=5, maximum=600, group="tts"),
+    Field("tts_warmup", "启动时预热语音模型", "bool", group="tts"),
+    Field("debug_prompts", "记录发给模型的请求", "bool", group="debug"),
 )
 
 WRITABLE_BY_KEY = {f.key: f for f in WRITABLE}
@@ -78,6 +104,8 @@ ENV_ONLY = (
     "log_level",
     "log_color",
     "log_access",
+    # 地址算基础设施：容器内外写法不同，改错了设置页只会看到「连不上」
+    "tts_base_url",
 )
 
 
@@ -184,6 +212,7 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
                 "minimum": f.minimum,
                 "maximum": f.maximum,
                 "provider": f.provider,
+                "group": f.group,
             }
             for f in WRITABLE
         ],

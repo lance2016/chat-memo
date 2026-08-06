@@ -14,11 +14,14 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
 
+from app import debug
 from app.config import Settings, get_settings
+from app.debug.log import log_request
 from app.llm.events import (
     AgentEvent,
     AssistantTurn,
@@ -33,6 +36,20 @@ from app.llm.events import (
 from app.llm.provider import ToolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _Turn:
+    """一轮响应里除了已经流出去的分片之外，还需要留到轮次结束才能用的东西。
+
+    text / reasoning 同时也要留 —— 分片发给了前端，落库还得用完整的那份。
+    """
+
+    text: list[str] = field(default_factory=list)
+    reasoning: list[str] = field(default_factory=list)
+    tool_calls: list[dict[str, str]] = field(default_factory=list)
+    finish: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class DeepSeekProvider:
@@ -60,7 +77,7 @@ class DeepSeekProvider:
             self.settings.deepseek_thinking if thinking is None else thinking
         )
 
-        for _ in range(self.settings.max_tool_iterations):
+        for iteration in range(self.settings.max_tool_iterations):
             request: dict[str, Any] = {
                 "model": self.settings.deepseek_model,
                 "max_tokens": self.settings.deepseek_max_tokens,
@@ -80,27 +97,45 @@ class DeepSeekProvider:
                 # （reasoning_effort 是标准字段但 DeepSeek 静默忽略，别用。）
                 request["extra_body"] = {"thinking": {"type": "disabled"}}
 
+            # 记录的就是下面那个 request 本身，不另拼一份
+            snapshot = (
+                debug.recorder.record(
+                    provider="deepseek",
+                    model=self.settings.deepseek_model,
+                    payload=request,
+                    iteration=iteration,
+                )
+                if self.settings.debug_prompts
+                else None
+            )
+            if snapshot is not None:
+                log_request(logger, snapshot)
+
+            turn = _Turn()
             try:
-                text, reasoning, tool_calls, finish, usage = await self._consume(request)
+                # 边收边吐 —— 攒完再发等于把上游的流式白白吃掉。
+                async for delta in self._consume(request, turn):
+                    yield delta
             except Exception as exc:
                 logger.exception("DeepSeek 调用失败")
+                if snapshot is not None:
+                    snapshot.finish(error=str(exc))
                 yield Error(message=f"模型调用失败：{exc}")
                 return
 
-            for chunk in reasoning:
-                yield ThinkingDelta(text=chunk)
-            for chunk in text:
-                yield TextDelta(text=chunk)
+            if snapshot is not None:
+                snapshot.finish(usage=turn.usage, stop_reason=turn.finish)
 
-            _accumulate(total_usage, usage)
+            _accumulate(total_usage, turn.usage)
             assistant_content = to_content_blocks(
-                "".join(text), "".join(reasoning), tool_calls
+                "".join(turn.text), "".join(turn.reasoning), turn.tool_calls
             )
             working.append({"role": "assistant", "content": assistant_content})
             yield AssistantTurn(
-                content=assistant_content, usage=usage, stop_reason=finish
+                content=assistant_content, usage=turn.usage, stop_reason=turn.finish
             )
 
+            tool_calls = turn.tool_calls
             if not tool_calls:
                 yield Done(usage=total_usage)
                 return
@@ -141,37 +176,41 @@ class DeepSeekProvider:
         )
 
     async def _consume(
-        self, request: dict[str, Any]
-    ) -> tuple[list[str], list[str], list[dict[str, Any]], str | None, dict[str, Any]]:
-        """消费一次流式响应，把分片拼装成完整的文本 / 思考 / 工具调用。"""
-        text: list[str] = []
-        reasoning: list[str] = []
+        self, request: dict[str, Any], out: _Turn
+    ) -> AsyncIterator[AgentEvent]:
+        """消费一次流式响应：文本 / 思考分片当场产出，其余拼装进 ``out``。
+
+        工具调用不能这么发 —— arguments 是逐片下发的 JSON，凑不齐就没法解析，
+        所以只有它必须攒到流结束。
+        """
         # 工具调用的 arguments 是逐片流式下发的，按 index 累积。
         slots: dict[int, dict[str, str]] = {}
-        finish: str | None = None
-        usage: dict[str, Any] = {}
 
         stream = await self.client.chat.completions.create(**request)
         async for chunk in stream:
             if chunk.usage is not None:
-                usage = chunk.usage.model_dump(exclude_none=True)
+                out.usage = chunk.usage.model_dump(exclude_none=True)
             if not chunk.choices:
                 continue
 
             choice = chunk.choices[0]
             if choice.finish_reason:
-                finish = choice.finish_reason
+                out.finish = choice.finish_reason
 
             delta = choice.delta
             if delta is None:
                 continue
             if getattr(delta, "reasoning_content", None):
-                reasoning.append(delta.reasoning_content)
+                out.reasoning.append(delta.reasoning_content)
+                yield ThinkingDelta(text=delta.reasoning_content)
             if delta.content:
-                text.append(delta.content)
+                out.text.append(delta.content)
+                yield TextDelta(text=delta.content)
 
             for call in delta.tool_calls or []:
-                slot = slots.setdefault(call.index, {"id": "", "name": "", "arguments": ""})
+                slot = slots.setdefault(
+                    call.index, {"id": "", "name": "", "arguments": ""}
+                )
                 if call.id:
                     slot["id"] = call.id
                 if call.function and call.function.name:
@@ -179,8 +218,7 @@ class DeepSeekProvider:
                 if call.function and call.function.arguments:
                     slot["arguments"] += call.function.arguments
 
-        tool_calls = [slots[i] for i in sorted(slots)]
-        return text, reasoning, tool_calls, finish, usage
+        out.tool_calls = [slots[i] for i in sorted(slots)]
 
     async def complete(
         self, *, system: str, prompt: str, max_tokens: int | None = None

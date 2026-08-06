@@ -11,7 +11,40 @@
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
 
-### 第 4 批 · 待前端实现 🆕
+### 第 6 批 · 后端已就绪，前端待做 🚧
+
+这一批全是**性能**，接口没有破坏性变化。核心是 `auto` 模式别再等整段合成完。
+
+| 变化 | 位置 | 前端要做什么 |
+|---|---|---|
+| `POST /api/tts/next` | [边写边读](#边写边读句级流水线) | **`auto` 模式改走这条**：边流式边按句合成、排队播放。首声从「等全程」变成 1～2 秒 |
+| `POST /api/tts/stop` | [边写边读](#边写边读句级流水线) | 用户按停止时调，丢掉队列里没播的句子 |
+| `POST /api/tts/warmup` | [边写边读](#边写边读句级流水线) | 一般不用调（启动时自动预热）。状态灯由离线变在线时可以调一次 |
+| `POST /api/tts/prepare` | [语音播放](#语音播放) | **`manual` 的播放按钮建议也从 `/speech` 换成它** —— 返回一个 URL 喂 `<audio src>`，边下边播，首字节 6.97s → 1.12s |
+| 设置项新增 `tts_warmup` | [运行时设置](#运行时设置) | 按 `fields` 自动渲染，无需特殊处理 |
+
+⚠️ **`POST /api/tts/speech` 没有废弃**，但它会等整段合成完才返回，
+现在只推荐用于「重播一条已有消息」（要 blob 做缓存的场景）。
+
+### 第 5 批 · 后端已就绪，前端待做 🚧
+
+| 变化 | 位置 | 前端要做什么 |
+|---|---|---|
+| `POST /api/tts/speech` | [语音播放](#语音播放) | 拿到音频 blob 直接喂 `<audio>`，做消息旁的播放按钮 |
+| `GET /api/tts/status` | [语音播放](#语音播放) | 设置页显示「语音服务在线/离线」，附试听 |
+| 设置项新增 `tts_*` 九项 | [运行时设置](#运行时设置) | 按 `fields` 自动渲染即可，**不用硬编码** |
+| `fields[].group` 新字段 | [运行时设置](#运行时设置) | `"tts"` 归「语音」分区，`"debug"` 归「调试」，`""` 维持现状 |
+| `GET /api/debug/prompt` | [调试](#调试看清每次发了什么) | 显示当前 system prompt 原文 |
+| `GET /api/debug/requests` | [调试](#调试看清每次发了什么) | 调试面板：最近发给模型的请求 |
+| 设置项新增 `debug_prompts` | [调试](#调试看清每次发了什么) | 开关，控制上面那个列表记不记 |
+| 设置项新增 `custom_instructions` | [自定义指令](#自定义指令) | 多行文本框，用户手写、直接进 system prompt |
+| `fields[].kind` 新增 `"text"` | [运行时设置](#运行时设置) | 渲染成 `<textarea>`，校验规则和 `str` 完全一样 |
+| `owner_name` 的 `group` 变成 `"prompt"` | [运行时设置](#运行时设置) | 和自定义指令归到同一个「人格与指令」分区 |
+
+**核心开关是 `tts_mode`**，三档：`off` 只出文字（默认）/ `manual` 消息旁给播放按钮 /
+`auto` 回答完自动朗读。这是「支持语音播放或者文字播放」的落点，全部逻辑挂在这一个值上。
+
+### 第 4 批 · 已实现 ✅
 
 | 变化 | 位置 | 前端要做什么 |
 |---|---|---|
@@ -22,6 +55,9 @@
 
 **行为变化**：同一会话不再允许并发生成（之前会让历史错乱）。前端发送时禁用按钮即可，
 真撞上了会收到 `error` 事件而不是坏数据。
+
+**这批里还没做的**：`env_only` 字段的只读展示（后端已在响应里返回，设置页当前直接跳过了，
+用户看不到「哪些配置只能改 .env」）。
 
 ### 第 3 批 · 已实现 ✅
 
@@ -55,14 +91,17 @@
 ## 目录
 
 1. [认证](#认证)
-2. [运行时设置](#运行时设置) 🆕
+2. [运行时设置](#运行时设置)
 3. [会话](#会话)
 4. [聊天：SSE 流](#聊天sse-流)
 5. [历史消息：必须先规整再渲染](#历史消息必须先规整再渲染) ← **最容易写错的地方**
 6. [记忆](#记忆)
-7. [任务](#任务)
-8. [要做的三个页面](#要做的三个页面)
-9. [TypeScript 类型](#typescript-类型)
+7. [语音播放](#语音播放)
+8. [自定义指令](#自定义指令)
+9. [调试：看清每次发了什么](#调试看清每次发了什么)
+10. [任务](#任务)
+11. [四个页面](#四个页面)
+12. [TypeScript 类型](#typescript-类型)
 
 ---
 
@@ -86,7 +125,8 @@ X-API-Key: <key>
 GET /api/settings
 ```
 
-> 🆕 第 4 批：响应扩展了，设置页现在可以做成**可编辑**的。
+> 🆕 第 4 批：响应扩展成完整描述（`fields` / `sources` / `providers` / `env_only`），
+> 设置页据此做成可编辑表单。
 
 ```json
 {
@@ -95,9 +135,14 @@ GET /api/settings
   "sources": {"owner_name": "db", "consolidate_hour": "env"},
   "fields": [
     {"key": "owner_name", "label": "助手怎么称呼你", "kind": "str",
-     "choices": [], "minimum": 1, "maximum": 32, "provider": ""},
+     "choices": [], "minimum": 1, "maximum": 32, "provider": "", "group": "prompt"},
+    {"key": "custom_instructions", "label": "自定义指令", "kind": "text",
+     "choices": [], "minimum": null, "maximum": 4000, "provider": "", "group": "prompt"},
     {"key": "effort", "label": "推理强度", "kind": "enum",
-     "choices": ["low","medium","high","xhigh","max"], "provider": "anthropic"}
+     "choices": ["low","medium","high","xhigh","max"], "provider": "anthropic",
+     "group": ""},
+    {"key": "tts_mode", "label": "语音播放", "kind": "enum",
+     "choices": ["off","manual","auto"], "provider": "", "group": "tts"}
   ],
   "providers": [
     {"value": "deepseek",  "available": true,  "reason": ""},
@@ -116,9 +161,10 @@ GET /api/settings
 |---|---|
 | `values` | 当前**生效值**（数据库覆盖已叠加在 .env 之上） |
 | `sources` | `db` = 你在界面上改过，`env` = 来自 .env 默认。据此显示「已修改」标记和「恢复默认」按钮 |
-| `fields[].kind` | `str` / `int` / `bool` / `enum`，决定用输入框、数字框、开关还是下拉 |
+| `fields[].kind` | `str` / `text` / `int` / `bool` / `enum`，决定用输入框、多行文本框、数字框、开关还是下拉。🆕 `text` 的校验规则和 `str` 完全一样，只是提示前端用 `<textarea>` |
 | `fields[].minimum/maximum` | 数字是范围，字符串是长度。前端先校验一次，后端仍会再验 |
 | `fields[].provider` | 非空表示只在该 provider 下有意义（如 `effort` 只对 anthropic），可按当前 provider 过滤或折叠 |
+| `fields[].group` | 🆕 第 5 批。界面分区：`""` = 模型与整理，`"prompt"` = 人格与指令，`"tts"` = 语音，`"debug"` = 调试。按它分组渲染，以后加分区前端不用动 |
 | `providers[].available` | `false` 时该选项置灰并显示 `reason` |
 | `env_only` | 这些只能改 `.env`，**界面上不要给入口**（密钥、数据库、CORS、日志） |
 
@@ -806,6 +852,394 @@ GET /api/usage?days=7
 `cached_tokens` 占 `input_tokens` 的比例就是缓存命中率——上面这天是 76%，
 这个数掉下去通常意味着 system prompt 里混进了变动内容。
 
+---
+
+## 语音播放
+
+> 🆕 第 5 批新增，**后端已就绪，前端待做**
+
+回答可以只出文字，也可以念出来。语音由跑在宿主机上的本地 TTS 服务（mlx-audio）合成，
+**前端不直连它，统一走后端代理** —— 配置只有一份、不用给 TTS 服务额外配 CORS、
+"要不要开、念多长"是服务端策略。
+
+### 一个开关决定全部行为
+
+`tts_mode`（在 `GET /api/settings` 的 `values` 里）：
+
+| 值 | 前端行为 |
+|---|---|
+| `off`（默认） | 纯文字。**不要显示任何播放按钮**，调 `/speech` 会返回 409 |
+| `manual` | 每条 assistant 消息旁给一个播放按钮，点了才合成 |
+| `auto` | 收到 SSE `done` 后自动合成并播放本轮回答，同时保留播放按钮供重播 |
+
+改这个值走标准的 `PATCH /api/settings`，和其他配置项一样，改完立刻生效。
+
+### 合成
+
+```http
+POST /api/tts/speech
+{"text": "## 今天的安排\n- **上午**跑测试"}
+```
+
+响应**不是 JSON，是音频二进制**（默认 `Content-Type: audio/mpeg`）：
+
+```ts
+const resp = await fetch(`${API}/api/tts/speech`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", ...authHeaders },
+  body: JSON.stringify({ text: message.text }),
+});
+if (!resp.ok) throw new Error((await resp.json()).detail);   // 错误时才是 JSON
+
+const url = URL.createObjectURL(await resp.blob());
+audioRef.current.src = url;
+await audioRef.current.play();
+// 播完记得 URL.revokeObjectURL(url)，否则 blob 一直占着内存
+```
+
+请求体：
+
+| 字段 | 说明 |
+|---|---|
+| `text` | **直接传原始 Markdown**，不要自己 strip。清洗在服务端做（代码块整段丢掉、标题井号/列表符号/强调星号去掉但保留文字、链接只念文案），前端渲染用的和朗读用的是两套文本，各 strip 一遍迟早不一致 |
+| `voice` | 可选，临时覆盖当前音色，**不写库**。给设置页的「试听」用 |
+| `instruct` | 可选，同上，临时覆盖语气指令 |
+| `truncate` | 可选，默认 `true`，按 `tts_max_chars` 截断（会断在最近的句末）。想念全文传 `false` |
+
+几个要点：
+
+- **音频不落库也不落盘**，每次都是现合成。内容本来就在 `messages` 里，
+  前端想避免重复合成就自己按 `message_id` 缓存 blob URL
+- **合成是串行的**（MLX 一次只加载一份权重，并发只会互相拖慢）。
+  连点播放会排队，按钮要进 loading 态
+- **慢**。本地模型合成几百字要几秒到十几秒，超时上限是 `tts_timeout`（默认 180 秒）。
+  必须有加载指示，别让用户以为卡死了
+- 错误码：`409` = `tts_mode` 是 `off`；`502` = 连不上 TTS 服务或它报错，
+  `detail` 是可以直接展示的中文说明（例如「连不上语音服务 http://127.0.0.1:8001：...」）
+
+⚠️ **这个接口会等整段合成完才返回**，只适合「点按钮重播一条已有消息」。
+`auto` 模式下用它，用户要等 `LLM 全程 + TTS 全程` 两段串起来。
+自动朗读请走下面的[句级流水线](#边写边读句级流水线)。
+
+### 边下边播（`/prepare`）
+
+`/speech` 要等整段音频做完；想让浏览器**边下边播**，用这个：
+
+```http
+POST /api/tts/prepare        # 请求体和 /speech 完全一样
+{"text": "## 今天的安排\n- **上午**跑测试"}
+```
+
+```json
+{"url": "/api/tts/stream/8f2c….mp3", "expires_in": 900}
+```
+
+```ts
+const { url } = await prepareSpeech({ text: message.text });
+audio.src = API_BASE + url;   // 直接喂，不要 fetch 成 blob
+await audio.play();
+```
+
+这一步**不合成**，只登记文本，所以是即时返回的；真正的合成发生在浏览器 GET
+那个 URL 的时候，音频边做边发。实测同一段话首字节 **6.97s → 1.12s**。
+
+为什么要绕这一道：只有 `<audio src>` 这条路径能渐进播放，而它是浏览器自己发的 GET，
+**带不了 `X-API-Key`，也带不了 POST body**。所以把文本换成一个一次性令牌放进 URL，
+`GET /api/tts/stream/{token}` 不校验 API key —— 令牌本身就是凭证：
+32 位随机、用一次即失效、900 秒过期。
+
+代价是**不能重播**：令牌消费掉就没了，再播要重新 `/prepare`。
+所以想按 `message_id` 缓存 blob 复用的场景，仍然用 `/speech`。
+
+### 边写边读（句级流水线）
+
+> 🆕 第 6 批新增。**后端已就绪，前端待做** —— 这是 `auto` 模式该走的路径
+
+不等回答写完。模型每吐出一句完整的话，就把这句拿去合成、排进播放队列。
+用户听到第一声的时间从 `LLM 全程 + TTS 全程` 变成 `首句 LLM + 首句 TTS`，
+后面的句子在听前一句时就做好了。
+
+```http
+POST /api/tts/next
+{"text": "到目前为止的累计全文", "cursor": 0, "flush": false}
+```
+
+```json
+{"url": "/api/tts/stream/8f2c….mp3", "text": "这个问题有点复杂，", "cursor": 9, "expires_in": 900}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `text` | **累计全文，不是增量**。原始 Markdown，照旧不用自己 strip |
+| `cursor` | 上次返回的 `cursor`，第一次传 `0`。**原样传回来即可**，不用理解它的含义（它是清洗后文本的偏移，和你手上的 Markdown 下标对不上） |
+| `flush` | 流结束时传 `true`，把剩下的尾巴全念掉。**不传就会丢最后半句** |
+| 返回 `url` | `null` 表示还凑不出一句完整的话 —— **不是错误**，什么都别做，等下一批增量再问 |
+
+**切句和清洗都在服务端**，前端不要自己按标点切：朗读用的文本经过清洗（去代码块、
+去 Markdown 符号），你手上的 Markdown 切出来的位置和它对不上，两套规则迟早跑偏。
+规则本身也有讲究，都在 `app/tts/segment.py` 里：第一句可以断在逗号上（早一秒出声就少一秒干等），
+后面的句子只在句末断（用户还在听前一句，有的是时间，连贯更重要）；
+代码围栏只开了一半时那段一律不切，不会把 ``` 念出来。
+
+前端要做的只有三件事：**每收到一批增量调一次，有 `url` 就入队，播完一个播下一个**。
+
+```ts
+const queue: string[] = [];
+let cursor = 0, playing = false;
+
+async function pump(text: string, flush = false) {
+  // 一直问到问不出为止 —— 一批增量里可能同时凑齐了好几句
+  for (;;) {
+    const r = await ttsNext({ text, cursor, flush });
+    cursor = r.cursor;
+    if (!r.url) break;
+    queue.push(API_BASE + r.url);
+    if (!playing) void playNext();
+    if (flush) break;          // flush 一次就把尾巴清空了
+  }
+}
+
+async function playNext() {
+  const url = queue.shift();
+  if (!url) { playing = false; return; }
+  playing = true;
+  audio.src = url;             // 直接喂 <audio>，不要 fetch 成 blob
+  await audio.play();
+}
+// audio.onended = () => void playNext();
+
+// 在 SSE 的 text_delta 回调里（建议节流到 ~300ms 一次，别每个 delta 都发）
+void pump(accumulatedText);
+// 收到 done 时
+await pump(accumulatedText, true);
+```
+
+几个必须注意的点：
+
+- **`url` 直接喂 `<audio src>`，不要 `fetch` 成 blob**。浏览器发的 GET 带不了
+  `X-API-Key`，所以这条路径不校验 API key，凭证是 URL 里那个一次性令牌
+- **令牌用一次即失效**，重播要重新走 `/prepare` 或 `/speech`。有效期 900 秒
+- **第二句起在你领到 URL 时就已经在后台合成了**，所以 `<audio>` 拿到的是做好的整段音频，
+  句与句之间不会卡顿。第一句是流式的（首字节最快）
+- **用户按停止时调 `POST /api/tts/stop`**，把队列里没播的令牌全丢掉。
+  不调也不会出错（会自己过期），但那些句子会继续占着合成锁，拖慢下一次朗读
+- `tts_max_chars` 照旧生效：念到上限后 `url` 一直是 `null`，`cursor` 不再前进
+
+```http
+POST /api/tts/stop     → {"dropped": 3}
+POST /api/tts/warmup   → {"seconds": 12.4}
+```
+
+`/warmup` 一般不用调 —— 后端启动时会自动预热（合成一个「嗯」把模型权重加载进去）。
+如果用户是在应用起来之后才手动启动 TTS 服务的，可以在状态灯从「离线」变「在线」时
+调一次，把首次合成那十几秒的权重加载挪到用户点播放之前。失败也返回 200，`seconds: 0`。
+
+### 状态与试听
+
+```http
+GET /api/tts/status
+```
+
+```json
+{
+  "mode": "manual", "enabled": true,
+  "base_url": "http://127.0.0.1:8001",
+  "model": "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit",
+  "voice": "Vivian", "format": "mp3", "max_chars": 800,
+  "reachable": true,
+  "models": ["mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit"],
+  "detail": ""
+}
+```
+
+**这个接口会实时探活**（5 秒超时），因为本地 TTS 服务是手动起的，
+「配置全对但进程没开」是最常见的失败方式。两种失败要在界面上分开显示：
+
+| 情况 | 响应 | 界面 |
+|---|---|---|
+| 服务没起 | `reachable: false`，`detail` 是连接错误 | 红点「语音服务离线」，播放按钮置灰 |
+| 服务在线但列的是别的模型 | `reachable: true`，`detail: "服务端未加载 xxx"` | 黄点 + 提示换模型名 |
+| 正常 | `reachable: true`，`detail: ""` | 绿点，`models` 非空时可做成模型名的下拉候选 |
+
+⚠️ **`models: []` 不是异常**。`/v1/models` 只列**当前已加载**的模型，服务刚起来时是空的，
+首次合成才懒加载。只有 `detail` 非空才是真有问题，别拿 `models.length` 判断。
+
+⚠️ **绿灯不保证能合成**。这个接口只探活，探不到「模型加载失败」——
+模型是首次合成时才懒加载的，加载失败（磁盘缓存缺文件、代理配置不对）只会在
+`POST /speech` 时以 502 暴露。所以**别把播放按钮的可用性绑在状态灯上**，
+该点还是让点，失败了把 502 的 `detail` 原样弹出来即可 —— 那里面是 TTS 服务的原始报错，
+对排查最有用。
+
+设置页的「试听」= 拿一句固定文本 + 当前表单里的 `voice` / `instruct` 调 `/speech`，
+这样用户不用先保存就能听到效果。
+
+### 语音相关的设置项
+
+全部通过 `GET/PATCH /api/settings` 读写，`group` 都是 `"tts"`，
+**照着 `fields` 渲染就行，下表只是让你知道会出现什么**：
+
+| key | kind | 默认 | 说明 |
+|---|---|---|---|
+| `tts_mode` | enum | `off` | `off` / `manual` / `auto`，见上 |
+| `tts_model` | str | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit` | 要和 `status.models` 里的一致 |
+| `tts_voice` | str | `Vivian` | 可空。音色由模型内置，不同模型的可选值不同 |
+| `tts_lang_code` | str | `Chinese` | |
+| `tts_instruct` | str | 「用温柔、自然、亲切的语气说话…」 | 可空，≤200 字。**效果最明显的一项**，做成多行输入框 |
+| `tts_format` | enum | `mp3` | `mp3` / `wav` / `flac` / `opus`。浏览器兼容性最好的是 mp3，没理由别改 |
+| `tts_speed_percent` | int | `100` | 50–200。存百分比而不是倍率，整数好渲染好校验；后端除以 100 再发出去 |
+| `tts_max_chars` | int | `800` | 50–5000。回答动辄上千字，全念完既慢又会撞服务端的 token 上限 |
+| `tts_timeout` | int | `180` | 5–600 秒 |
+| `tts_warmup` | bool | `true` | 🆕 第 6 批。启动时合成一个字把模型权重加载进去，消掉首次播放的十几秒冷启动 |
+
+`tts_base_url` 在 `env_only` 里，**界面上不要给入口** —— 容器内外写法不同
+（宿主机 `127.0.0.1:8001`，容器内 `host.docker.internal:8001`），改错了只会看到「连不上」。
+
+---
+
+## 自定义指令
+
+> 🆕 第 5 批新增，**后端已就绪，前端待做**
+
+设置项 `custom_instructions`（`kind: "text"`，`group: "prompt"`，上限 4000 字），
+用户手写的一段自由文本，**原样追加到 system prompt 末尾**，改完立刻生效。
+
+```http
+PATCH /api/settings
+{"custom_instructions": "回答控制在三句话以内。代码优先给 diff，不要贴整个文件。"}
+```
+
+改完可以马上用 `GET /api/debug/prompt` 看到它出现在返回的 `system` 末尾 ——
+设置页把这两件事连起来（保存后给个「查看效果」）体验会很好。
+
+### ⚠️ 它不是记忆，界面上别混在一起
+
+这是前端最容易做错的地方。两者都进 system prompt，但性质完全相反：
+
+| | 记忆页 `/memories` | 自定义指令 |
+|---|---|---|
+| 谁写的 | **模型自己** | **用户** |
+| 谁能改 | 模型 + 用户 | 只有用户 |
+| 每日整理 | 会去重、修正、提炼 | **不碰** |
+| 存在哪 | `memories` 表，有版本历史 | `app_settings` 表，无版本历史 |
+| 界面位置 | 记忆管理页 | **设置页的「人格与指令」分区** |
+
+**不要在记忆管理页里给它入口**，也不要反过来。用户以为它是记忆的话，
+会预期「模型能自己更新它」和「有版本历史可回滚」，这两件事都不成立。
+
+参照物：ChatGPT 的 Custom Instructions vs Memory、Claude Projects 的
+Project Instructions vs Project Knowledge —— 都是分开两个入口。
+
+### 界面建议
+
+设置页「人格与指令」分区，两项：`owner_name` 单行 + `custom_instructions` 多行。
+`<textarea>` 至少 8 行，显示 `已用 X / 4000` 字数计数（超了后端返回 400，
+`detail` 是「自定义指令最多 4000 个字符」）。
+
+底下写一句人话解释边界，例如：
+
+> 这段会原样加到每次请求的开头，优先级高于默认设定。它由你维护，模型不会修改它 ——
+> 需要模型自己记住的事情，让它写进[记忆](/memories)。
+
+空值合法（表示不注入），用 `PATCH {"custom_instructions": null}` 可以恢复 `.env` 默认。
+
+---
+
+## 调试：看清每次发了什么
+
+> 🆕 第 5 批新增，**后端已就绪，前端待做**
+
+发给模型的东西不等于你在界面上看到的东西：system prompt 是拼的，历史是规整过的，
+运行时上下文是注进去的，无签名的 thinking 块是被滤掉的。这组接口把**真正发出去的
+那个请求体**原样交出来。
+
+### 当前的 system prompt
+
+```http
+GET /api/debug/prompt
+```
+
+```json
+{
+  "system": "你是用户的私人助手，只服务他一个人。……",
+  "chars": 2016,
+  "approx_tokens": 2016,
+  "note": "只含记忆索引；具体记忆正文要模型 view 之后才进上下文"
+}
+```
+
+不用发消息就能看，随时可调。**这里有个最容易误解的点值得在界面上写出来**：
+记忆管理页里能看到全部长期记忆，但每轮请求的 system prompt 里**只有 `MEMORY.md` 索引**
+那几行摘要，具体记忆文件的正文要模型自己 `view` 之后才进上下文。
+所以「记忆页里有的」≠「这轮模型看到的」。
+
+### 请求快照
+
+先在设置里打开 `debug_prompts`（`kind: "bool"`，`group: "debug"`），否则不记。
+
+```http
+GET /api/debug/requests?conversation_id=37&limit=20
+```
+
+```json
+{
+  "enabled": true,
+  "capacity": 20,
+  "items": [
+    {"id": 1, "at": "2026-08-06T10:24:43.982665",
+     "provider": "deepseek", "model": "deepseek-v4-flash",
+     "conversation_id": 37, "iteration": 0,
+     "messages": 2, "system_chars": 2016, "tools": 1,
+     "usage": {"prompt_tokens": 1822, "completion_tokens": 25, "total_tokens": 1847,
+               "prompt_cache_hit_tokens": 0},
+     "stop_reason": "stop", "error": "", "seconds": 1.4}
+  ]
+}
+```
+
+```http
+GET /api/debug/requests/1
+```
+
+在上面那个对象的基础上多两个字段：
+
+- **`payload`** —— **完整请求体，原样返回**。这就是发给模型的那个 JSON，
+  界面上用折叠的 JSON viewer 展示，配一个「复制」按钮
+- **`outline`** —— 已经渲染好的可读轮廓，一行一条消息，直接当 `<pre>` 显示即可：
+
+```
+system(2016) 你是用户的私人助手，只服务他一个人。你们已经认识很久了。 说话直接…
+[1] user      text(24) <runtime_context> 当前时间：2026-08-06 星期四 10:24…
+[2] assistant thinking(412, 有签名)
+              tool_use view /memories/MEMORY.md
+[3] user      tool_result ✓ # 记忆索引…
+```
+
+```http
+DELETE /api/debug/requests    → 204，清空
+```
+
+几个要点：
+
+- **`enabled: false` 时 `items` 一定是空的**。这是「没在记」，不是「没请求过」——
+  界面必须把这两种情况分开，否则用户会以为功能坏了。空列表 + `enabled: true`
+  才是「还没发过消息」
+- `iteration` 是 agent loop 里的第几次请求：`0` 是用户这轮的第一次，模型每调一轮工具 +1。
+  **一次回答可能对应好几条快照**，按 `conversation_id` + 时间分组显示更好读
+- **只留最近 20 条**（`capacity`），环形缓冲，进程重启就没了。翻更旧的会 404
+- 快照存在**进程内存**里，不落库。别做「历史调试记录」这种依赖持久化的功能
+- `error` 非空表示这次请求失败了（网络/API 报错），`usage` 会是空的
+
+### 界面建议
+
+设置页加一个「调试」分区（`fields` 里 `group === "debug"` 的那些），放：
+
+1. `debug_prompts` 开关 + 一句「开着会把完整对话历史留在内存里，排查完记得关」
+2. 「查看当前 system prompt」按钮 → 弹层展示 `/api/debug/prompt` 的 `system`，带字数
+3. 最近请求列表，点开看 `outline` + 完整 `payload`
+
+聊天页也可以在每条 assistant 消息的操作栏加一个「本轮请求」入口
+（`?conversation_id=` 过滤后取最近几条），但优先级低于设置页那个。
+
 ## 任务
 
 ```http
@@ -837,7 +1271,10 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 ---
 
-## 要做的三个页面
+## 四个页面
+
+四个页面加全局搜索都已上线，下面记录的是各页的设计意图和实现要点——
+新增功能照着这个风格补，不要另起一套交互。
 
 ### 1. 聊天页 `/`
 
@@ -849,6 +1286,20 @@ POST /api/jobs/consolidate?day=2026-08-05
 - 正文用 `react-markdown` + `remark-gfm`，代码块用 `shiki` 高亮
 - 流式时自动滚到底，但**用户手动上滚后要停止自动滚动**
 - 发送中禁用输入框，提供「停止」按钮（AbortController）
+- 🚧 **第 5 批待做**：`tts_mode !== "off"` 时，每条 assistant 消息的操作栏（和「重新生成」
+  同一排）加一个播放按钮，把整条消息的原始 Markdown 传过去。
+  合成要几秒到十几秒，按钮必须有 loading 态。全页共用一个 `<audio>` 实例，
+  播新的之前先停掉旧的
+- 🚧 **第 6 批待做（性能，优先级高于上一条的细节打磨）**：
+  - **播放按钮从 `/speech` 换成 [`/prepare`](#边下边播prepare)** —— 拿到 URL 直接喂
+    `<audio src>` 边下边播，首字节 6.97s → 1.12s。代价是令牌用一次即失效、不能重播，
+    想保留「同一条消息缓存 blob 复用」就两条路并存：首播走 `/prepare`，重播走 `/speech`
+  - **`auto` 档改走[句级流水线](#边写边读句级流水线)**，不要再等 `done`。
+    在 `text_delta` 回调里节流（~300ms）调 `POST /api/tts/next`，
+    拿到 `url` 就入队、播完一个播下一个，收到 `done` 时用 `flush: true` 收尾。
+    首声从「LLM 全程 + TTS 全程」变成 1～2 秒
+  - **停止播放 / 切换会话 / 组件卸载时调 `POST /api/tts/stop`**，
+    把队列里没播的句子丢掉，否则它们会继续占着合成锁
 
 ### 2. 记忆管理页 `/memories`
 
@@ -864,7 +1315,7 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 ### 3. 每日回顾页 `/review`
 
-**这页现在才真正能做**——之前后端没有任何接口能读出摘要。一个日期选择器，下面三块：
+一个日期选择器，下面三块：
 
 | 区块 | 数据源 | 说明 |
 |---|---|---|
@@ -881,9 +1332,9 @@ POST /api/jobs/consolidate?day=2026-08-05
 点开展开内容 diff（和记忆管理页复用同一个 diff 组件）。已删除的记忆也在这里，
 可以给个「恢复」按钮：拿该版本的 `content` 去 `PUT` 回原路径。
 
-### 4. 设置页 `/settings` 🆕 第 4 批
+### 4. 设置页 `/settings`
 
-之前只能只读展示，现在可以真的编辑了。
+运行时配置在这里直接改，改完立刻生效。
 
 **照着 `fields` 动态渲染**，不要写死字段列表——后端加配置项时前端不用改：
 
@@ -912,14 +1363,23 @@ POST /api/jobs/consolidate?day=2026-08-05
 - 400 的 `detail` 是可直接展示的中文，贴在对应字段下面即可
 - 加一个「立即备份」按钮调 `POST /api/jobs/backup`，**会阻塞几秒**，要 loading；
   成功后显示 `dump_file` 和 `memory_files`
+- 🚧 **第 5 批待做**：按 `fields[].group` 分区渲染（`""` 归「模型与整理」，`"tts"` 归「语音」，
+  `"debug"` 归「调试」，调试区详见[调试](#调试看清每次发了什么)）。
+  语音区顶部放 `GET /api/tts/status` 的在线状态灯 + 一个「试听」按钮
+  （拿当前表单里未保存的 `voice` / `instruct` 调 `/speech`）。详见[语音播放](#语音播放)
+- 🚧 **第 6 批待做**：状态灯从「离线」变「在线」时调一次 `POST /api/tts/warmup`，
+  把首次合成的权重加载（十几秒）挪到用户点播放之前。返回 `{"seconds": 12.4}`，
+  失败也是 200 + `seconds: 0`，不用报错
 
-### 聊天页要补的交互
-
-新接口解锁的：
+### 聊天页的进阶交互（已实现）
 
 - **重新生成** / **编辑重发**：见[截断](#截断重新生成编辑重发)，一个接口两用
-- **归档**：会话右键菜单，比删除温和且可逆
-- **本轮用量**：`done` 事件里就有 `usage`，可以在消息末尾显示一个淡淡的 token 数
+- **归档**：比删除温和且可逆
+- **本轮用量**：`done` 事件里就有 `usage`，在消息末尾显示一个淡淡的 token 数
+
+会话级思考开关（`PATCH /api/conversations/{id}` 的 `thinking` 三态）后端和
+`lib/api.ts` 里都还在，但顶栏的下拉已经撤掉了——目前没有界面入口，
+默认值统一在设置页看。要恢复的话接口是现成的。
 
 ---
 
@@ -957,7 +1417,8 @@ export interface RuntimeSettings {
 export interface SettingField {
   key: string;
   label: string;
-  kind: "str" | "int" | "bool" | "enum";
+  /** text = 多行文本框，校验规则和 str 完全一样 */
+  kind: "str" | "text" | "int" | "bool" | "enum";
   /** kind=enum 时的候选值 */
   choices: string[];
   /** 数字是取值范围，字符串是长度范围 */
@@ -965,6 +1426,94 @@ export interface SettingField {
   maximum: number | null;
   /** 非空表示只在该 provider 下有意义（如 effort 只对 anthropic） */
   provider: string;
+  /** 🆕 第 5 批。界面分区："" = 模型与整理，"tts" = 语音，"debug" = 调试 */
+  group: string;
+}
+
+/** 🆕 第 5 批 */
+export type TtsMode = "off" | "manual" | "auto";
+
+export interface TtsStatus {
+  mode: TtsMode;
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  voice: string;
+  format: string;
+  max_chars: number;
+  /** false = 服务没起；true 但 detail 非空 = 在线但没加载配置里的模型 */
+  reachable: boolean;
+  models: string[];
+  detail: string;
+}
+
+/** 🆕 第 5 批 */
+export interface DebugRequestSummary {
+  id: number;
+  at: string;
+  provider: string;
+  model: string;
+  conversation_id: number | null;
+  /** agent loop 里的第几次请求，0 = 用户这轮的第一次 */
+  iteration: number;
+  messages: number;
+  system_chars: number;
+  tools: number;
+  usage: Record<string, number>;
+  stop_reason: string;
+  /** 非空表示这次请求失败了 */
+  error: string;
+  seconds: number;
+}
+
+export interface DebugRequestDetail extends DebugRequestSummary {
+  /** 完整请求体，就是发给模型的那个 JSON */
+  payload: Record<string, unknown>;
+  /** 渲染好的可读轮廓，一行一条消息 */
+  outline: string[];
+}
+
+export interface DebugRequestList {
+  /** false 时 items 一定是空的——是「没在记」，不是「没请求过」 */
+  enabled: boolean;
+  capacity: number;
+  items: DebugRequestSummary[];
+}
+
+export interface SpeechRequest {
+  /** 原始 Markdown，不要自己 strip */
+  text: string;
+  /** 试听用的临时覆盖，不写库 */
+  voice?: string;
+  instruct?: string;
+  /** 默认 true，按 tts_max_chars 截断 */
+  truncate?: boolean;
+}
+
+/** 🆕 第 6 批 */
+export interface PrepareResult {
+  /** 相对路径，拼上 API_BASE 后直接喂 <audio src>。用一次即失效 */
+  url: string;
+  expires_in: number;
+}
+
+/** 🆕 第 6 批 · 句级流水线 */
+export interface TtsNextRequest {
+  /** 累计全文（原始 Markdown），不是增量 */
+  text: string;
+  /** 上次返回的 cursor，第一次传 0。原样传回，不要自己解释它 */
+  cursor: number;
+  /** 流结束时传 true，把尾巴念掉 */
+  flush?: boolean;
+}
+
+export interface TtsNextResult {
+  /** null = 还凑不出一句完整的话，不是错误 */
+  url: string | null;
+  /** 这次切出来的句子，调试/高亮用 */
+  text: string;
+  cursor: number;
+  expires_in: number;
 }
 
 /** 🆕 第 4 批 */
@@ -1092,16 +1641,18 @@ export interface MemoryVersion {
 
 ---
 
-## 本地起后端
+## 本地启动完整应用
 
-后端跑在 Docker 里，一条命令：
+数据库、后端和前端都由 Docker Compose 管理，一条命令：
 
 ```bash
-docker compose up -d --build     # db + api，迁移自动执行
+cp .env.example .env             # 首次启动：选择 provider 并填写对应 key
+docker compose up -d --build     # db + api + frontend，迁移自动执行
 curl localhost:8000/health       # {"status":"ok","provider":"deepseek",...}
 ```
 
-已经在跑的话不用管。看日志 `docker compose logs -f api`。
+浏览器打开 `http://localhost:3000`。后端日志用 `docker compose logs -f api`，
+前端编译和热更新日志用 `docker compose logs -f frontend`。
 
 后端 CORS 默认放行 `http://localhost:3000`，改端口的话同步改后端 `.env` 的 `CORS_ORIGINS`。
 

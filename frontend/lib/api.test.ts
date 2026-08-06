@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseSseEventLine, restoreMemoryVersion, searchAll, updateConversation } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, getDebugPrompt, getDebugRequest, getNextSpeech, getTtsStatus, listDebugRequests, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,5 +40,98 @@ describe("parseSseEventLine", () => {
     await restoreMemoryVersion(42);
 
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/memories/restore", expect.objectContaining({ method: "POST", body: JSON.stringify({ version_id: 42 }) }));
+  });
+
+  it("updates backend settings without restarting the runtime", async () => {
+    const response = { values: { deepseek_thinking: true }, sources: { deepseek_thinking: "db" }, fields: [], providers: [], env_only: [], provider: "deepseek", model: "deepseek-v4-flash", thinking_default: true, thinking_toggle: true };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateRuntimeSettings({ deepseek_thinking: true });
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/settings", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ deepseek_thinking: true }) }));
+  });
+
+  it("starts a full backup", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ dump_file: "chat.dump", dump_bytes: 12, memory_files: 2, memory_dir: "/backups/memories", created_at: "", detail: "" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await createBackup();
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/jobs/backup", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("loads debug prompt and request snapshots", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ system: "你是助手", chars: 4, approx_tokens: 4, note: "只含索引" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: true, capacity: 20, items: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 8, at: "", provider: "deepseek", model: "model", conversation_id: 3, iteration: 0, messages: 2, system_chars: 4, tools: 0, usage: {}, stop_reason: "stop", error: "", seconds: 1.2, payload: {}, outline: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getDebugPrompt()).resolves.toMatchObject({ chars: 4 });
+    await expect(listDebugRequests(3, 5)).resolves.toMatchObject({ enabled: true });
+    await expect(getDebugRequest(8)).resolves.toMatchObject({ id: 8 });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://localhost:8000/api/debug/requests?limit=5&conversation_id=3", expect.anything());
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "http://localhost:8000/api/debug/requests/8", expect.anything());
+  });
+
+  it("clears debug request snapshots", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await clearDebugRequests();
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/debug/requests", expect.objectContaining({ method: "DELETE" }));
+  });
+
+  it("reads the TTS status endpoint", async () => {
+    const status = { mode: "manual", enabled: true, base_url: "http://127.0.0.1:8001", model: "voice-model", voice: "Vivian", format: "mp3", max_chars: 800, reachable: true, models: [], detail: "" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(status), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getTtsStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tts/status", expect.objectContaining({ headers: expect.any(Headers) }));
+  });
+
+  it("returns an audio blob from the TTS speech endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob(["audio"]), { status: 200, headers: { "Content-Type": "audio/mpeg" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const blob = await synthesizeSpeech({ text: "## 你好", voice: "Vivian", instruct: "自然地说" });
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tts/speech", expect.objectContaining({ method: "POST", body: JSON.stringify({ text: "## 你好", voice: "Vivian", instruct: "自然地说" }) }));
+  });
+
+  it("prepares a one-time streaming audio URL", async () => {
+    const payload = { url: "/api/tts/stream/token.mp3", expires_in: 900 };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(prepareSpeech({ text: "你好" })).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tts/prepare", expect.objectContaining({ method: "POST", body: JSON.stringify({ text: "你好" }) }));
+    expect(apiUrl(payload.url)).toBe("http://localhost:8000/api/tts/stream/token.mp3");
+  });
+
+  it("requests the next complete speech segment and controls the queue", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ url: "/api/tts/stream/next.mp3", text: "第一句。", cursor: 4, expires_in: 900 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ dropped: 2 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ seconds: 1.2 }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getNextSpeech({ text: "第一句。第二句", cursor: 0 })).resolves.toMatchObject({ cursor: 4 });
+    await expect(stopSpeech()).resolves.toEqual({ dropped: 2 });
+    await expect(warmupSpeech()).resolves.toEqual({ seconds: 1.2 });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "http://localhost:8000/api/tts/next", expect.objectContaining({ method: "POST", body: JSON.stringify({ text: "第一句。第二句", cursor: 0 }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "http://localhost:8000/api/tts/stop", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "http://localhost:8000/api/tts/warmup", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("surfaces the TTS error detail", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "语音服务离线" }), { status: 502, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(synthesizeSpeech({ text: "你好" })).rejects.toThrow("语音服务离线");
   });
 });

@@ -12,17 +12,122 @@ export interface RuntimeSettings {
   model: string;
   thinking_default: boolean;
   thinking_toggle: boolean;
-  /** Optional until the backend exposes editable consolidation settings. */
+  values: Record<string, unknown>;
+  sources: Record<string, "db" | "env">;
+  fields: RuntimeSettingField[];
+  providers: RuntimeProvider[];
+  env_only: string[];
   consolidate_auto?: boolean;
   consolidate_hour?: number;
   consolidate_model?: string | null;
   timezone?: string;
 }
 
+export interface RuntimeSettingField {
+  key: string;
+  label: string;
+  kind: "str" | "text" | "int" | "bool" | "enum";
+  choices: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  provider?: string;
+  group: string;
+}
+
+export interface RuntimeProvider {
+  value: string;
+  available: boolean;
+  reason: string;
+}
+
 export interface HealthStatus {
   status: string;
   provider?: string;
   model?: string;
+}
+
+export interface BackupResult {
+  dump_file: string;
+  dump_bytes: number;
+  memory_files: number;
+  memory_dir: string;
+  created_at: string;
+  detail: string;
+}
+
+export type TtsMode = "off" | "manual" | "auto";
+
+export interface TtsStatus {
+  mode: TtsMode;
+  stream: boolean;
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  voice: string;
+  format: string;
+  max_chars: number;
+  reachable: boolean;
+  models: string[];
+  detail: string;
+}
+
+export interface DebugPrompt {
+  system: string;
+  chars: number;
+  approx_tokens: number;
+  note: string;
+}
+
+export interface DebugRequestSummary {
+  id: number;
+  at: string;
+  provider: string;
+  model: string;
+  conversation_id: number | null;
+  iteration: number;
+  messages: number;
+  system_chars: number;
+  tools: number;
+  usage: Record<string, number>;
+  stop_reason: string;
+  error: string;
+  seconds: number;
+}
+
+export interface DebugRequestDetail extends DebugRequestSummary {
+  payload: Record<string, unknown>;
+  outline: string[];
+}
+
+export interface DebugRequestList {
+  enabled: boolean;
+  capacity: number;
+  items: DebugRequestSummary[];
+}
+
+export interface SpeechRequest {
+  text: string;
+  voice?: string;
+  instruct?: string;
+  truncate?: boolean;
+}
+
+export interface PrepareResult {
+  url: string;
+  expires_in: number;
+}
+
+export interface TtsNextRequest {
+  text: string;
+  cursor: number;
+  flush?: boolean;
+}
+
+export interface TtsNextResult {
+  url: string | null;
+  text: string;
+  cursor: number;
+  expires_in: number;
 }
 
 export interface TruncateResult {

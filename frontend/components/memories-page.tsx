@@ -2,14 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { diffLines } from "diff";
-import { Activity, BarChart3, CalendarDays, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, MessageSquare, RotateCcw, Save, Settings2, Trash2 } from "lucide-react";
-import Link from "next/link";
+import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { deleteMemory, errorMessage, getMemory, getMemoryStats, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
 import type { Memory, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
-import { ThemeControl } from "@/components/theme-control";
+import { WorkspaceTopbar } from "@/components/workspace-topbar";
 
 function actorLabel(actor: MemoryVersion["actor"]) {
   return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
@@ -25,6 +24,12 @@ function formatDate(value: string) {
 
 function actorLabelFromName(actor: string) {
   return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
+}
+
+function memoryLabel(path: string) {
+  const relative = path.replace(/^\/memories\//, "").replace(/\.md$/, "");
+  const name = relative.split("/").pop() || relative;
+  return name === "MEMORY" ? "记忆索引" : name.replace(/[-_]/g, " ");
 }
 
 function TreeEntryView({ entry, selected, onSelect, onDeleteDirectory, depth = 0 }: { entry: MemoryTreeEntry; selected: string; onSelect: (entry: MemoryTreeEntry) => void; onDeleteDirectory: (entry: MemoryTreeEntry) => void; depth?: number }) {
@@ -54,13 +59,14 @@ function MemoryStatsPanel({ stats, loading, onOpenFile, onDelete }: { stats: Mem
   const maxReads = Math.max(...stats.top.map((item) => item.reads), 1);
   const maxDaily = Math.max(...stats.daily.flatMap((item) => [item.reads, item.writes]), 1);
   const maxActor = Math.max(...stats.by_actor.flatMap((item) => [item.reads, item.writes]), 1);
+  const activeDays = stats.daily.filter((item) => item.reads + item.writes > 0).slice(-14);
 
   return <div className="memory-stats-panel">
-    <div className="stats-heading"><div><div className="eyebrow">Memory analytics</div><h1>记忆使用率</h1><p>统计模型主动展开记忆文件的情况。索引摘要注入不计入读取次数。</p></div><span className="stats-period">近 30 天</span></div>
+    <div className="stats-heading"><div><div className="eyebrow">Memory activity</div><h1>记忆活动</h1><p>查看模型真正读取和更新了哪些长期记忆。索引摘要注入不计入读取次数。</p></div><span className="stats-period">近 30 天</span></div>
     <div className="memory-stat-cards"><div><span>记忆文件</span><strong>{stats.total_memories}</strong></div><div><span>主动读取</span><strong>{stats.total_reads}</strong></div><div><span>写入次数</span><strong>{stats.total_writes}</strong></div><div className={stats.missed_reads ? "stat-warning" : ""}><span>未命中读取</span><strong>{stats.missed_reads}</strong></div></div>
     <div className="memory-stats-grid">
-      <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">TOP EXPANDED</span><h2>最常展开</h2></div><Activity size={16} /></div>{stats.top.length ? <div className="stat-list">{stats.top.map((item) => <button className="stat-row stat-row-button" key={item.path} onClick={() => onOpenFile(item.path)}><span className="stat-row-label" title={item.path}>{item.path}</span><i><b style={{ width: `${Math.max(4, item.reads / maxReads * 100)}%` }} /></i><em>{item.reads}</em></button>)}</div> : <div className="stats-card-empty">还没有记忆读取记录。</div>}</section>
-      <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">DAILY ACTIVITY</span><h2>每日活动</h2></div><span className="legend"><i className="legend-read" />读 <i className="legend-write" />写</span></div>{stats.daily.length ? <div className="daily-bars">{stats.daily.map((item) => <div className="daily-bar-row" key={item.day}><span>{formatDate(item.day)}</span><i><b className="bar-read" style={{ width: `${Math.max(item.reads ? 5 : 0, item.reads / maxDaily * 100)}%` }} /><b className="bar-write" style={{ width: `${Math.max(item.writes ? 5 : 0, item.writes / maxDaily * 100)}%` }} /></i><em>{item.reads + item.writes}</em></div>)}</div> : <div className="stats-card-empty">近 30 天没有活动。</div>}</section>
+      <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">MOST USED</span><h2>经常使用的记忆</h2></div><Activity size={16} /></div>{stats.top.length ? <div className="stat-list">{stats.top.map((item) => <button className="stat-row stat-row-button" key={item.path} onClick={() => onOpenFile(item.path)}><span className="stat-row-label" title={item.path}><strong>{memoryLabel(item.path)}</strong><small>{item.path.replace("/memories/", "")}</small></span><i><b style={{ width: `${Math.max(4, item.reads / maxReads * 100)}%` }} /></i><em>{item.reads}</em></button>)}</div> : <div className="stats-card-empty">还没有记忆读取记录。</div>}</section>
+      <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">ACTIVE DAYS</span><h2>发生读写的日期</h2></div><span className="legend"><i className="legend-read" />读 <i className="legend-write" />写</span></div>{activeDays.length ? <div className="daily-bars">{activeDays.map((item) => <div className="daily-bar-row" key={item.day}><span>{formatDate(item.day)}</span><i><b className="bar-read" style={{ width: `${Math.max(item.reads ? 5 : 0, item.reads / maxDaily * 100)}%` }} /><b className="bar-write" style={{ width: `${Math.max(item.writes ? 5 : 0, item.writes / maxDaily * 100)}%` }} /></i><em>{item.reads + item.writes}</em></div>)}</div> : <div className="stats-card-empty">近 30 天没有发生记忆读写。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">BY ACTOR</span><h2>变更来源</h2></div></div>{stats.by_actor.length ? <div className="stat-list">{stats.by_actor.map((item) => <div className="actor-stat-row" key={item.actor}><span className={`actor-badge actor-${item.actor}`}>{actorLabelFromName(item.actor)}</span><i><b style={{ width: `${Math.max(item.reads ? 4 : 0, item.reads / maxActor * 100)}%` }} /></i><em>读 {item.reads} · 写 {item.writes}</em></div>)}</div> : <div className="stats-card-empty">暂无来源统计。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">NO DEEP READ</span><h2>尚未展开细节</h2></div><span className="count-pill">{stats.never_read}</span></div>{stats.unused.length ? <div className="stat-list">{stats.unused.map((item) => <div className="unused-row" key={item.path}><button className="stat-row-button" onClick={() => onOpenFile(item.path)}><strong title={item.path}>{item.path}</strong><span>{item.content_chars.toLocaleString()} 字符 · {item.idle_days === null ? "从未展开" : `闲置 ${item.idle_days} 天`}</span></button><button className="icon-button" title="删除记忆" aria-label={`删除${item.path}`} onClick={() => onDelete(item.path)}><Trash2 size={13} /></button></div>)}</div> : <div className="stats-card-empty">所有记忆都至少展开过一次。</div>}</section>
     </div>
@@ -215,7 +221,7 @@ export function MemoriesPage() {
 
   return (
     <div className="memory-shell">
-      <header className="memory-topbar"><Link className="brand brand-home" href="/" aria-label="返回主页"><div className="brand-mark">✦</div><div><div className="brand-title">个人 AI 助手</div><div className="brand-subtitle">Memory workspace</div></div></Link><div className="memory-topbar-tools"><nav className="memory-nav"><Link href="/"><MessageSquare size={14} />聊天</Link><span className="active"><FileText size={14} />记忆管理</span><Link href="/review"><CalendarDays size={14} />每日回顾</Link><Link href="/settings"><Settings2 size={14} />设置</Link></nav><ThemeControl /></div></header>
+      <WorkspaceTopbar active="memories" subtitle="Memory workspace" />
       <div className="memory-workspace">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
         <div className="memory-header"><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
@@ -223,7 +229,10 @@ export function MemoriesPage() {
       </aside>
       {treeOpen && <button className="sidebar-backdrop" aria-label="关闭记忆树" onClick={() => setTreeOpen(false)} />}
       <main className="memory-editor-panel">
-        <header className="editor-topbar"><div className="path-title"><button className="icon-button mobile-menu" aria-label="打开记忆树" onClick={() => setTreeOpen(true)}><Menu size={19} /></button>{showStats ? <><BarChart3 size={16} color="var(--accent)" /><strong>记忆使用率</strong></> : <><FileText size={16} color="var(--accent)" />{memory ? <><strong>{memory.path}</strong>{hasChanges && <span className="unsaved-dot">未保存</span>}</> : <span className="topbar-meta">选择一个文件</span>}</>}</div><div className="editor-actions"><button className="ghost-button stats-toggle" onClick={toggleStats}><BarChart3 size={13} />{showStats ? "返回编辑" : "使用分析"}</button>{!showStats && memory && <><button className="danger-button" onClick={() => void remove()}><Trash2 size={13} />删除</button><button className="primary-button" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? "保存中…" : "保存"}</button></>}</div></header>
+        <header className="editor-topbar">
+          <div className="path-title"><button className="icon-button mobile-menu" aria-label="打开记忆树" onClick={() => setTreeOpen(true)}><Menu size={19} /></button><FileText size={16} color="var(--accent)" /><div className="memory-context"><span>记忆管理</span><ChevronRight size={13} /><strong>{showStats ? "使用分析" : memory?.path ?? "选择一个文件"}</strong>{!showStats && hasChanges && <em>未保存</em>}</div></div>
+          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label="记忆视图"><button className={!showStats ? "active" : ""} role="tab" aria-selected={!showStats} onClick={() => showStats && toggleStats()}><FileText size={13} />文件</button><button className={showStats ? "active" : ""} role="tab" aria-selected={showStats} onClick={() => !showStats && toggleStats()}><BarChart3 size={13} />使用分析</button></div>{!showStats && memory && <><button className="danger-button" onClick={() => void remove()}><Trash2 size={13} />删除</button><button className="primary-button" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? "保存中…" : "保存"}</button></>}</div>
+        </header>
         {showStats ? <MemoryStatsPanel stats={stats} loading={loadingStats} onOpenFile={openStatsFile} onDelete={(path) => void removePath(path)} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : error || "从左侧选择一个文件"}</div> : <>
           <div className="editor-tabs"><button className={`editor-tab ${tab === "edit" ? "active" : ""}`} onClick={() => setTab("edit")}>编辑</button><button className={`editor-tab ${tab === "preview" ? "active" : ""}`} onClick={() => setTab("preview")}>预览</button></div>
           <div className="editor-area">{loadingFile ? <div className="centered-empty">打开文件中…</div> : tab === "edit" ? <textarea className="editor-textarea" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /> : <div className="preview assistant-content"><Markdown>{content}</Markdown></div>}</div>

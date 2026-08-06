@@ -31,9 +31,14 @@ services:
       # 环境变量优先级高于 .env 文件，所以这行一定生效。
       DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chat
       RELOAD: "1"
+      # 同理：TTS 服务跑在宿主机上，容器里的 127.0.0.1 是容器自己。
+      TTS_BASE_URL: ${TTS_BASE_URL:-http://host.docker.internal:8001}
       # 容器默认 UTC，会让「今天」的判断和注入给模型的日期都差 8 小时，
       # 也会让 local_day_bounds 失效（每日整理按错误的窗口切天）。
       TZ: ${TZ:-Asia/Shanghai}
+    # Docker Desktop 自带这个域名，Linux 上要显式映射到网关才解析得了
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     volumes:
@@ -48,6 +53,41 @@ services:
       - ./backups:/backups
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: development
+    container_name: chat-frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # 这两个值会进入浏览器 bundle，所以地址必须是浏览器可访问的宿主机地址，
+      # 不能写 Compose 内部服务名 http://api:8000。
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_KEY: ${API_KEY:-}
+      # Docker Desktop 的 bind mount 偶尔收不到文件事件，轮询可保证 HMR 稳定。
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      # 依赖保留在镜像中，只挂需要热更新的源码和配置，避免宿主机
+      # node_modules 覆盖容器里的 Linux 依赖。
+      - ./frontend/app:/app/app
+      - ./frontend/components:/app/components
+      - ./frontend/lib:/app/lib
+      - ./frontend/next.config.ts:/app/next.config.ts:ro
+      - ./frontend/postcss.config.mjs:/app/postcss.config.mjs:ro
+      - ./frontend/tsconfig.json:/app/tsconfig.json:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 5

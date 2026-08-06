@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import re
@@ -10,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import debug
 from app.config import Settings, get_settings
 from app.db.models import Conversation, Message
 from app.llm.events import (
@@ -245,6 +247,8 @@ class ChatService:
 
         额外会产出 ``("title", {...})`` 这种元组，用于把生成的标题推给前端。
         """
+        # provider 不知道自己在为哪个会话干活，又不该为了调试改它的签名
+        debug.current_conversation.set(conversation.id)
         history = await self.load_history(conversation.id)
 
         user_content = [{"type": "text", "text": user_text}]
@@ -266,6 +270,14 @@ class ChatService:
         tool_count = 0
         # 用户已经看到的正文。中断时要落库，否则刷新页面内容就没了。
         streamed: list[str] = []
+        # 标题和正文互不依赖，就让它俩并行 —— 串在正文之后会让用户在
+        # 「话已经说完」和 done 之间多等一次模型调用，白白转圈。
+        # 只并行模型调用，写库留到最后：session 不能并发使用。
+        title_task = (
+            asyncio.create_task(self._complete_title(user_text))
+            if conversation.title == DEFAULT_TITLE
+            else None
+        )
         logger.info(
             "→ conv#%s %s %s",
             conversation.id,
@@ -310,6 +322,8 @@ class ChatService:
                 # 客户端断开 / 点了停止 / 热重载。用户已经看到的内容必须留下，
                 # 否则刷新页面就凭空消失了。
                 await self._save_interrupted(conversation, streamed)
+                if title_task is not None:
+                    title_task.cancel()
 
         if not failed:
             logger.info(
@@ -318,10 +332,15 @@ class ChatService:
                 dim(_summarize_turn(done, tool_count, time.monotonic() - started)),
             )
 
-        if not failed and conversation.title == DEFAULT_TITLE:
-            title = await self._generate_title(conversation, user_text)
-            if title:
-                yield ("title", {"title": title})
+        if title_task is not None:
+            if failed:
+                title_task.cancel()
+            else:
+                title = await title_task
+                if title:
+                    conversation.title = title
+                    await self.session.commit()
+                    yield ("title", {"title": title})
 
         if done is not None:
             yield done
@@ -373,7 +392,8 @@ class ChatService:
         await self._touch(conversation)
         logger.warning("⚠ conv#%s 被中断，已保留 %d 字", conversation.id, len(text))
 
-    async def _generate_title(self, conversation: Conversation, first_text: str) -> str:
+    async def _complete_title(self, first_text: str) -> str:
+        """只管问模型要标题，不碰 session —— 它和正文并行跑。"""
         try:
             raw = await self.provider.complete(
                 system=TITLE_SYSTEM,
@@ -386,10 +406,4 @@ class ChatService:
             logger.exception("生成标题失败")
             return ""
 
-        title = _clean_title(raw)
-        if not title:
-            return ""
-
-        conversation.title = title
-        await self.session.commit()
-        return title
+        return _clean_title(raw)
