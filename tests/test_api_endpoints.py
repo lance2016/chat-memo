@@ -1,5 +1,6 @@
 """新增接口的端到端测试，跑在内存 SQLite 上，不需要 API key。"""
 
+import datetime as dt
 from collections.abc import AsyncIterator
 
 import pytest
@@ -7,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, ConversationSummary, Message
+from app.db.models import Conversation, ConversationSummary, DailyDigest, Message
 from app.db.session import get_session
 from app.main import create_app
 from app.memory.store import MemoryStore
@@ -27,6 +28,67 @@ async def seed_conversation(session: AsyncSession, title: str = "测试") -> Con
     session.add(conversation)
     await session.flush()
     return conversation
+
+
+# ---------- 工具目录 ----------
+
+
+async def test_tool_catalog_exposes_names_descriptions_and_schemas(
+    client: AsyncClient,
+) -> None:
+    response = await client.get("/api/tools")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["total"] == 8
+    assert {tool["name"] for tool in body["tools"]} == {
+        "memory",
+        "timeline_list",
+        "timeline_create",
+        "timeline_update",
+        "kb_search",
+        "kb_read",
+        "kb_list",
+        "kb_backlinks",
+    }
+    for tool in body["tools"]:
+        assert tool["description"]
+        assert tool["input_schema"]["type"] == "object"
+        assert "properties" in tool["input_schema"]
+
+    memory = next(tool for tool in body["tools"] if tool["name"] == "memory")
+    assert memory["native_provider"] == "anthropic"
+    assert "command" in memory["input_schema"]["required"]
+
+
+# ---------- 可回顾日期 ----------
+
+
+async def test_review_days_only_expose_days_with_content(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    conversation = await seed_conversation(session)
+    session.add_all(
+        [
+            Message(
+                conversation_id=conversation.id,
+                role="user",
+                content=[{"type": "text", "text": "发生过"}],
+                created_at=dt.datetime(2026, 8, 5, 12, tzinfo=dt.UTC),
+            ),
+            DailyDigest(
+                day=dt.date(2026, 8, 3),
+                headline="保留下来的回顾",
+                highlights=[],
+            ),
+        ]
+    )
+    await session.commit()
+
+    assert (await client.get("/api/review/days")).json() == [
+        "2026-08-05",
+        "2026-08-03",
+    ]
 
 
 # ---------- 消息里的 usage ----------

@@ -726,7 +726,7 @@ export function ChatPage() {
     return result;
   }, [draft, pendingUser, sending, turns]);
 
-  if (loadingConversations) return <WorkspacePageFallback active="chat" message="正在连接助手…" />;
+  if (loadingConversations) return <WorkspacePageFallback active="chat" messageKey="loading.connecting" />;
 
   return (
     <div className="app-shell">

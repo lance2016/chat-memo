@@ -9,6 +9,9 @@ import { listConversations } from "@/lib/api";
 import type { Conversation } from "@/lib/types";
 import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
+import { LanguageControl } from "@/components/language-control";
+import { useI18n } from "@/components/i18n-provider";
+import type { TranslationKey } from "@/lib/i18n";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
 
 export type WorkspacePage = "chat" | "memories" | "review" | "timeline" | "settings";
@@ -20,21 +23,21 @@ export function notifyWorkspaceConversationsChanged() {
 }
 
 const navigation = [
-  { key: "chat" as const, href: "/", label: "首页", icon: Home },
-  { key: "memories" as const, href: "/memories", label: "记忆库", icon: BookOpen },
-  { key: "review" as const, href: "/review", label: "每日回顾", icon: CalendarDays },
-  { key: "timeline" as const, href: "/timeline", label: "时间线", icon: CalendarClock },
-  { key: "settings" as const, href: "/settings", label: "设置", icon: Settings2 },
+  { key: "chat" as const, href: "/", label: "nav.chat" as TranslationKey, icon: Home },
+  { key: "memories" as const, href: "/memories", label: "nav.memories" as TranslationKey, icon: BookOpen },
+  { key: "review" as const, href: "/review", label: "nav.review" as TranslationKey, icon: CalendarDays },
+  { key: "timeline" as const, href: "/timeline", label: "nav.timeline" as TranslationKey, icon: CalendarClock },
+  { key: "settings" as const, href: "/settings", label: "nav.settings" as TranslationKey, icon: Settings2 },
 ];
 const workspaceRoutes = navigation.map(({ href }) => href);
 const warmedRoutes = new Set<string>();
 
-const pageLabels: Record<WorkspacePage, string> = {
-  chat: "首页",
-  memories: "记忆库",
-  review: "每日回顾",
-  timeline: "时间线",
-  settings: "设置",
+const pageLabels: Record<WorkspacePage, TranslationKey> = {
+  chat: "nav.chat",
+  memories: "nav.memories",
+  review: "nav.review",
+  timeline: "nav.timeline",
+  settings: "nav.settings",
 };
 
 export function MemoryMark({ compact = false }: { compact?: boolean }) {
@@ -44,12 +47,14 @@ export function MemoryMark({ compact = false }: { compact?: boolean }) {
 }
 
 export function MemoryBrand() {
-  return <Link className="memory-brand-link" href="/" aria-label="返回朝花夕拾首页" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>
+  const { t } = useI18n();
+  return <Link className="memory-brand-link" href="/" aria-label={t("workspace.backHome")} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>
     <Image className="memory-brand-lockup" src="/morning-memory-wordmark.png" alt="朝花夕拾" width={220} height={59} sizes="(max-width: 980px) 56px, 220px" priority />
   </Link>;
 }
 
 export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage; className?: string }) {
+  const { t } = useI18n();
   const router = useRouter();
   const prefetch = (href: string) => {
     if (warmedRoutes.has(href)) return;
@@ -63,22 +68,24 @@ export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage
     void router.prefetch(href);
   };
 
-  return <nav className={`workspace-nav ${className}`} aria-label="主导航">
+  return <nav className={`workspace-nav ${className}`} aria-label={t("nav.main")}>
     {navigation.map(({ key, href, label, icon: Icon }) => key === active
-      ? <span className="active" aria-current="page" key={key}><Icon size={18} /><span>{label}</span></span>
-      : <Link href={href} key={key} onPointerEnter={() => prefetch(href)} onFocus={() => prefetch(href)} onTouchStart={() => prefetch(href)} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={18} /><span>{label}</span></Link>)}
+      ? <span className="active" aria-current="page" key={key}><Icon size={18} /><span>{t(label)}</span></span>
+      : <Link href={href} key={key} onPointerEnter={() => prefetch(href)} onFocus={() => prefetch(href)} onTouchStart={() => prefetch(href)} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={18} /><span>{t(label)}</span></Link>)}
   </nav>;
 }
 
 export function WorkspaceProfile() {
+  const { t } = useI18n();
   return <div className="workspace-profile">
-    <Link href="/settings" className="workspace-avatar" aria-label="打开设置">L</Link>
-    <span><strong>Lance</strong><small>记忆已保存在本地</small></span>
-    <Link href="/settings" className="workspace-profile-settings" aria-label="打开设置"><Settings2 size={15} /></Link>
+    <Link href="/settings" className="workspace-avatar" aria-label={t("workspace.openSettings")}>L</Link>
+    <span><strong>Lance</strong><small>{t("workspace.localMemory")}</small></span>
+    <Link href="/settings" className="workspace-profile-settings" aria-label={t("workspace.openSettings")}><Settings2 size={15} /></Link>
   </div>;
 }
 
 export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
+  const { t } = useI18n();
   const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const activeRoute = navigation.find(({ key }) => key === active)?.href;
@@ -113,29 +120,30 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   return <>
     <aside className="workspace-sidebar">
       <MemoryBrand />
-      <Link className="workspace-capture-button workspace-sidebar-capture" href="/" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); else setShowArchived(false); }}><Plus size={15} />记录新想法</Link>
+      <Link className="workspace-capture-button workspace-sidebar-capture" href="/" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); else setShowArchived(false); }}><Plus size={15} />{t("workspace.newThought")}</Link>
       <WorkspaceNav active={active} />
-      <button className="workspace-sidebar-secondary" type="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{showArchived ? "返回最近对话" : "已归档对话"}</button>
+      <button className="workspace-sidebar-secondary" type="button" onClick={() => setShowArchived((value) => !value)}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</button>
       <div className="workspace-sidebar-recent">
-        <span>{showArchived ? "已归档对话" : "最近对话"}</span>
+        <span>{showArchived ? t("workspace.archived") : t("workspace.recent")}</span>
         {recentConversations.map((conversation) => <Link href={`/?conversation=${conversation.id}`} key={conversation.id} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><i />{conversation.title}</Link>)}
-        {!recentConversations.length && <small>{showArchived ? "没有已归档的对话" : "从首页开始一段新的记录"}</small>}
+        {!recentConversations.length && <small>{showArchived ? t("workspace.noArchived") : t("workspace.noRecent")}</small>}
       </div>
       <WorkspaceProfile />
     </aside>
     <header className="workspace-desktop-topbar">
-      <div className="workspace-breadcrumb"><span>我的记忆</span><b>›</b><strong>{pageLabels[active]}</strong></div>
-      <div className="workspace-topbar-tools"><SearchTrigger /><ThemeControl /></div>
+      <div className="workspace-breadcrumb"><span>{t("workspace.root")}</span><b>›</b><strong>{t(pageLabels[active])}</strong></div>
+      <div className="workspace-topbar-tools"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
     </header>
     <header className="workspace-mobile-topbar">
       <MemoryBrand />
-      <div><SearchTrigger /><ThemeControl /></div>
+      <div><SearchTrigger /><LanguageControl /><ThemeControl /></div>
     </header>
     <WorkspaceNav active={active} className="workspace-mobile-nav" />
   </>;
 }
 
 /** Keep the workspace chrome mounted while a route waits for client data. */
-export function WorkspacePageFallback({ active, message }: { active: WorkspacePage; message: string }) {
-  return <div className="workspace-content-loading" data-workspace-page={active}><div className="page-loading">{message}</div></div>;
+export function WorkspacePageFallback({ active, message, messageKey }: { active: WorkspacePage; message?: string; messageKey?: TranslationKey }) {
+  const { t } = useI18n();
+  return <div className="workspace-content-loading" data-workspace-page={active}><div className="page-loading">{messageKey ? t(messageKey) : message}</div></div>;
 }

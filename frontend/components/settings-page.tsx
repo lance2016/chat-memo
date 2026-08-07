@@ -2,19 +2,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
+import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Trash2, Wrench, X } from "lucide-react";
 import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ToolCatalog } from "@/components/tool-catalog";
 
-type SettingsSectionKey = "general" | "assistant" | "model" | "review" | "voice" | "advanced" | "system";
+type SettingsSectionKey = "general" | "assistant" | "model" | "tools" | "review" | "voice" | "advanced" | "system";
 
 const settingsSections: Array<{ key: SettingsSectionKey; label: string; description: string; icon: typeof Settings2 }> = [
   { key: "general", label: "通用与聊天", description: "输入与显示偏好", icon: SlidersHorizontal },
   { key: "assistant", label: "助手人格", description: "称呼与固定指令", icon: Sparkles },
   { key: "model", label: "模型与回答", description: "模型、思考与工具", icon: Activity },
+  { key: "tools", label: "工具目录", description: "能力、参数与 Schema", icon: Wrench },
   { key: "review", label: "记忆与回顾", description: "每日整理策略", icon: Clock3 },
   { key: "voice", label: "语音", description: "语音输入与朗读", icon: Headphones },
   { key: "advanced", label: "高级与调试", description: "请求记录与 Prompt", icon: Bug },
@@ -547,6 +549,8 @@ export function SettingsPage() {
           {activeSection === "assistant" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ASSISTANT</span><h2>助手人格</h2><p>固定称呼和工作方式会加入每次模型请求，但不会被每日整理修改。</p></div><button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看完整 Prompt"}</button></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}<div className="prompt-boundary-note">固定指令适合约束回答方式；姓名、偏好和计划等事实应交给长期记忆。</div></section>}
 
           {activeSection === "model" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>控制日常对话模型、思考方式、输出长度和工具轮次。</p></div><Activity size={17} /></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? renderRuntimeFields(modelFields) : <div className="settings-empty">当前后端没有提供模型配置。</div>}</section>}
+
+          {activeSection === "tools" && <section className="settings-card settings-panel-card tool-catalog-card"><div className="settings-card-heading"><div><span className="card-kicker">TOOL CATALOG</span><h2>工具目录</h2><p>查看模型当前知道的全部工具、用途与输入约定。未启用的能力也会保留在目录中。</p></div><Wrench size={17} /></div><ToolCatalog /></section>}
 
           {activeSection === "review" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>设置每日整理的触发方式、时间和专用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>打开每日回顾<ChevronRight size={13} /></Link></div><div className="settings-summary-strip"><div><span>整理方式</span><strong>{consolidationMode}</strong></div><div><span>整理时间</span><strong>{consolidationSchedule}</strong></div><div><span>整理模型</span><strong>{consolidationModel}</strong></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? renderRuntimeFields(reviewFields) : <div className="settings-empty">当前后端没有提供整理配置。</div>}<div className="settings-card-callout"><Clock3 size={14} /><span>自动整理关闭时仍可在每日回顾页手动触发，不会影响历史摘要和记忆版本。</span></div></section>}
 

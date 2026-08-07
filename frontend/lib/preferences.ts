@@ -1,3 +1,5 @@
+import { isLocale, type Locale } from "@/lib/i18n";
+
 export type ThemeMode = "system" | "light" | "dark";
 
 export interface UserPreferences {
@@ -7,6 +9,7 @@ export interface UserPreferences {
   showToolActivity: boolean;
   showUsage: boolean;
   theme: ThemeMode;
+  locale: Locale;
 }
 
 export const defaultPreferences: UserPreferences = {
@@ -16,6 +19,7 @@ export const defaultPreferences: UserPreferences = {
   showToolActivity: true,
   showUsage: true,
   theme: "light",
+  locale: "zh-CN",
 };
 
 const STORAGE_KEY = "personal-ai-assistant:preferences";
@@ -34,6 +38,7 @@ export function readPreferences(): UserPreferences {
       showToolActivity: parsed.showToolActivity !== false,
       showUsage: parsed.showUsage !== false,
       theme: parsed.theme === "light" || parsed.theme === "dark" ? parsed.theme : "system",
+      locale: isLocale(parsed.locale) ? parsed.locale : "zh-CN",
     };
   } catch {
     return defaultPreferences;

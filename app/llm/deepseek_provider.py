@@ -248,7 +248,16 @@ class DeepSeekProvider:
         choice = response.choices[0]
         if choice.finish_reason == "length":
             logger.warning("补全被 max_tokens 截断，产出可能不完整")
-        return (choice.message.content or "").strip()
+        text = (choice.message.content or "").strip()
+        if not text:
+            # 空产出在上层只会变成一句「不是 JSON」，看不出是模型没说话还是被截断。
+            # 思考模型尤其容易把预算全花在 reasoning 上，正文一个字都不剩。
+            reasoning = getattr(choice.message, "reasoning_content", None) or ""
+            logger.warning(
+                "补全返回空正文：finish_reason=%s thinking=%s reasoning=%d 字",
+                choice.finish_reason, thinking, len(reasoning),
+            )
+        return text
 
 
 # ---------- 标准格式（Anthropic content blocks）与 OpenAI 消息的互转 ----------

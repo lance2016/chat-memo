@@ -46,12 +46,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _ConversationTake:
-    """一次摘要的两份产出。"""
+    """一次摘要调用的全部产出。"""
 
     conversation_id: int
     title: str
     memory: str
     recap: str
+    # 用户原话。只有这一步看得到原始对话，回顾那步拿到的已经是转述。
+    quote: str = ""
     open_loops: list[str] = field(default_factory=list)
 
 
@@ -68,6 +70,7 @@ class ConsolidationResult:
     detail: str = ""
     # 这一天的回顾。digest_failed 时 headline 为空，但记忆整理的结果依然有效。
     headline: str = ""
+    title: str = ""
     new_loops: int = 0
     closed_loops: int = 0
     digest_failed: bool = False
@@ -97,8 +100,12 @@ class Consolidator:
                 takes.append(take)
 
         summaries = [f"## {t.title}\n{t.memory}" for t in takes if t.memory]
+        # 回顾要看这一天的全部素材，不能只看这次新生成的那几份。摘要是增量的
+        # （水位线），重跑一天时大部分会话没有新消息、不会产出 take —— 只喂 takes
+        # 的话，越点「重新整理」digest 的素材越少，结果一次比一次差。
+        material = await self._day_material(day, conversations, takes)
 
-        if not summaries and not any(t.recap for t in takes):
+        if not summaries and not any(t.recap for t in material):
             detail = (
                 f"{failures} 个会话摘要生成失败，详见日志"
                 if failures
@@ -124,13 +131,55 @@ class Consolidator:
         result.failed_summaries = failures
 
         try:
-            await self._digest(day, takes, result)
+            await self._digest(day, material, result)
         except Exception:
             logger.exception("生成每日回顾失败: day=%s", day.isoformat())
             # 回滚回顾这一步的半成品。记忆整理已经 commit 过了，不受影响。
             await self.session.rollback()
             result.digest_failed = True
         return result
+
+    async def _day_material(
+        self,
+        day: dt.date,
+        conversations: list[Conversation],
+        takes: list[_ConversationTake],
+    ) -> list[_ConversationTake]:
+        """这一天喂给回顾的全部素材：本次新产出的 + 之前存下来的。
+
+        重跑必须拿到和首次一样完整的素材，否则「重新整理这一天」就是在用越来越少
+        的输入覆盖一份越来越好的回顾。已有摘要只补 recap/quote —— open_loops 是本轮
+        抽取结果，旧的已经落库成 OpenLoop 行了，再喂回去会重复。
+        """
+        fresh = {t.conversation_id: t for t in takes}
+        missing = [c for c in conversations if c.id not in fresh]
+        material = list(takes)
+        if not missing:
+            return material
+
+        rows = (
+            await self.session.execute(
+                select(ConversationSummary)
+                .where(ConversationSummary.conversation_id.in_([c.id for c in missing]))
+                .order_by(ConversationSummary.id)
+            )
+        ).scalars()
+        # 同一个会话可能有多份增量摘要，留最后一份（覆盖到最新消息的那份）。
+        latest = {row.conversation_id: row for row in rows}
+        titles = {c.id: c.title for c in missing}
+        for conversation_id, row in latest.items():
+            if not (row.recap or row.quote):
+                continue
+            material.append(
+                _ConversationTake(
+                    conversation_id=conversation_id,
+                    title=titles[conversation_id],
+                    memory="",
+                    recap=row.recap or "",
+                    quote=row.quote or "",
+                )
+            )
+        return material
 
     async def _conversations_on(self, day: dt.date) -> list[Conversation]:
         start, end = local_day_bounds(day)
@@ -177,6 +226,7 @@ class Consolidator:
                 conversation_id=conversation.id,
                 summary=take.memory,
                 recap=take.recap or None,
+                quote=take.quote or None,
                 up_to_message_id=messages[-1].id,
             )
         )
@@ -254,10 +304,13 @@ class Consolidator:
             ).scalars()
         )
         candidates = [loop for t in takes for loop in t.open_loops]
+        quotes = [f"- 「{t.quote}」（{t.title}）" for t in takes if t.quote]
 
         prompt = DIGEST_PROMPT.format(
             date=day.isoformat(),
             recaps="\n\n".join(recaps),
+            quotes="\n".join(quotes) or "（无）",
+            history=await self._recent_history(day),
             new_loops="\n".join(f"- {c}" for c in candidates) or "（无）",
             open_loops="\n".join(
                 f"- id={loop.id}（{loop.opened_on.isoformat()} 起）{loop.text}"
@@ -265,24 +318,52 @@ class Consolidator:
             )
             or "（无）",
         )
-        raw = await self.provider.complete(
-            system=DIGEST_SYSTEM, prompt=prompt, max_tokens=4000
-        )
-
-        data = _parse_json_object(raw)
+        # 重试一次：模型偶尔会返回空正文或半个 JSON。整理一天只跑一次，
+        # 为一次抽风丢掉整份回顾不值得，而多花一次调用的成本可以忽略。
+        data = None
+        for attempt in (1, 2):
+            raw = await self.provider.complete(
+                system=DIGEST_SYSTEM, prompt=prompt, max_tokens=4000
+            )
+            data = _parse_json_object(raw)
+            if data is not None:
+                break
+            logger.warning(
+                "回顾输出不是 JSON（第 %d 次）: %r", attempt, raw[:200]
+            )
         if data is None:
-            raise ValueError(f"回顾输出不是 JSON: {raw[:200]!r}")
+            raise ValueError("回顾连续两次都没给出 JSON，详见日志")
 
         headline = str(data.get("headline") or "").strip()
         highlights = [
             str(item).strip()
             for item in data.get("highlights") or []
             if str(item).strip()
-        ]
+        ][:5]
         if not headline:
             raise ValueError("回顾输出缺少 headline")
 
-        await self._upsert_digest(day, headline, highlights)
+        # quote 必须是候选里的原文。模型很容易"顺手润色"一下，那就不再是他说的话了 ——
+        # 引语的全部价值就在于没被改写，对不上就宁可不要。
+        candidates = [t.quote for t in takes if t.quote]
+        quote = str(data.get("quote") or "").strip().strip("「」\"'")
+        if quote and quote not in candidates:
+            logger.warning("回顾给出的引语不在候选里，已丢弃: %r", quote[:60])
+            quote = ""
+        if not quote and candidates:
+            # 模型在这个字段上极度保守，有候选也常常返回空。候选已经在摘要那步
+            # 过了「不是指令、不是提问」的筛选，直接取第一条也好过整栏空着。
+            quote = candidates[0]
+
+        await self._upsert_digest(
+            day,
+            headline=headline,
+            highlights=highlights,
+            title=str(data.get("title") or "").strip(),
+            observation=str(data.get("observation") or "").strip(),
+            quote=quote,
+            echoes=_clean_echoes(data.get("echoes")),
+        )
 
         pending_by_id = {loop.id: loop for loop in pending}
         closed = 0
@@ -313,6 +394,7 @@ class Consolidator:
 
         await self.session.commit()
         result.headline = headline
+        result.title = str(data.get("title") or "").strip()
         result.new_loops = opened
         result.closed_loops = closed
         logger.info(
@@ -320,24 +402,85 @@ class Consolidator:
             day.isoformat(), headline, len(highlights), opened, closed,
         )
 
+    async def _recent_history(self, day: dt.date, days: int = 14) -> str:
+        """喂给 echoes 的历史。只给日期和标题 —— 模型只能引用这里出现过的东西。
+
+        再加上一年前的同一天（如果有），anniversary 那类连线全靠它。
+        """
+        window = day - dt.timedelta(days=days)
+        anniversary = day.replace(year=day.year - 1) if day.month != 2 or day.day != 29 else None
+        stmt = (
+            select(DailyDigest)
+            .where(
+                DailyDigest.day < day,
+                (DailyDigest.day >= window)
+                | (DailyDigest.day == anniversary if anniversary else False),
+            )
+            .order_by(DailyDigest.day.desc())
+        )
+        rows = list((await self.session.execute(stmt)).scalars())
+        if not rows:
+            return "（没有更早的回顾，这次不要写 echoes）"
+        return "\n".join(
+            f"- {row.day.isoformat()}：{row.headline}"
+            + (f"（{'、'.join(row.highlights[:3])}）" if row.highlights else "")
+            for row in rows
+        )
+
     async def _upsert_digest(
-        self, day: dt.date, headline: str, highlights: list[str]
+        self,
+        day: dt.date,
+        *,
+        headline: str,
+        highlights: list[str],
+        title: str = "",
+        observation: str = "",
+        quote: str = "",
+        echoes: list[dict[str, str]] | None = None,
     ) -> None:
         """一天一行，重跑整理是覆盖 —— 这是「这一天是什么」的当前答案，不是流水。"""
         digest = await self.session.scalar(
             select(DailyDigest).where(DailyDigest.day == day)
         )
-        model = getattr(self.provider, "model_name", "")
+        values = {
+            "headline": headline,
+            "highlights": highlights,
+            "title": title,
+            "observation": observation,
+            "quote": quote,
+            "echoes": echoes or [],
+            "model": getattr(self.provider, "model_name", ""),
+        }
         if digest is None:
-            self.session.add(
-                DailyDigest(
-                    day=day, headline=headline, highlights=highlights, model=model
-                )
-            )
+            self.session.add(DailyDigest(day=day, **values))
         else:
-            digest.headline = headline
-            digest.highlights = highlights
-            digest.model = model
+            for key, value in values.items():
+                setattr(digest, key, value)
+
+
+_ECHO_KINDS = {"recurring", "followup", "anniversary"}
+
+
+def _clean_echoes(raw: object) -> list[dict[str, str]]:
+    """只留形状对的连线，最多 3 条。
+
+    kind 认不出来的一律归 recurring 而不是丢掉 —— 内容才是有价值的那部分，
+    kind 只影响前端显示哪个图标。
+    """
+    if not isinstance(raw, list):
+        return []
+    echoes: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        kind = str(item.get("kind") or "").strip()
+        echoes.append(
+            {"kind": kind if kind in _ECHO_KINDS else "recurring", "text": text}
+        )
+    return echoes[:3]
 
 
 def _parse_json_object(text: str) -> dict | None:
@@ -379,11 +522,13 @@ def _parse_summary(raw: str, conversation: Conversation) -> _ConversationTake | 
             recap="",
         )
 
-    memory = str(data.get("memory") or "").strip()
-    recap = str(data.get("recap") or "").strip()
     # 提示词要的是空字符串，但模型常常按老习惯回「无」。
-    memory = "" if memory == "无" else memory
-    recap = "" if recap == "无" else recap
+    memory, recap, quote = (
+        "" if value == "无" else value
+        for value in (
+            str(data.get(key) or "").strip() for key in ("memory", "recap", "quote")
+        )
+    )
     loops = [
         str(item).strip() for item in data.get("open_loops") or [] if str(item).strip()
     ]
@@ -394,6 +539,7 @@ def _parse_summary(raw: str, conversation: Conversation) -> _ConversationTake | 
         title=conversation.title,
         memory=memory,
         recap=recap,
+        quote=quote,
         open_loops=loops,
     )
 

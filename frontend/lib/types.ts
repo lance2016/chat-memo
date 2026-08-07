@@ -48,6 +48,37 @@ export interface HealthStatus {
   model?: string;
 }
 
+export interface ToolSchemaProperty {
+  type?: string;
+  description?: string;
+  enum?: unknown[];
+  items?: ToolSchemaProperty;
+  [key: string]: unknown;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  input_schema: {
+    type: string;
+    properties: Record<string, ToolSchemaProperty>;
+    required?: string[];
+    [key: string]: unknown;
+  };
+  category: string;
+  category_label: string;
+  enabled: boolean;
+  availability: string;
+  providers: string[];
+  native_provider: string | null;
+}
+
+export interface ToolCatalog {
+  total: number;
+  enabled: number;
+  tools: ToolDefinition[];
+}
+
 export interface BackupResult {
   dump_file: string;
   dump_bytes: number;
@@ -253,15 +284,26 @@ export interface ConsolidateResult {
   failed_summaries: number;
   detail: string;
   headline: string;
+  title: string;
   new_loops: number;
   closed_loops: number;
   digest_failed: boolean;
+}
+
+export interface Echo {
+  kind: "recurring" | "followup" | "anniversary";
+  text: string;
 }
 
 export interface DailyDigest {
   day: string;
   headline: string;
   highlights: string[];
+  /** 下面四个是「这是哪一天」。老 digest 没有，后端保证给空值而不是 null。 */
+  title: string;
+  observation: string;
+  quote: string;
+  echoes: Echo[];
   model: string;
   created_at: string;
   updated_at: string;

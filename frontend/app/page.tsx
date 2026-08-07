@@ -4,7 +4,7 @@ import { WorkspacePageFallback } from "@/components/workspace-topbar";
 
 export default function Home() {
   return (
-    <Suspense fallback={<WorkspacePageFallback active="chat" message="正在打开助手…" />}>
+    <Suspense fallback={<WorkspacePageFallback active="chat" messageKey="loading.chat" />}>
       <ChatPage />
     </Suspense>
   );

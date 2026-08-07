@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getTtsStatus, getTtsVoices, listDebugRequests, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -73,6 +73,23 @@ describe("parseSseEventLine", () => {
     await expect(getDebugRequest(8)).resolves.toMatchObject({ id: 8 });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "http://localhost:8000/api/debug/requests?limit=5&conversation_id=3", expect.anything());
     expect(fetchMock).toHaveBeenNthCalledWith(3, "http://localhost:8000/api/debug/requests/8", expect.anything());
+  });
+
+  it("loads the complete tool catalog", async () => {
+    const catalog = { total: 1, enabled: 1, tools: [{ name: "memory" }] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(catalog), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getToolCatalog()).resolves.toEqual(catalog);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/tools", expect.anything());
+  });
+
+  it("loads only dates that have reviewable content", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(["2026-08-06", "2026-08-03"]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listReviewDays()).resolves.toEqual(["2026-08-06", "2026-08-03"]);
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/review/days", expect.anything());
   });
 
   it("clears debug request snapshots", async () => {

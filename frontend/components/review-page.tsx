@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { CheckCircle2, ChevronLeft, ChevronRight, LoaderCircle, Play, RefreshCw, Settings2, TriangleAlert } from "lucide-react";
-import { closeOpenLoop, consolidate, createOpenLoop, dropOpenLoop, errorMessage, getDailyUsage, getDigest, listAllMemoryVersions, listConversations, listOpenLoops, listSummaries, reopenOpenLoop, restoreMemoryVersion } from "@/lib/api";
+import { closeOpenLoop, consolidate, createOpenLoop, dropOpenLoop, errorMessage, getDailyUsage, getDigest, listAllMemoryVersions, listConversations, listOpenLoops, listReviewDays, listSummaries, reopenOpenLoop, restoreMemoryVersion } from "@/lib/api";
 import type { Conversation, ConversationSummary, ConsolidateResult, DailyDigest, DailyUsage, MemoryVersion, OpenLoop } from "@/lib/types";
 import { ReviewConversationList } from "@/components/review/review-conversation-list";
 import { ReviewDigest } from "@/components/review/review-digest";
@@ -57,7 +57,10 @@ export function ReviewPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedDay = searchParams.get("day");
-  const day = validDay(requestedDay) ? requestedDay : today();
+  const [availableDays, setAvailableDays] = useState<string[] | null>(null);
+  const day = validDay(requestedDay) && (availableDays === null || availableDays.includes(requestedDay))
+    ? requestedDay
+    : availableDays?.[0] ?? today();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [changes, setChanges] = useState<MemoryVersion[]>([]);
   const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
@@ -80,8 +83,21 @@ export function ReviewPage() {
   }, [day]);
 
   useEffect(() => {
-    if (!validDay(requestedDay)) router.replace(`/review?day=${day}`, { scroll: false });
-  }, [day, requestedDay, router]);
+    let active = true;
+    void listReviewDays()
+      .then((days) => { if (active) setAvailableDays(days); })
+      .catch((cause) => {
+        if (!active) return;
+        setAvailableDays([]);
+        setError(errorMessage(cause, "无法读取可回顾日期"));
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (availableDays === null || availableDays.length === 0) return;
+    if (requestedDay !== day) router.replace(`/review?day=${day}`, { scroll: false });
+  }, [availableDays, day, requestedDay, router]);
 
   useEffect(() => () => reviewRequestsRef.current.invalidate(), []);
 
@@ -108,7 +124,7 @@ export function ReviewPage() {
     if (!isFulfilled(summariesResult)) nextErrors.summaries = errorMessage(summariesResult.reason, "无法加载会话摘要");
     if (!isFulfilled(usageResult)) nextErrors.usage = errorMessage(usageResult.reason, "无法加载用量统计");
     if (!isFulfilled(digestResult)) nextErrors.digest = errorMessage(digestResult.reason, "无法加载今日回顾");
-    if (!isFulfilled(loopsResult)) nextErrors.loops = errorMessage(loopsResult.reason, "无法加载悬而未决");
+    if (!isFulfilled(loopsResult)) nextErrors.loops = errorMessage(loopsResult.reason, "无法加载需要关注的事项");
 
     const allConversations = [
       ...(isFulfilled(activeResult) ? activeResult.value : []),
@@ -127,7 +143,9 @@ export function ReviewPage() {
     setLoading(false);
   }, []);
 
-  useEffect(() => { void loadReview(day); }, [day, loadReview]);
+  useEffect(() => {
+    if (availableDays?.includes(day)) void loadReview(day);
+  }, [availableDays, day, loadReview]);
 
   const runConsolidation = async () => {
     if (running) return;
@@ -179,7 +197,7 @@ export function ReviewPage() {
   };
 
   const selectDay = (nextDay: string) => {
-    if (!validDay(nextDay) || nextDay === day) return;
+    if (!validDay(nextDay) || !availableDays?.includes(nextDay) || nextDay === day) return;
     selectedDayRef.current = nextDay;
     router.replace(`/review?day=${nextDay}`, { scroll: false });
   };
@@ -188,12 +206,36 @@ export function ReviewPage() {
   // digest 在就说明这一天真的被回顾过了。
   const dayDigest = loadedDay === day ? digest : null;
   const isToday = day === today();
+  const dayIndex = availableDays?.indexOf(day) ?? -1;
+  const olderDay = dayIndex >= 0 ? availableDays?.[dayIndex + 1] : undefined;
+  const newerDay = dayIndex > 0 ? availableDays?.[dayIndex - 1] : undefined;
+  const todayIsAvailable = availableDays?.includes(today()) ?? false;
+
+  if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading"><LoaderCircle size={18} className="spin" />正在读取可回顾日期…</div></main></div>;
+
+  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-heading review-heading-empty"><div><div className="eyebrow">Daily review</div><h1>还没有可以回看的日子。</h1><p>有过对话之后，这里才会出现可选择的日期。</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
 
   return <div className="review-shell">
     <main className="review-content">
-      <div className="review-heading"><div><div className="eyebrow">Daily review</div><h1>{isToday ? "回看今天。" : "回看这一天。"}</h1><p>{formatDayTitle(day)} · 把对话、记忆和使用情况放在同一条脉络里。</p></div><div className="review-controls"><div className="date-control"><button className="icon-button date-step" aria-label="前一天" onClick={() => selectDay(moveDay(day, -1))}><ChevronLeft size={16} /></button><label htmlFor="review-day">选择日期</label><input id="review-day" type="date" value={day} onChange={(event) => selectDay(event.target.value)} /><button className="icon-button date-step" aria-label="后一天" onClick={() => selectDay(moveDay(day, 1))}><ChevronRight size={16} /></button></div>{dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />已整理 · {new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at))}</span>}{!isToday && <button className="ghost-button today-button" onClick={() => selectDay(today())}><RefreshCw size={13} />今天</button>}<Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />整理设置</Link><button className="primary-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />整理中…</> : <><Play size={14} />{dayDigest ? "重新整理这一天" : "整理这一天"}</>}</button></div></div>
+      <div className="review-heading">
+        <div className="review-heading-copy"><div className="eyebrow">Daily review</div><h1>{isToday ? "回看今天。" : "回看这一天。"}</h1><p>{formatDayTitle(day)} · 把对话、记忆和使用情况放在同一条脉络里。</p></div>
+        <div className="review-controls">
+          <div className="review-control-row">
+            <div className="date-control">
+              <button className="icon-button date-step" aria-label="上一个有记录的日期" disabled={!olderDay} onClick={() => olderDay && selectDay(olderDay)}><ChevronLeft size={16} /></button>
+              <label htmlFor="review-day">选择日期</label>
+              <select id="review-day" value={day} onChange={(event) => selectDay(event.target.value)}>{availableDays.map((value) => <option value={value} key={value}>{value.replaceAll("-", "/")}</option>)}</select>
+              <button className="icon-button date-step" aria-label="下一个有记录的日期" disabled={!newerDay} onClick={() => newerDay && selectDay(newerDay)}><ChevronRight size={16} /></button>
+            </div>
+            <span className="review-status-slot">{dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />已整理 · {new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at))}</span>}</span>
+            <button className={`ghost-button today-button ${isToday || !todayIsAvailable ? "is-placeholder" : ""}`} disabled={isToday || !todayIsAvailable} aria-hidden={isToday || !todayIsAvailable} tabIndex={isToday || !todayIsAvailable ? -1 : 0} onClick={() => selectDay(today())}><RefreshCw size={13} />今天</button>
+            <Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />整理设置</Link>
+          </div>
+          <button className="primary-button review-run-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />整理中…</> : <><Play size={14} />{dayDigest ? "重新整理这一天" : "整理这一天"}</>}</button>
+        </div>
+      </div>
       {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />重试</button></div>}
-      {result && <div className={`review-result ${result.failed_summaries > 0 || result.digest_failed ? "review-warning" : ""}`}><CheckCircle2 size={17} /><div><strong>{result.skipped ? "这一天没有需要整理的对话" : result.headline || "整理完成"}</strong><span>{result.digest_failed ? "回顾生成失败，记忆已照常整理 —— 可以再跑一次" : result.detail || `记忆写入 ${result.memory_writes} 次 · 新增待办 ${result.new_loops} 条 · 闭环 ${result.closed_loops} 条`}</span></div></div>}
+      {result && <div className={`review-result ${result.failed_summaries > 0 || result.digest_failed ? "review-warning" : ""}`}><CheckCircle2 size={17} /><div><strong>{result.skipped ? "这一天没有需要整理的对话" : [result.title, result.headline].filter(Boolean).join(" · ") || "整理完成"}</strong><span>{result.digest_failed ? "回顾生成失败，记忆已照常整理 —— 可以再跑一次" : result.detail || `记忆写入 ${result.memory_writes} 次 · 新增待办 ${result.new_loops} 条 · 闭环 ${result.closed_loops} 条`}</span></div></div>}
       {loading ? <div className="review-loading"><LoaderCircle size={18} className="spin" />正在读取这一天的记录…</div> : <>
         <ReviewDigest digest={digest} error={sectionErrors.digest} running={running} onRun={() => void runConsolidation()} />
         <ReviewOpenLoops

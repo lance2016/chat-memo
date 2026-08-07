@@ -95,6 +95,9 @@ class ConversationSummary(Base):
     # summary 是给记忆用的（只留事实、跳过技术细节），对「今天干了什么」太干瘪，
     # 所以摘要那一次调用同时产出两份。老数据没有这一列，保持 NULL。
     recap: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 这轮里用户说的、值得原样留存的一句话。只有摘要这一步看得到原始对话，
+    # 回顾那步拿到的已经是转述了 —— 引语必须在这里抽，过了这道就没有原文了。
+    quote: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 摘要覆盖到的最后一条消息，增量生成时作为水位线。
     up_to_message_id: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(
@@ -197,10 +200,14 @@ class AppSetting(Base):
 
 
 class DailyDigest(Base):
-    """一天一句话 + 几条收获，每日回顾页的主角。
+    """这一天是什么，每日回顾页的主角。
 
     一天只有一行：重跑整理是覆盖而不是追加 —— 这是「这一天是什么」的当前答案，
     不是历史流水。想看过程去翻 conversation_summaries 和 memory_versions。
+
+    headline/highlights 回答「做了什么」，title/observation/quote/echoes 回答
+    「这是哪一天」。后面四个是这张表存在的理由 —— 只回答前者的话，它就只是一份
+    更短的会话列表，没人会翻回来看。
     """
 
     __tablename__ = "daily_digests"
@@ -209,6 +216,16 @@ class DailyDigest(Base):
     day: Mapped[dt.date] = mapped_column(Date, unique=True, index=True)
     headline: Mapped[str] = mapped_column(Text)
     highlights: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list
+    )
+    # 给这天起的名字，像给照片归档起标题。翻年度列表时一眼认出是哪天，比 headline 更短。
+    title: Mapped[str] = mapped_column(Text, default="")
+    # 一句只有看过全天对话的人才写得出的观察 —— 跨会话的模式、反复出现的主题、状态。
+    observation: Mapped[str] = mapped_column(Text, default="")
+    # 当天对话里用户自己说的一句原话，原样保留不改写。
+    quote: Mapped[str] = mapped_column(Text, default="")
+    # 和过去的连线：[{"text": "...", "kind": "recurring|followup|anniversary"}]
+    echoes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), default=list
     )
     # 记下是谁写的，换模型后回看质量差异时有据可依。
@@ -222,11 +239,11 @@ class DailyDigest(Base):
 
 
 class OpenLoop(Base):
-    """悬而未决：说了要做但没做完的事、没答案的问题、待定的决策。
+    """无明确日期、之后可能仍需关注的问题、决定或后续动作。
 
-    单独一张表而不是塞进 digest，因为它必须跨天存活 —— 昨天挂着的今天要能被
-    判定闭环，也要能查「这条挂了几天」。source_conversation_id 不设外键：
-    会话删了，这条待办本身还是有效的（同 MemoryVersion 的取舍）。
+    单独一张表而不是塞进 digest，因为它必须跨天存活。明确日期的安排属于
+    TimelineItem，不在这里重复。source_conversation_id 不设外键：会话删了，
+    这条关注事项本身还是有效的（同 MemoryVersion 的取舍）。
     """
 
     __tablename__ = "open_loops"
@@ -250,7 +267,7 @@ class OpenLoop(Base):
 class TimelineItem(Base):
     """从对话或手工录入的结构化时间事项。
 
-    OpenLoop 表示「还悬着但未必有日期」；这里要求 starts_at，专门支撑今天、最近和
+    OpenLoop 表示「无明确日期但可能仍需关注」；这里要求 starts_at，专门支撑今天、最近和
     日历视图。来源消息不设外键，避免删除会话时把已经确认的日程一并删掉。
     """
 

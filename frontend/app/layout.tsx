@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { GlobalSearch } from "@/components/global-search";
 import { ThemeProvider } from "@/components/theme-provider";
 import { WorkspaceFrame } from "@/components/workspace-frame";
+import { I18nProvider } from "@/components/i18n-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,13 +14,15 @@ export const metadata: Metadata = {
 const themeBootstrap = `(() => {
   try {
     const raw = localStorage.getItem("personal-ai-assistant:preferences");
-    const stored = raw ? JSON.parse(raw).theme : "light";
+    const preferences = raw ? (JSON.parse(raw) ?? {}) : {};
+    const stored = preferences.theme ?? "light";
     const mode = stored === "light" || stored === "dark" ? stored : "system";
     const resolved = mode === "system"
       ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
       : mode;
     document.documentElement.dataset.theme = resolved;
     document.documentElement.style.colorScheme = resolved;
+    document.documentElement.lang = preferences.locale === "en-US" ? "en-US" : "zh-CN";
   } catch {}
 })();`;
 
@@ -27,7 +30,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeBootstrap }} /></head>
-      <body><ThemeProvider><WorkspaceFrame>{children}</WorkspaceFrame><GlobalSearch /></ThemeProvider></body>
+      <body><I18nProvider><ThemeProvider><WorkspaceFrame>{children}</WorkspaceFrame><GlobalSearch /></ThemeProvider></I18nProvider></body>
     </html>
   );
 }

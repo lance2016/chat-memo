@@ -4,7 +4,7 @@ import { WorkspacePageFallback } from "@/components/workspace-topbar";
 
 export default function Settings() {
   return (
-    <Suspense fallback={<WorkspacePageFallback active="settings" message="正在加载设置…" />}>
+    <Suspense fallback={<WorkspacePageFallback active="settings" messageKey="loading.settings" />}>
       <SettingsPage />
     </Suspense>
   );

@@ -1,4 +1,4 @@
-"""每日回顾页的两个数据源：这一天的 digest，和跨天存活的悬而未决。
+"""每日回顾页的两个数据源：这一天的 digest，和跨天存活的无日期关注事项。
 
 会话摘要、记忆版本、用量分别在 chat 和 memory 路由下，这里不重复。
 """
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DailyDigest, OpenLoop
+from app.db.models import DailyDigest, Message, OpenLoop
 from app.db.session import get_session
 from app.security import require_api_key
 
@@ -23,10 +23,20 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["review"], dependencies=[Depends(require_api_key)])
 
 
+class Echo(BaseModel):
+    kind: str  # recurring|followup|anniversary
+    text: str
+
+
 class DigestOut(BaseModel):
     day: dt.date
     headline: str
     highlights: list[str]
+    # 下面四个是「这是哪一天」，老 digest 没有，一律是空值而不是 null。
+    title: str
+    observation: str
+    quote: str
+    echoes: list[Echo]
     model: str
     created_at: Any
     updated_at: Any
@@ -65,6 +75,29 @@ def _to_out(loop: OpenLoop) -> OpenLoopOut:
     )
 
 
+@router.get("/review/days", response_model=list[dt.date])
+async def list_review_days(
+    session: AsyncSession = Depends(get_session),
+) -> list[dt.date]:
+    """只返回真正有内容可回看的日期，新的在前。
+
+    对话按本地日期归档；digest 也算有效内容，这样原会话后来被删除时，已经生成的
+    回顾仍然可以访问。个人数据量下直接读取用户消息时间戳更容易保证 SQLite/Postgres
+    和本地时区行为一致，也避免在 SQL 里写数据库方言相关的时区转换。
+    """
+    message_times = list(
+        (
+            await session.execute(
+                select(Message.created_at).where(Message.role == "user")
+            )
+        ).scalars()
+    )
+    digest_days = list((await session.execute(select(DailyDigest.day))).scalars())
+    days = {value.astimezone().date() for value in message_times}
+    days.update(digest_days)
+    return sorted(days, reverse=True)
+
+
 @router.get("/digests", response_model=DigestOut | None)
 async def get_digest(
     day: dt.date,
@@ -78,6 +111,10 @@ async def get_digest(
         day=digest.day,
         headline=digest.headline,
         highlights=list(digest.highlights or []),
+        title=digest.title or "",
+        observation=digest.observation or "",
+        quote=digest.quote or "",
+        echoes=[Echo(**echo) for echo in digest.echoes or []],
         model=digest.model,
         created_at=digest.created_at,
         updated_at=digest.updated_at,
@@ -89,11 +126,11 @@ async def list_open_loops(
     day: dt.date | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> list[OpenLoopOut]:
-    """默认返回所有还挂着的。
+    """默认返回所有仍需关注的。
 
     传 day 就是回顾页要的那一份：截至这天仍未闭环的 + 这天闭掉的（后者是页面上
-    「今天闭环」那一段，划掉打勾的成就感来源）。注意「仍未闭环」要按日期算，
-    否则翻看旧日期时会把之后才产生的待办也算进去。
+    「今天已处理」那一段）。注意仍需关注的项目要按日期算，否则翻看旧日期时
+    会把之后才产生的事项也算进去。
     """
     stmt = select(OpenLoop).order_by(OpenLoop.opened_on, OpenLoop.id)
     if day is None:

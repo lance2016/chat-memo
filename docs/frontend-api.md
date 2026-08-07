@@ -1433,8 +1433,8 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 | 区块 | 数据源 | 说明 |
 |---|---|---|
-| 今日一句 + 收获 | `GET /api/digests?day=` | 页面主角。一句话概括 + 3–5 条 highlights |
-| 悬而未决 | `GET /api/open-loops?day=` | 跨天存活的待办，分「今天新增 / 还挂着 / 今天闭环」三段 |
+| 今日一句 + 收获 | `GET /api/digests?day=` | 页面主角。见下面的字段说明 |
+| 可能需要关注 | `GET /api/open-loops?day=` | 没有明确日期、跨天存活的后续事项，分「今天发现 / 持续关注 / 今天已处理」三段 |
 | 今天聊了什么 | `GET /api/summaries?day=` | 折叠区。每个会话一张卡片，点进去跳到聊天页 |
 | 记忆变更了什么 | `GET /api/memories/versions?day=` | 折叠区。按 `actor` 分组：模型实时记的 / 整理任务改的 / 你手动改的 |
 | 用量 | `GET /api/usage?days=7` | 折叠区。一条七日走势线，标注缓存命中率 |
@@ -1443,21 +1443,41 @@ POST /api/jobs/consolidate?day=2026-08-05
 要有 loading，完成后刷新上面各块。返回体里的 `headline` 就是新写好的那句话，直接显示它，
 比「工具调用 N 次」有意义得多；`digest_failed` 为真时要说明「回顾失败但记忆已整理」。
 
+#### digest 的字段分两组
+
+`headline` / `highlights` 回答**「做了什么」**，`title` / `observation` / `quote` / `echoes`
+回答**「这是哪一天」**。后面四个是这张表存在的理由——只有前两个的话，它就只是一份更短的
+会话列表，没人会翻回来看。
+
+| 字段 | 说明 | 空值 |
+|---|---|---|
+| `title` | 给这天起的名字，12 字内，如「给记忆搬家那天」。翻年度列表时靠它认出是哪天 | `""` |
+| `headline` | 一句话说这天过得怎么样，40 字内 | 不会为空（为空视为生成失败） |
+| `highlights` | **最多 5 条**，有几件事写几条。没有下限——只有一件事就只有一条 | `[]` |
+| `observation` | 一句跨会话的观察，整份回顾里最值得读的一句 | `""` |
+| `quote` | 当天他自己说的一句原话，**未经改写** | `""` |
+| `echoes` | 和过去的连线，`[{kind, text}]`，`kind` 为 `recurring` / `followup` / `anniversary` | `[]` |
+
+后四个一律是空值而不是 `null`（老 digest 也一样），前端按「空就不渲染」处理即可，
+**不要渲染成空的引言框或空分隔线**。`observation` 和 `quote` 经常为空，那是正常的：
+提示词明确要求宁可留空也不硬凑。`echoes` 在历史不足几天时必然为空——模型被禁止编造
+不存在的关联。
+
 `GET /api/digests?day=` 在没整理过时返回 **`null` 而不是 404**——那是常态，别当错误处理，
 给个「这一天还没有回顾」+ 触发按钮的空状态。
 
-#### 悬而未决的接口
+#### 可能需要关注的接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/api/open-loops` | 不传 `day` 就是所有还挂着的 |
-| `GET` | `/api/open-loops?day=` | 截至这天仍未闭环的 + 这天闭掉的（后者是「今天闭环」那一段） |
+| `GET` | `/api/open-loops` | 不传 `day` 就是所有仍需关注的无日期事项 |
+| `GET` | `/api/open-loops?day=` | 截至这天仍需关注的 + 这天处理掉的（后者是「今天已处理」那一段） |
 | `POST` | `/api/open-loops` | `{text, opened_on?}`，手动加一条，`actor` 记为 `manual` |
 | `POST` | `/api/open-loops/{id}/close` | `{note?}`，勾掉 |
-| `POST` | `/api/open-loops/{id}/reopen` | 撤销闭环。模型误判时的出口，别省掉这个按钮 |
-| `DELETE` | `/api/open-loops/{id}` | 标记 `dropped`（不做了），不是真删 |
+| `POST` | `/api/open-loops/{id}/reopen` | 恢复关注。模型误判时的出口，别省掉这个按钮 |
+| `DELETE` | `/api/open-loops/{id}` | 标记 `dropped`（不再关注），不是真删 |
 
-这几个操作只刷新待办这一块，别走整页 reload——勾掉一条待办不该让整页闪一次加载态。
+这几个操作只刷新关注事项这一块，别走整页 reload——处理一条事项不该让整页闪一次加载态。
 计数只算 `status === "open"` 的，闭掉的不要再计入。
 
 记忆变更那块建议做成时间线，每条显示 `operation` 图标 + 路径 + `actor` badge，

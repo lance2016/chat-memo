@@ -29,6 +29,7 @@ import type {
   TimelineInput,
   TimelineItem,
   TimelineStatus,
+  ToolCatalog,
   TruncateResult,
 } from "./types";
 
@@ -114,6 +115,10 @@ export function getHealth() {
 
 export function getRuntimeSettings() {
   return request<RuntimeSettings>("/api/settings");
+}
+
+export function getToolCatalog() {
+  return request<ToolCatalog>("/api/tools");
 }
 
 export function updateRuntimeSettings(changes: Record<string, unknown>) {
@@ -350,6 +355,10 @@ export function listAllMemoryVersions(params: { day?: string; actor?: string; li
 export function getDigest(day: string) {
   // 没整理过的那天返回 null，这是常态，别当错误。
   return request<DailyDigest | null>(`/api/digests?day=${encodeURIComponent(day)}`);
+}
+
+export function listReviewDays() {
+  return request<string[]>("/api/review/days");
 }
 
 export function listOpenLoops(day?: string) {

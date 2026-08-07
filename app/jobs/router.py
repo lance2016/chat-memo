@@ -27,6 +27,7 @@ class ConsolidateOut(BaseModel):
     failed_summaries: int
     detail: str
     headline: str
+    title: str
     new_loops: int
     closed_loops: int
     digest_failed: bool

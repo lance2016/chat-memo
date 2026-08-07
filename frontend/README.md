@@ -55,6 +55,21 @@ Global search is available on every page with the search button or `Cmd/Ctrl + K
 Conversation results open the matching conversation and jump to the matched message;
 memory results open the matching file.
 
+## Internationalization
+
+The UI uses the app-level `I18nProvider` and typed translation keys. Chinese is
+the default locale and the language selector in the workspace top bar persists
+the selected locale with the other browser preferences.
+
+- Add keys to `lib/locales/zh-CN.ts` first; this file defines the `TranslationKey` type.
+- Add the matching English strings to `lib/locales/en-US.ts`; TypeScript rejects
+  missing translations.
+- Use `const { t } = useI18n()` in client components and render `t("area.key")`.
+- Use named placeholders such as `{count}` and pass values as the second argument.
+
+Keep API field names, tool names, and user-authored content locale-neutral. Only
+user-facing interface copy belongs in the message dictionaries.
+
 The settings page stores appearance and chat interaction preferences in the current
 browser only. The theme can follow the macOS/system appearance or be fixed to
 light/dark. Backend runtime settings (provider, model, thinking, consolidation) are
