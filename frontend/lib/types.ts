@@ -252,6 +252,65 @@ export interface ConsolidateResult {
   skipped: boolean;
   failed_summaries: number;
   detail: string;
+  headline: string;
+  new_loops: number;
+  closed_loops: number;
+  digest_failed: boolean;
+}
+
+export interface DailyDigest {
+  day: string;
+  headline: string;
+  highlights: string[];
+  model: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OpenLoop {
+  id: number;
+  text: string;
+  opened_on: string;
+  closed_on: string | null;
+  closed_note: string | null;
+  status: "open" | "closed" | "dropped";
+  actor: "consolidation" | "manual";
+  source_conversation_id: number | null;
+}
+
+export type TimelineKind = "todo" | "event" | "reminder" | "birthday" | "travel" | "deadline" | "note";
+export type TimelineStatus = "pending" | "confirmed" | "completed" | "cancelled";
+
+export interface TimelineItem {
+  id: number;
+  title: string;
+  details: string;
+  kind: TimelineKind;
+  status: TimelineStatus;
+  starts_at: string;
+  ends_at: string | null;
+  all_day: boolean;
+  timezone: string;
+  location: string;
+  recurrence: "none" | "yearly";
+  actor: "chat" | "manual";
+  source_conversation_id: number | null;
+  source_message_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TimelineInput {
+  title: string;
+  details?: string;
+  kind?: TimelineKind;
+  status?: TimelineStatus;
+  starts_at: string;
+  ends_at?: string | null;
+  all_day?: boolean;
+  timezone?: string;
+  location?: string;
+  recurrence?: "none" | "yearly";
 }
 
 export interface ConversationSummary {

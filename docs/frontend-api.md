@@ -11,6 +11,16 @@
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
 
+### 第 8 批 · 时间线 MVP 已实现 ✅
+
+| 变化 | 前端行为 |
+|---|---|
+| 新增 `/api/timeline` CRUD 与范围查询 | `/timeline` 提供今天、最近 30 天和月视图 |
+| 新增 `timeline_*` 模型工具 | 聊天中可自动创建、查询、改期、完成或取消时间事项 |
+| 新增 `pending` 状态与来源会话 | 模糊安排待用户确认，并可跳回原对话 |
+
+完整模块说明见 [timeline.md](timeline.md)。
+
 ### 第 7 批 · 后端已就绪，前端待做 🚧
 
 Obsidian 知识库（只读）接入：`.env` 配置 `VAULT_PATH` 后模型多了四个 `kb_*` 工具。
@@ -111,7 +121,7 @@ Obsidian 知识库（只读）接入：`.env` 配置 `VAULT_PATH` 后模型多�
 8. [自定义指令](#自定义指令)
 9. [调试：看清每次发了什么](#调试看清每次发了什么)
 10. [任务](#任务)
-11. [四个页面](#四个页面)
+11. [五个页面](#五个页面)
 12. [TypeScript 类型](#typescript-类型)
 
 ---
@@ -640,6 +650,43 @@ export function toTurns(messages: ApiMessage[]): Turn[] {
 遇到未知的 `type` 直接跳过，不要报错——以后可能加新块类型。
 
 ---
+
+## 时间线
+
+```http
+GET    /api/timeline?from=2026-08-07T00:00:00%2B08:00&to=2026-09-07T00:00:00%2B08:00
+POST   /api/timeline
+PATCH  /api/timeline/{id}
+DELETE /api/timeline/{id}
+```
+
+`GET` 可选参数：`from`、`to` 使用带时区 ISO 8601；`status` 支持逗号分隔的
+`pending,confirmed,completed,cancelled`；`limit` 最大 500。
+
+```json
+{
+  "id": 12,
+  "title": "和产品团队开会",
+  "details": "确认第一版范围",
+  "kind": "event",
+  "status": "confirmed",
+  "starts_at": "2026-08-10T07:00:00Z",
+  "ends_at": "2026-08-10T08:00:00Z",
+  "all_day": false,
+  "timezone": "Asia/Shanghai",
+  "location": "线上",
+  "recurrence": "none",
+  "actor": "chat",
+  "source_conversation_id": 42,
+  "source_message_id": null,
+  "created_at": "2026-08-07T01:00:00Z",
+  "updated_at": "2026-08-07T01:00:00Z"
+}
+```
+
+`kind`：`todo/event/reminder/birthday/travel/deadline/note`。
+
+`status`：`pending/confirmed/completed/cancelled`。模型提取的模糊安排应使用 `pending`。
 
 ## 记忆
 
@@ -1336,9 +1383,9 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 ---
 
-## 四个页面
+## 五个页面
 
-四个页面加全局搜索都已上线，下面记录的是各页的设计意图和实现要点——
+五个页面加全局搜索都已上线，下面记录的是各页的设计意图和实现要点——
 新增功能照着这个风格补，不要另起一套交互。
 
 ### 1. 聊天页 `/`
@@ -1380,24 +1427,51 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 ### 3. 每日回顾页 `/review`
 
-一个日期选择器，下面三块：
+一个日期选择器。**页面主体是回顾本身，不是过程数据**——摘要、记忆变更、用量都是证据，
+默认收在一个折叠的「细节」里。这一点是刻意的：一屏全是「写了 N 个文件、调了 N 次工具」
+的页面没人会翻回去看。
 
 | 区块 | 数据源 | 说明 |
 |---|---|---|
-| 今天聊了什么 | `GET /api/summaries?day=` | 每个会话一张卡片，点进去跳到聊天页 |
-| 记忆变更了什么 | `GET /api/memories/versions?day=` | 按 `actor` 分组：模型实时记的 / 整理任务改的 / 你手动改的 |
-| 用量 | `GET /api/usage?days=7` | 一条七日走势线，标注缓存命中率 |
+| 今日一句 + 收获 | `GET /api/digests?day=` | 页面主角。一句话概括 + 3–5 条 highlights |
+| 悬而未决 | `GET /api/open-loops?day=` | 跨天存活的待办，分「今天新增 / 还挂着 / 今天闭环」三段 |
+| 今天聊了什么 | `GET /api/summaries?day=` | 折叠区。每个会话一张卡片，点进去跳到聊天页 |
+| 记忆变更了什么 | `GET /api/memories/versions?day=` | 折叠区。按 `actor` 分组：模型实时记的 / 整理任务改的 / 你手动改的 |
+| 用量 | `GET /api/usage?days=7` | 折叠区。一条七日走势线，标注缓存命中率 |
 
 顶部放「重新整理这一天」按钮（`POST /api/jobs/consolidate?day=`）。**这个请求很慢（10 秒起）**，
-要有 loading，完成后刷新上面三块。
+要有 loading，完成后刷新上面各块。返回体里的 `headline` 就是新写好的那句话，直接显示它，
+比「工具调用 N 次」有意义得多；`digest_failed` 为真时要说明「回顾失败但记忆已整理」。
 
-摘要为空是常态（当天还没整理过），别当错误处理——给个「今天还没整理」+ 触发按钮的空状态。
+`GET /api/digests?day=` 在没整理过时返回 **`null` 而不是 404**——那是常态，别当错误处理，
+给个「这一天还没有回顾」+ 触发按钮的空状态。
+
+#### 悬而未决的接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/open-loops` | 不传 `day` 就是所有还挂着的 |
+| `GET` | `/api/open-loops?day=` | 截至这天仍未闭环的 + 这天闭掉的（后者是「今天闭环」那一段） |
+| `POST` | `/api/open-loops` | `{text, opened_on?}`，手动加一条，`actor` 记为 `manual` |
+| `POST` | `/api/open-loops/{id}/close` | `{note?}`，勾掉 |
+| `POST` | `/api/open-loops/{id}/reopen` | 撤销闭环。模型误判时的出口，别省掉这个按钮 |
+| `DELETE` | `/api/open-loops/{id}` | 标记 `dropped`（不做了），不是真删 |
+
+这几个操作只刷新待办这一块，别走整页 reload——勾掉一条待办不该让整页闪一次加载态。
+计数只算 `status === "open"` 的，闭掉的不要再计入。
 
 记忆变更那块建议做成时间线，每条显示 `operation` 图标 + 路径 + `actor` badge，
 点开展开内容 diff（和记忆管理页复用同一个 diff 组件）。已删除的记忆也在这里，
 可以给个「恢复」按钮：拿该版本的 `content` 去 `PUT` 回原路径。
 
-### 4. 设置页 `/settings`
+### 4. 时间线 `/timeline`
+
+- 今天：当天事项和完成状态。
+- 最近：未来 30 天按日期分组。
+- 月视图：查看整月事项分布。
+- 必须允许确认 `pending`、完成、重新打开和删除，并显示来源会话。
+
+### 5. 设置页 `/settings`
 
 运行时配置在这里直接改，改完立刻生效。
 

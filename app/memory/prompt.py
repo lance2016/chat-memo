@@ -76,6 +76,18 @@ KB_INSTRUCTIONS = """
 - 知识库不可写。值得长期记住的结论，写进你自己的记忆（memory 工具）
 """
 
+TIMELINE_INSTRUCTIONS = """
+# 时间线
+
+你可以用 timeline 工具维护主人在对话中明确提到的未来事项：待办、会议、提醒、生日、
+旅行和截止日期。它是结构化日程，不要把这些内容重复写进 memory 的 timeline 文件。
+
+- 明确且有日期/时间的安排可以创建；“可能、也许、暂定”标为 pending，并在回答中请主人确认
+- 创建前先查询可能重复的事项；改期、完成和取消应更新原事项，不要重复创建
+- 过去已经发生的叙述、泛泛愿望和没有时间依据的想法不要创建
+- 时间使用带 UTC offset 的 ISO 8601；相对日期以本轮 runtime_context 为准
+"""
+
 # 放在最末尾：system prompt 的结尾是指令遵循最强的位置，而这段的权威性最高。
 # 对 prompt cache 没有影响 —— 整个 system 是一个缓存块，块内顺序不影响命中。
 CUSTOM_INSTRUCTIONS_TEMPLATE = """
@@ -94,12 +106,15 @@ async def build_system_prompt(
     settings: Settings | None = None,
     *,
     include_kb: bool = True,
+    include_timeline: bool = True,
 ) -> str:
     settings = settings or get_settings()
     memories = await store.list_all()
     owner = settings.owner_name
     core = CORE_TEMPLATE.format(owner=owner)
     prompt = f"{core}\n" + MEMORY_INSTRUCTIONS.format(index=_read_index(memories))
+    if include_timeline:
+        prompt += TIMELINE_INSTRUCTIONS
 
     # include_kb=False 给没挂 kb 工具的场景用（每日整理）—— 提示词里提了工具却不注册，
     # 模型会困惑甚至试图调用。

@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -90,6 +91,10 @@ class ConversationSummary(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True
     )
     summary: Mapped[str] = mapped_column(Text)
+    # 面向每日回顾的那一份：这轮对话推进了什么、卡在哪、做了什么决定。
+    # summary 是给记忆用的（只留事实、跳过技术细节），对「今天干了什么」太干瘪，
+    # 所以摘要那一次调用同时产出两份。老数据没有这一列，保持 NULL。
+    recap: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 摘要覆盖到的最后一条消息，增量生成时作为水位线。
     up_to_message_id: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(
@@ -186,6 +191,88 @@ class AppSetting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[Any] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class DailyDigest(Base):
+    """一天一句话 + 几条收获，每日回顾页的主角。
+
+    一天只有一行：重跑整理是覆盖而不是追加 —— 这是「这一天是什么」的当前答案，
+    不是历史流水。想看过程去翻 conversation_summaries 和 memory_versions。
+    """
+
+    __tablename__ = "daily_digests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day: Mapped[dt.date] = mapped_column(Date, unique=True, index=True)
+    headline: Mapped[str] = mapped_column(Text)
+    highlights: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=list
+    )
+    # 记下是谁写的，换模型后回看质量差异时有据可依。
+    model: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OpenLoop(Base):
+    """悬而未决：说了要做但没做完的事、没答案的问题、待定的决策。
+
+    单独一张表而不是塞进 digest，因为它必须跨天存活 —— 昨天挂着的今天要能被
+    判定闭环，也要能查「这条挂了几天」。source_conversation_id 不设外键：
+    会话删了，这条待办本身还是有效的（同 MemoryVersion 的取舍）。
+    """
+
+    __tablename__ = "open_loops"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+    opened_on: Mapped[dt.date] = mapped_column(Date, index=True)
+    closed_on: Mapped[dt.date | None] = mapped_column(Date, nullable=True, index=True)
+    closed_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open|closed|dropped
+    source_conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor: Mapped[str] = mapped_column(String(16), default="consolidation")  # consolidation|manual
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TimelineItem(Base):
+    """从对话或手工录入的结构化时间事项。
+
+    OpenLoop 表示「还悬着但未必有日期」；这里要求 starts_at，专门支撑今天、最近和
+    日历视图。来源消息不设外键，避免删除会话时把已经确认的日程一并删掉。
+    """
+
+    __tablename__ = "timeline_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(240))
+    details: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(24), default="todo", index=True)
+    status: Mapped[str] = mapped_column(String(24), default="confirmed", index=True)
+    starts_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False)
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
+    location: Mapped[str] = mapped_column(String(240), default="")
+    recurrence: Mapped[str] = mapped_column(String(24), default="none")
+    actor: Mapped[str] = mapped_column(String(16), default="manual")
+    source_conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    source_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

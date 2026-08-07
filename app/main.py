@@ -16,6 +16,8 @@ from app.jobs.router import router as jobs_router
 from app.jobs.scheduler import run_daily_consolidation
 from app.debug.router import router as debug_router
 from app.memory.router import router as memory_router
+from app.review.router import router as review_router
+from app.timeline.router import router as timeline_router
 from app.tts.client import warmup
 from app.tts.router import public as tts_public_router
 from app.tts.router import router as tts_router
@@ -90,6 +92,8 @@ def create_app() -> FastAPI:
     app.include_router(chat_router)
     app.include_router(asr_router)
     app.include_router(memory_router)
+    app.include_router(review_router)
+    app.include_router(timeline_router)
     app.include_router(jobs_router)
     app.include_router(tts_router)
     app.include_router(tts_public_router)

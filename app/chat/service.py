@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import AsyncIterator
@@ -224,6 +225,7 @@ def build_runtime_context(settings: Settings, now: dt.datetime | None = None) ->
     return (
         "<runtime_context>\n"
         f"当前时间：{now:%Y-%m-%d} 星期{weekday} {now:%H:%M}\n"
+        f"当前时区：{os.environ.get('TZ', 'Asia/Shanghai')}\n"
         f"你实际运行在：{settings.provider} / {model}\n"
         "以上是系统注入的运行时信息，不是用户的话。除非用户问起，不要主动提及。\n"
         "</runtime_context>"

@@ -38,7 +38,8 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
   const runningCount = tools.filter((tool) => "status" in tool && tool.status === "running").length;
   const failedCount = tools.filter((tool) => !("status" in tool && tool.status === "running") && !tool.ok).length;
   const knowledgeBaseCount = tools.filter((tool) => tool.name.startsWith("kb_")).length;
-  const groupName = knowledgeBaseCount === tools.length ? "知识库查询" : knowledgeBaseCount > 0 ? "工具操作" : "记忆操作";
+  const timelineCount = tools.filter((tool) => tool.name.startsWith("timeline_")).length;
+  const groupName = knowledgeBaseCount === tools.length ? "知识库查询" : timelineCount === tools.length ? "时间线更新" : knowledgeBaseCount > 0 || timelineCount > 0 ? "工具操作" : "记忆操作";
   const label = runningCount ? `正在处理 ${tools.length} 项${groupName}` : `${groupName} ${tools.length} 次`;
   const state = runningCount ? `${runningCount} 项进行中` : failedCount ? `${failedCount} 项需注意` : "已完成";
 
@@ -170,6 +171,7 @@ export function ChatPage() {
   const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
   const [ttsPlayingId, setTtsPlayingId] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -215,15 +217,23 @@ export function ChatPage() {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => () => {
-    messageRequestsRef.current.invalidate();
-    speechGenerationRef.current += 1;
-    speechAutoActiveRef.current = false;
-    speechFlushCompleteRef.current = false;
-    speechQueueRef.current = [];
-    if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
-    if (audioRef.current) resetMediaElement(audioRef.current);
-    void stopSpeech().catch(() => undefined);
+  useEffect(() => {
+    mountedRef.current = true;
+    const messageRequests = messageRequestsRef.current;
+    const audio = audioRef.current;
+    return () => {
+      mountedRef.current = false;
+      messageRequests.invalidate();
+      abortRef.current?.abort();
+      abortRef.current = null;
+      speechGenerationRef.current += 1;
+      speechAutoActiveRef.current = false;
+      speechFlushCompleteRef.current = false;
+      speechQueueRef.current = [];
+      if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
+      if (audio) resetMediaElement(audio);
+      void stopSpeech().catch(() => undefined);
+    };
   }, []);
 
   const loadConversations = useCallback(async (archived = false) => {
@@ -524,7 +534,7 @@ export function ChatPage() {
     void stopSpeech().catch(() => undefined);
   }
 
-  const handleEvent = (event: ChatEvent) => {
+  const handleEvent = (event: ChatEvent, conversationId: number) => {
     if (event.type === "thinking_delta") setDraft((current) => ({ ...current, thinking: current.thinking + event.text }));
     if (event.type === "text_delta") {
       draftTextRef.current += event.text;
@@ -538,7 +548,7 @@ export function ChatPage() {
     }
     if (event.type === "done") streamDoneRef.current = true;
     if (event.type === "title") {
-      setConversations((current) => current.map((item) => item.id === selectedId ? { ...item, title: event.title } : item));
+      setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, title: event.title } : item));
       notifyWorkspaceConversationsChanged();
     }
     if (event.type === "tool_use") {
@@ -635,15 +645,17 @@ export function ChatPage() {
         await truncateMessages(conversationId, after);
         setTurns(toTurns(apiMessages.slice(0, targetIndex)));
       }
-      await streamChat(conversationId, content, handleEvent, controller.signal);
+      await streamChat(conversationId, content, (event) => handleEvent(event, conversationId), controller.signal);
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
     } catch (cause) {
+      if (!mountedRef.current) return;
       if (!streamDoneRef.current) stopTtsPlayback();
       if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(errorMessage(cause, "聊天失败"));
     } finally {
-      abortRef.current = null;
+      if (abortRef.current === controller) abortRef.current = null;
+      if (!mountedRef.current) return;
       setSending(false);
       setEditingTarget(null);
       // 临时态由 loadMessages 在换上权威历史的同一帧里清掉，这里不要提前清 ——

@@ -45,4 +45,9 @@ describe("toolLabel", () => {
     expect(toolLabel({ name: "kb_list", input: {} })).toBe("浏览知识库 /");
     expect(toolLabel({ name: "kb_backlinks", input: { path: "项目/chat-memo.md" } })).toBe("查找 项目/chat-memo.md 的反向链接");
   });
+
+  it("uses timeline-specific copy", () => {
+    expect(toolLabel({ name: "timeline_create", input: { title: "周五开会" } })).toBe("记录时间事项「周五开会」");
+    expect(toolLabel({ name: "timeline_update", input: { id: 12 } })).toBe("更新时间事项「已有事项」");
+  });
 });

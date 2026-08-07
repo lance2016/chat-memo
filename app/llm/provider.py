@@ -31,6 +31,11 @@ class ToolExecutor(Protocol):
 class LLMProvider(Protocol):
     """模型调用的抽象。换模型只加实现，不动 chat / memory 层。"""
 
+    @property
+    def model_name(self) -> str:
+        """当前生效的模型 ID，用于把产出的内容标记上出处。"""
+        ...
+
     def run(
         self,
         *,

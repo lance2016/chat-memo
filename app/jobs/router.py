@@ -26,6 +26,10 @@ class ConsolidateOut(BaseModel):
     skipped: bool
     failed_summaries: int
     detail: str
+    headline: str
+    new_loops: int
+    closed_loops: int
+    digest_failed: bool
 
 
 @router.post("/consolidate", response_model=ConsolidateOut)

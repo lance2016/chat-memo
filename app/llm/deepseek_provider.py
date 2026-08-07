@@ -62,6 +62,10 @@ class DeepSeekProvider:
             base_url=self.settings.deepseek_base_url,
         )
 
+    @property
+    def model_name(self) -> str:
+        return self.settings.deepseek_model
+
     async def run(
         self,
         *,

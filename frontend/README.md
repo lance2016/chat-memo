@@ -48,6 +48,7 @@ Available pages:
 - `/` — conversations and streaming chat
 - `/memories` — memory files, Markdown editor, versions and diff
 - `/review` — daily conversations, memory changes and manual consolidation
+- `/timeline` — extracted and manually entered time-based items in today, upcoming, and month views
 - `/settings` — runtime model status, browser-side chat preferences, and light/dark/system appearance
 
 Global search is available on every page with the search button or `Cmd/Ctrl + K`.

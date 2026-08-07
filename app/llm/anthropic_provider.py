@@ -32,6 +32,10 @@ class AnthropicProvider:
         self.settings = settings or get_settings()
         self.client = client or AsyncAnthropic(api_key=self.settings.anthropic_api_key)
 
+    @property
+    def model_name(self) -> str:
+        return self.settings.model
+
     def _request_kwargs(self, system: str, thinking: bool = True) -> dict[str, Any]:
         effort = self.settings.effort
         if not thinking and effort in {"xhigh", "max"}:

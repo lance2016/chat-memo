@@ -67,6 +67,9 @@ export function toolLabel(tool: Pick<ToolActivity, "name" | "input">) {
   if (tool.name === "kb_read") return `查阅笔记 ${inputValue("path", "知识库笔记")}`;
   if (tool.name === "kb_list") return `浏览知识库 ${inputValue("path", "/")}`;
   if (tool.name === "kb_backlinks") return `查找 ${inputValue("path", "笔记")} 的反向链接`;
+  if (tool.name === "timeline_list") return "查看近期时间事项";
+  if (tool.name === "timeline_create") return `记录时间事项「${inputValue("title", "新事项")}」`;
+  if (tool.name === "timeline_update") return `更新时间事项「${inputValue("title", "已有事项")}」`;
 
   const command = typeof tool.input.command === "string" ? tool.input.command : "";
   const path = typeof tool.input.path === "string" ? tool.input.path : "记忆";

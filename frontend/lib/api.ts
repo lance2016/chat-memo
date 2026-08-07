@@ -6,6 +6,7 @@ import type {
   Conversation,
   ConversationSummary,
   ConsolidateResult,
+  DailyDigest,
   DailyUsage,
   DebugPrompt,
   DebugRequestDetail,
@@ -15,6 +16,7 @@ import type {
   MemoryNode,
   MemoryStats,
   MemoryVersion,
+  OpenLoop,
   PrepareResult,
   RuntimeSettings,
   SearchResults,
@@ -24,6 +26,9 @@ import type {
   TranscriptionResult,
   TtsNextRequest,
   TtsNextResult,
+  TimelineInput,
+  TimelineItem,
+  TimelineStatus,
   TruncateResult,
 } from "./types";
 
@@ -79,6 +84,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listConversations(limit = 50, archived = false) {
   return request<Conversation[]>(`/api/conversations?limit=${limit}&archived=${archived}`);
+}
+
+export function listTimeline(params: { from?: string; to?: string; statuses?: TimelineStatus[]; limit?: number } = {}, signal?: AbortSignal) {
+  const query = new URLSearchParams();
+  if (params.from) query.set("from", params.from);
+  if (params.to) query.set("to", params.to);
+  if (params.statuses?.length) query.set("status", params.statuses.join(","));
+  if (params.limit) query.set("limit", String(params.limit));
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return request<TimelineItem[]>(`/api/timeline${suffix}`, { signal });
+}
+
+export function createTimelineItem(input: TimelineInput) {
+  return request<TimelineItem>("/api/timeline", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateTimelineItem(id: number, changes: Partial<TimelineInput> & { status?: TimelineStatus }) {
+  return request<TimelineItem>(`/api/timeline/${id}`, { method: "PATCH", body: JSON.stringify(changes) });
+}
+
+export function deleteTimelineItem(id: number) {
+  return request<void>(`/api/timeline/${id}`, { method: "DELETE" });
 }
 
 export function getHealth() {
@@ -318,6 +345,38 @@ export function listAllMemoryVersions(params: { day?: string; actor?: string; li
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const suffix = query.toString() ? `?${query.toString()}` : "";
   return request<MemoryVersion[]>(`/api/memories/versions${suffix}`);
+}
+
+export function getDigest(day: string) {
+  // 没整理过的那天返回 null，这是常态，别当错误。
+  return request<DailyDigest | null>(`/api/digests?day=${encodeURIComponent(day)}`);
+}
+
+export function listOpenLoops(day?: string) {
+  const query = day ? `?day=${encodeURIComponent(day)}` : "";
+  return request<OpenLoop[]>(`/api/open-loops${query}`);
+}
+
+export function createOpenLoop(text: string, openedOn?: string) {
+  return request<OpenLoop>("/api/open-loops", {
+    method: "POST",
+    body: JSON.stringify({ text, opened_on: openedOn ?? null }),
+  });
+}
+
+export function closeOpenLoop(id: number, note = "") {
+  return request<OpenLoop>(`/api/open-loops/${id}/close`, {
+    method: "POST",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function reopenOpenLoop(id: number) {
+  return request<OpenLoop>(`/api/open-loops/${id}/reopen`, { method: "POST" });
+}
+
+export function dropOpenLoop(id: number) {
+  return request<void>(`/api/open-loops/${id}`, { method: "DELETE" });
 }
 
 export function consolidate(day?: string) {

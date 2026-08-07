@@ -27,6 +27,8 @@ from app.llm.title import get_title_client
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
+from app.timeline.store import TimelineStore
+from app.timeline.tool import TimelineToolExecutor
 from app.search import search as run_search
 from app.settings_store import (
     SettingError,
@@ -462,13 +464,16 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 store = MemoryStore(
                     session, actor="chat", conversation_id=conversation.id
                 )
-                executor: ToolExecutor = MemoryToolExecutor(store)
+                executors: list[ToolExecutor] = [
+                    MemoryToolExecutor(store),
+                    TimelineToolExecutor(
+                        TimelineStore(session, actor="chat", conversation_id=conversation.id)
+                    ),
+                ]
                 if settings.vault_path:
                     # vault 挂载了才注册 kb 工具；system prompt 的知识库段受同一开关控制
-                    executor = CompositeExecutor(
-                        executor,
-                        KbToolExecutor(session, settings.vault_path, conversation.id),
-                    )
+                    executors.append(KbToolExecutor(session, settings.vault_path, conversation.id))
+                executor: ToolExecutor = CompositeExecutor(*executors)
                 service = ChatService(
                     session=session,
                     provider=get_provider(settings),

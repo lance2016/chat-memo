@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Archive, ArchiveRestore, BookOpen, CalendarDays, Home, Plus, Settings2 } from "lucide-react";
+import { Archive, ArchiveRestore, BookOpen, CalendarClock, CalendarDays, Home, Plus, Settings2 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -11,7 +11,7 @@ import { SearchTrigger } from "@/components/global-search";
 import { ThemeControl } from "@/components/theme-control";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
 
-export type WorkspacePage = "chat" | "memories" | "review" | "settings";
+export type WorkspacePage = "chat" | "memories" | "review" | "timeline" | "settings";
 
 const conversationsChangedEvent = "chat-memo:conversations-changed";
 
@@ -23,14 +23,17 @@ const navigation = [
   { key: "chat" as const, href: "/", label: "首页", icon: Home },
   { key: "memories" as const, href: "/memories", label: "记忆库", icon: BookOpen },
   { key: "review" as const, href: "/review", label: "每日回顾", icon: CalendarDays },
+  { key: "timeline" as const, href: "/timeline", label: "时间线", icon: CalendarClock },
+  { key: "settings" as const, href: "/settings", label: "设置", icon: Settings2 },
 ];
-const workspaceRoutes = [...navigation.map(({ href }) => href), "/settings"];
+const workspaceRoutes = navigation.map(({ href }) => href);
 const warmedRoutes = new Set<string>();
 
 const pageLabels: Record<WorkspacePage, string> = {
   chat: "首页",
   memories: "记忆库",
   review: "每日回顾",
+  timeline: "时间线",
   settings: "设置",
 };
 
@@ -78,7 +81,7 @@ export function WorkspaceProfile() {
 export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
   const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
   const [showArchived, setShowArchived] = useState(false);
-  const activeRoute = active === "settings" ? "/settings" : navigation.find(({ key }) => key === active)?.href;
+  const activeRoute = navigation.find(({ key }) => key === active)?.href;
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return;
@@ -128,6 +131,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
       <MemoryBrand />
       <div><SearchTrigger /><ThemeControl /></div>
     </header>
+    <WorkspaceNav active={active} className="workspace-mobile-nav" />
   </>;
 }
 

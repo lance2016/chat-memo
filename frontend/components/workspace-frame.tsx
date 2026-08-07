@@ -6,6 +6,7 @@ import { WorkspaceTopbar, type WorkspacePage } from "@/components/workspace-topb
 function activePage(pathname: string): WorkspacePage {
   if (pathname.startsWith("/memories")) return "memories";
   if (pathname.startsWith("/review")) return "review";
+  if (pathname.startsWith("/timeline")) return "timeline";
   if (pathname.startsWith("/settings")) return "settings";
   return "chat";
 }
