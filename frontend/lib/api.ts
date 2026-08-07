@@ -4,6 +4,7 @@ import type {
   BackupResult,
   ChatEvent,
   Conversation,
+  ConversationContext,
   ConversationSummary,
   ConsolidateResult,
   DailyDigest,
@@ -278,6 +279,10 @@ export function listMessages(id: number) {
   return request<ApiMessage[]>(`/api/conversations/${id}/messages`);
 }
 
+export function getConversationContext(id: number) {
+  return request<ConversationContext>(`/api/conversations/${id}/context`);
+}
+
 export function truncateMessages(conversationId: number, after = 0) {
   return request<TruncateResult>(`/api/conversations/${conversationId}/messages?after=${after}`, { method: "DELETE" });
 }
@@ -404,7 +409,7 @@ export function parseSseEventLine(line: string, onEvent: (event: ChatEvent) => v
 }
 
 export async function streamChat(
-  conversationId: number,
+  conversationId: number | null,
   content: string,
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,

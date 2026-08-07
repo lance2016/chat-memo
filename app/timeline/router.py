@@ -52,6 +52,8 @@ class TimelineOut(BaseModel):
     kind: str
     status: str
     starts_at: dt.datetime
+    # 用户原话里的时间依据。时间看着不对时，用它分辨是他说得含糊还是模型解析错了。
+    said: str
     ends_at: dt.datetime | None
     all_day: bool
     timezone: str

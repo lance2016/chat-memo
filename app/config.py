@@ -45,11 +45,15 @@ class Settings(BaseSettings):
     # 日常聊天照旧走 deepseek_model。留空表示和聊天用同一个。
     consolidate_model: str = ""
 
-    # ---- 标题生成（可选，走智谱）----
+    # ---- 标题生成（可选，优先走硅基流动）----
     # 标题就是「一句话概括用户想干什么」，要的是快，不是推理。聊天模型在这件事上
     # 太贵也太慢（实测为一个 16 字标题烧掉 127~542 个思考 token、2.4~21.5 秒，
-    # 而标题质量并没有更好），所以单独走一条便宜的路：智谱的免费 Flash 档。
-    # 配了 key 才启用；留空则退回聊天 provider，同样关掉思考。
+    # 而标题质量并没有更好），所以单独走一条免费的 OpenAI 兼容模型链路。
+    # 配了硅基流动 key 就使用免费的 Qwen3-8B；未配置时兼容旧的智谱配置，
+    # 两者都没有才退回聊天 provider，同样关掉思考。
+    siliconflow_api_key: str = ""
+    siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    siliconflow_title_model: str = "Qwen/Qwen3-8B"
     zhipu_api_key: str = ""
     zhipu_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     title_model: str = "glm-4.7-flash"

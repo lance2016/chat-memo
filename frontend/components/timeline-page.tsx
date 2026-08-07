@@ -77,7 +77,7 @@ function TimelineCard({ item, busy, onStatus, onDelete }: {
         <strong>{item.title}</strong>
       </div>
       {item.details && <p>{item.details}</p>}
-      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item, locale, t("timeline.allDay"))}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>{t("timeline.yearly")}</span>}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>{t("timeline.fromConversation")}</Link>}</div>
+      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item, locale, t("timeline.allDay"))}{item.said && <em className="timeline-said" title={t("timeline.saidHint")}>{t("timeline.said", { said: item.said })}</em>}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>{t("timeline.yearly")}</span>}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>{t("timeline.fromConversation")}</Link>}</div>
     </div>
     <div className="timeline-item-actions">
       {item.status === "pending" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.confirm")}><Check size={14} /></button>}

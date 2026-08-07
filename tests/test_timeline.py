@@ -52,6 +52,7 @@ async def test_timeline_tool_marks_uncertain_item_pending(session: AsyncSession)
         "kind": "travel",
         "status": "pending",
         "starts_at": "2026-09-02T08:00:00+08:00",
+        "said": "9 月 2 号早上八点",
     })
 
     assert not is_error
@@ -109,3 +110,134 @@ async def test_chat_prompt_mentions_timeline_but_consolidation_prompt_does_not(s
 
     assert "# 时间线" in chat_prompt
     assert "timeline_create" not in consolidation_prompt
+
+
+# --- 模糊时间必须先追问，不能自己挑一个 ----------------------------------------
+
+
+async def _executor(session: AsyncSession) -> TimelineToolExecutor:
+    return TimelineToolExecutor(TimelineStore(session, actor="chat"))
+
+
+async def test_vague_time_is_rejected_instead_of_guessed(session: AsyncSession) -> None:
+    """「今天中午」曾经被填成凭空捏造的 11:20 并标成 confirmed。
+
+    提示词里那句「有歧义时宁可 pending」实测拦不住，所以改成硬校验：
+    工具报错后模型拿到 is_error 的 tool_result，自然会回头问用户。
+    """
+    executor = await _executor(session)
+
+    result, is_error = await executor.execute("timeline_create", {
+        "title": "点午饭外卖",
+        "kind": "reminder",
+        "status": "confirmed",
+        "starts_at": "2026-08-07T11:20:00+08:00",
+        "said": "今天中午",
+    })
+
+    assert is_error
+    assert "没有具体钟点" in result
+    assert "先问用户" in result
+    assert await TimelineStore(session, actor="test").list() == []
+
+
+async def test_missing_said_is_rejected(session: AsyncSession) -> None:
+    """said 留空 = 用户根本没提时间，那更不该凭空定一个。"""
+    executor = await _executor(session)
+
+    result, is_error = await executor.execute("timeline_create", {
+        "title": "交周报",
+        "kind": "todo",
+        "status": "confirmed",
+        "starts_at": "2026-08-07T18:00:00+08:00",
+    })
+
+    assert is_error
+    assert "缺少 said" in result
+
+
+async def test_explicit_clock_passes(session: AsyncSession) -> None:
+    executor = await _executor(session)
+
+    for said in ("明早九点", "下午六点", "18:00 出发", "tomorrow 6pm", "九点半", "明天中午12点"):
+        result, is_error = await executor.execute("timeline_create", {
+            "title": f"测试 {said}",
+            "kind": "reminder",
+            "status": "confirmed",
+            "starts_at": "2026-08-08T09:00:00+08:00",
+            "said": said,
+        })
+        assert not is_error, f"{said} 不该被拒绝：{result}"
+
+
+async def test_all_day_escapes_the_clock_requirement(session: AsyncSession) -> None:
+    """整天有效的事项本来就没有钟点，也是「随便你定」时的出口。"""
+    executor = await _executor(session)
+
+    result, is_error = await executor.execute("timeline_create", {
+        "title": "叶顺英生日",
+        "kind": "birthday",
+        "status": "confirmed",
+        "starts_at": "2026-09-12T00:00:00+08:00",
+        "all_day": True,
+        "said": "九月十二号",
+    })
+
+    assert not is_error
+
+
+async def test_said_is_stored_as_evidence(session: AsyncSession) -> None:
+    """starts_at 是解析结果，said 是依据 —— 时间不对时能分辨是谁的锅。"""
+    executor = await _executor(session)
+
+    await executor.execute("timeline_create", {
+        "title": "去盒马买菜",
+        "kind": "todo",
+        "status": "confirmed",
+        "starts_at": "2026-08-08T09:00:00+08:00",
+        "said": "明早九点",
+    })
+
+    item = (await TimelineStore(session, actor="test").list())[0]
+    assert item.said == "明早九点"
+
+
+async def test_reschedule_to_a_vague_time_is_rejected(session: AsyncSession) -> None:
+    executor = await _executor(session)
+    await executor.execute("timeline_create", {
+        "title": "产品会议", "kind": "event", "status": "confirmed",
+        "starts_at": "2026-08-08T15:00:00+08:00", "said": "八号下午三点",
+    })
+    item = (await TimelineStore(session, actor="test").list())[0]
+
+    result, is_error = await executor.execute("timeline_update", {
+        "id": item.id,
+        "starts_at": "2026-08-09T14:00:00+08:00",
+        "said": "改到第二天下午",
+    })
+
+    assert is_error
+    assert "没有具体钟点" in result
+
+
+async def test_update_without_time_change_is_not_blocked(session: AsyncSession) -> None:
+    """标记完成、改标题不该被时间规则挡住。"""
+    executor = await _executor(session)
+    await executor.execute("timeline_create", {
+        "title": "产品会议", "kind": "event", "status": "confirmed",
+        "starts_at": "2026-08-08T15:00:00+08:00", "said": "八号下午三点",
+    })
+    item = (await TimelineStore(session, actor="test").list())[0]
+
+    result, is_error = await executor.execute("timeline_update", {
+        "id": item.id, "status": "completed",
+    })
+
+    assert not is_error
+
+
+def test_prompt_tells_model_to_ask_about_vague_times() -> None:
+    from app.memory.prompt import TIMELINE_INSTRUCTIONS
+
+    assert "先问清楚大概几点" in TIMELINE_INSTRUCTIONS
+    assert "不要自己挑一个填进去" in TIMELINE_INSTRUCTIONS

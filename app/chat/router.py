@@ -15,7 +15,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.service import ChatService
+from app.chat.service import ChatService, history_window_stats
 from app.db.models import Conversation, ConversationSummary, Message
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
@@ -46,7 +46,7 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 
 
 class ChatRequest(BaseModel):
-    conversation_id: int
+    conversation_id: int | None = None
     content: str = Field(min_length=1)
 
 
@@ -118,6 +118,33 @@ class MessageOut(BaseModel):
     # Anthropic 是 input_tokens），前端按需读取。
     usage: dict[str, Any] | None = None
     created_at: Any
+
+
+@router.get("/conversations/{conversation_id}/context")
+async def get_conversation_context(
+    conversation_id: int, session: AsyncSession = Depends(get_session)
+) -> dict[str, int]:
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
+    settings = await resolve_settings(session)
+    rows = list(
+        (await session.execute(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.id)
+        )).scalars()
+    )
+    messages = [{"role": row.role, "content": row.content} for row in rows]
+    stats = history_window_stats(messages, settings.history_max_chars)
+    last_usage = next((row.usage for row in reversed(rows) if row.usage), {}) or {}
+    stats["prompt_tokens"] = int(
+        last_usage.get("prompt_tokens", last_usage.get("input_tokens", 0)) or 0
+    )
+    stats["cached_tokens"] = int(
+        last_usage.get("prompt_cache_hit_tokens", last_usage.get("cache_read_input_tokens", 0)) or 0
+    )
+    return stats
 
 
 class SummaryOut(BaseModel):
@@ -444,7 +471,17 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
 
     不能用 Depends(get_session)：请求处理函数返回后依赖就会被清理，而生成器此时才刚开始跑。
     """
-    lock = _conversation_lock(payload.conversation_id)
+    conversation_id = payload.conversation_id
+    if conversation_id is None:
+        async with get_sessionmaker()() as session:
+            conversation = Conversation()
+            session.add(conversation)
+            await session.commit()
+            await session.refresh(conversation)
+            conversation_id = conversation.id
+            yield _sse({"type": "conversation", "conversation": ConversationOut.model_validate(conversation, from_attributes=True).model_dump(mode="json")})
+
+    lock = _conversation_lock(conversation_id)
     if lock.locked():
         # 直接拒绝而不排队：双击场景下第二条本来就是误触，
         # 让它排队等上一轮跑完再答一遍反而莫名其妙。
@@ -454,7 +491,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
     try:
         async with lock, get_sessionmaker()() as session:
             try:
-                conversation = await session.get(Conversation, payload.conversation_id)
+                conversation = await session.get(Conversation, conversation_id)
                 if conversation is None:
                     yield _sse({"type": "error", "message": "会话不存在"})
                     return
@@ -494,7 +531,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 yield _sse({"type": "error", "message": f"服务端错误：{exc}"})
     finally:
         # 客户端断开也会走到这里（生成器被关闭）。不清理的话 _locks 会随会话数只增不减。
-        _release_lock(payload.conversation_id)
+        _release_lock(conversation_id)
 
 
 def _to_payload(event: Any) -> dict[str, Any]:

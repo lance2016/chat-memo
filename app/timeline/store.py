@@ -76,7 +76,7 @@ class TimelineStore:
         await self.session.flush()
 
     def _validated(self, values: dict[str, Any], *, partial: bool) -> dict[str, Any]:
-        allowed = {"title", "details", "kind", "status", "starts_at", "ends_at", "all_day", "timezone", "location", "recurrence", "source_message_id"}
+        allowed = {"title", "details", "kind", "status", "starts_at", "said", "ends_at", "all_day", "timezone", "location", "recurrence", "source_message_id"}
         data = {key: value for key, value in values.items() if key in allowed}
         if not partial and not str(data.get("title") or "").strip():
             raise TimelineError("标题不能为空")
@@ -86,6 +86,9 @@ class TimelineStore:
             data["title"] = str(data["title"]).strip()
             if not data["title"] or len(data["title"]) > 240:
                 raise TimelineError("标题长度必须为 1～240 个字符")
+        if "said" in data:
+            # 只是依据，超长截断即可 —— 不值得为它让整条创建失败。
+            data["said"] = str(data["said"] or "").strip()[:120]
         for key in ("details", "location", "timezone"):
             if key in data:
                 data[key] = str(data[key] or "").strip()

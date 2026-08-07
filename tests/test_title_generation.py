@@ -83,6 +83,43 @@ def test_title_client_only_when_key_configured() -> None:
     assert get_title_client(settings(zhipu_api_key="k")) is not None
 
 
+def test_siliconflow_title_client_only_when_key_configured() -> None:
+    assert get_title_client(settings(siliconflow_api_key="")) is None
+    assert get_title_client(
+        settings(siliconflow_api_key="k", siliconflow_title_model="")
+    ) is None
+    client = get_title_client(settings(siliconflow_api_key="k"))
+    assert client is not None
+    assert client.route == "siliconflow/Qwen/Qwen3-8B"
+
+
+async def test_siliconflow_qwen_title_disables_thinking(
+    recorder: RecordingCompletions,
+) -> None:
+    client = TitleClient(
+        settings=settings(
+            siliconflow_api_key="k",
+            siliconflow_base_url="https://api.siliconflow.cn/v1",
+        ),
+        client=FakeOpenAI(recorder),
+    )
+
+    title = await client.complete(system="sys", prompt="问", max_tokens=500)
+
+    assert title == "记住用 uv 管依赖"
+    sent = recorder.calls[0]
+    assert sent["model"] == "Qwen/Qwen3-8B"
+    assert sent["extra_body"] == {"enable_thinking": False}
+
+
+def test_siliconflow_takes_priority_over_legacy_zhipu() -> None:
+    client = get_title_client(
+        settings(siliconflow_api_key="sf", zhipu_api_key="zhipu")
+    )
+    assert client is not None
+    assert client.route == "siliconflow/Qwen/Qwen3-8B"
+
+
 async def test_zhipu_title_disables_reasoning(
     recorder: RecordingCompletions,
 ) -> None:

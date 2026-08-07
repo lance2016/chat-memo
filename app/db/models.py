@@ -279,6 +279,9 @@ class TimelineItem(Base):
     kind: Mapped[str] = mapped_column(String(24), default="todo", index=True)
     status: Mapped[str] = mapped_column(String(24), default="confirmed", index=True)
     starts_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # 用户原话里表示时间的那几个字（「明早九点」）。starts_at 是解析结果，这里是依据 ——
+    # 时间不对时能一眼看出是用户说得含糊，还是模型解析错了。
+    said: Mapped[str] = mapped_column(String(120), default="")
     ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     all_day: Mapped[bool] = mapped_column(Boolean, default=False)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")

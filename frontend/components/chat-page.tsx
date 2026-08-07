@@ -3,11 +3,11 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ArrowRight, ChevronDown, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
+import { Archive, ArchiveRestore, ArrowRight, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
-import type { ChatEvent, Conversation, ToolActivity, Turn, TtsStatus } from "@/lib/types";
+import type { ChatEvent, Conversation, ConversationContext, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
 import { MemoryMark, notifyWorkspaceConversationsChanged, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
@@ -121,9 +121,15 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
 
 function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
   const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
   const unavailableReason = ttsDisabledReason ?? t("chat.tts.unknown");
+  const copyTurn = async () => {
+    await navigator.clipboard.writeText(turn.text);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
   if (turn.kind === "user") {
-    return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div>{onEdit && <div className="turn-actions"><button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button></div>}</div></div>;
+    return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div><div className="turn-actions"><button onClick={() => void copyTurn()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("chat.copied") : t("chat.copy")}</button>{onEdit && <button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button>}</div></div></div>;
   }
   return (
     <div className={`turn assistant-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
@@ -134,10 +140,12 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
         </details>
       )}
       {showToolActivity && turn.tools.length > 0 && <ToolActivityGroup tools={turn.tools} />}
+      {streaming && !turn.text && !turn.thinking && turn.tools.length === 0 && <div className="chat-response-phase"><span /><span>{t("chat.phase.connecting")}</span></div>}
       {(turn.text || streaming) && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown>{streaming && <span className="streaming-cursor" />}</div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>{t("chat.interrupted")}</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
       {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
+        {turn.text && <button onClick={() => void copyTurn()} title={t("chat.copyAnswer")}><span>{copied ? <Check size={12} /> : <Copy size={12} />}</span>{copied ? t("chat.copied") : t("chat.copy")}</button>}
         {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason}>
           {ttsLoading ? <LoaderCircle size={12} className="spin" /> : <Volume2 size={12} />}{ttsLoading ? t("chat.tts.synthesizing") : ttsPlaying ? t("chat.tts.stop") : t("chat.tts.play")}
         </button>}
@@ -145,6 +153,23 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
       </div>}
     </div>
   );
+}
+
+function ContextIndicator({ context }: { context: ConversationContext | null }) {
+  const { locale, t } = useI18n();
+  if (!context) return null;
+  const number = (value: number) => value.toLocaleString(locale);
+  const cacheRate = context.prompt_tokens > 0 ? Math.round(context.cached_tokens / context.prompt_tokens * 100) : 0;
+  return <details className="chat-context-indicator">
+    <summary><Gauge size={12} /><span>{t("chat.context.label")}</span><b>{context.prompt_tokens ? t("chat.context.tokens", { count: number(context.prompt_tokens) }) : t("chat.context.turns", { count: context.retained_turns })}</b></summary>
+    <div className="chat-context-popover">
+      <div><span>{t("chat.context.promptTokens")}</span><strong>{number(context.prompt_tokens)} tokens</strong></div>
+      <div><span>{t("chat.context.retained")}</span><strong>{t("chat.context.turns", { count: context.retained_turns })}</strong></div>
+      <div><span>{t("chat.context.trimmed")}</span><strong>{number(context.trimmed_messages)}</strong></div>
+      <div><span>{t("chat.context.budget")}</span><strong>{number(context.history_chars)} / {number(context.history_budget_chars)} chars</strong></div>
+      <div><span>{t("chat.context.cache")}</span><strong>{cacheRate}%</strong></div>
+    </div>
+  </details>;
 }
 
 export function ChatPage() {
@@ -193,6 +218,8 @@ export function ChatPage() {
   const speechAutoMessageIdRef = useRef<number | null>(null);
   const skipNextMessageLoadRef = useRef<number | null>(null);
   const draftTextRef = useRef("");
+  const draftDeltaRef = useRef({ text: "", thinking: "" });
+  const draftFrameRef = useRef<number | null>(null);
   const draftMessageIdRef = useRef<number | null>(null);
   const streamDoneRef = useRef(false);
   const messageRefs = useRef(new Map<number, HTMLDivElement>());
@@ -200,6 +227,7 @@ export function ChatPage() {
   const shouldAutoScroll = useRef(true);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
 
   useEffect(() => {
     void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
@@ -237,6 +265,7 @@ export function ChatPage() {
       speechFlushCompleteRef.current = false;
       speechQueueRef.current = [];
       if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
+      if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
       if (audio) resetMediaElement(audio);
       void stopSpeech().catch(() => undefined);
     };
@@ -292,6 +321,7 @@ export function ChatPage() {
       // 分开清会先渲染出「权威历史 + 尚未清掉的 draft」这一帧，也就是重影。
       setPendingUser("");
       setDraft({ text: "", thinking: "", tools: [] });
+      void getConversationContext(id).then(setConversationContext).catch(() => setConversationContext(null));
     } catch (cause) {
       if (!messageRequestsRef.current.isCurrent(request)) return;
       setError(errorMessage(cause, "无法加载消息"));
@@ -540,11 +570,29 @@ export function ChatPage() {
     void stopSpeech().catch(() => undefined);
   }
 
+  const flushDraftDeltas = () => {
+    if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
+    draftFrameRef.current = null;
+    const pending = draftDeltaRef.current;
+    draftDeltaRef.current = { text: "", thinking: "" };
+    if (!pending.text && !pending.thinking) return;
+    setDraft((current) => ({
+      ...current,
+      text: current.text + pending.text,
+      thinking: current.thinking + pending.thinking,
+    }));
+  };
+
+  const queueDraftDelta = (kind: "text" | "thinking", value: string) => {
+    draftDeltaRef.current[kind] += value;
+    if (draftFrameRef.current === null) draftFrameRef.current = window.requestAnimationFrame(flushDraftDeltas);
+  };
+
   const handleEvent = (event: ChatEvent, conversationId: number) => {
-    if (event.type === "thinking_delta") setDraft((current) => ({ ...current, thinking: current.thinking + event.text }));
+    if (event.type === "thinking_delta") queueDraftDelta("thinking", event.text);
     if (event.type === "text_delta") {
       draftTextRef.current += event.text;
-      setDraft((current) => ({ ...current, text: current.text + event.text }));
+      queueDraftDelta("text", event.text);
       scheduleAutoSpeech();
     }
     if (event.type === "message_id") {
@@ -552,7 +600,7 @@ export function ChatPage() {
       speechAutoMessageIdRef.current = event.message_id;
       if (speechAudioPlayingRef.current) setTtsPlayingId(event.message_id);
     }
-    if (event.type === "done") streamDoneRef.current = true;
+    if (event.type === "done") { flushDraftDeltas(); streamDoneRef.current = true; }
     if (event.type === "title") {
       setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, title: event.title } : item));
       notifyWorkspaceConversationsChanged();
@@ -634,7 +682,10 @@ export function ChatPage() {
     setError("");
     setInput("");
     setPendingUser(content);
+    if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
+    draftFrameRef.current = null;
     setDraft({ text: "", thinking: "", tools: [] });
+    draftDeltaRef.current = { text: "", thinking: "" };
     draftTextRef.current = "";
     draftMessageIdRef.current = null;
     streamDoneRef.current = false;
@@ -670,6 +721,7 @@ export function ChatPage() {
         loadMessages(conversationId, true),
         loadConversations().catch(() => undefined),
       ]);
+      window.setTimeout(() => { void loadConversations().catch(() => undefined); }, 1200);
     }
   };
 
@@ -749,7 +801,7 @@ export function ChatPage() {
           <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
             {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>
-          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />{t("chat.stop")}</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? t("chat.resend") : t("chat.send")}</button>}</div></form></div>
+          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} /><div className="composer-bottom"><ContextIndicator context={conversationContext} /><span className="composer-hint">{editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />{t("chat.stop")}</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? t("chat.resend") : t("chat.send")}</button>}</div></form></div>
         </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>

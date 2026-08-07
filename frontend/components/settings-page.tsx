@@ -38,7 +38,7 @@ const fieldHelp: Record<string, string> = {
   deepseek_thinking: "新会话默认是否启用深度思考",
   max_tool_iterations: "限制模型连续调用记忆工具的轮次",
   consolidate_model: "留空时沿用日常聊天模型",
-  title_model: "生成会话标题的小模型，需在 .env 配置 ZHIPU_API_KEY 才生效",
+  title_model: "智谱兼容配置；设置 SILICONFLOW_API_KEY 后优先使用环境变量中的硅基流动标题模型",
   consolidate_auto: "按固定时间自动整理当天对话",
   consolidate_hour: "使用后端所在时区的整点时间",
   tts_mode: "关闭、手动播放或回答完成后自动播放",

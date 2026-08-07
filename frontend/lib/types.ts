@@ -211,6 +211,7 @@ export interface MessageUsage {
 }
 
 export type ChatEvent =
+  | { type: "conversation"; conversation: Conversation }
   | { type: "thinking_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown> }
@@ -330,6 +331,8 @@ export interface TimelineItem {
   kind: TimelineKind;
   status: TimelineStatus;
   starts_at: string;
+  /** 用户原话里的时间依据（「明早九点」）。手工录入和老数据为空。 */
+  said: string;
   ends_at: string | null;
   all_day: boolean;
   timezone: string;
@@ -389,5 +392,15 @@ export interface DailyUsage {
   messages: number;
   input_tokens: number;
   output_tokens: number;
+  cached_tokens: number;
+}
+
+export interface ConversationContext {
+  history_chars: number;
+  history_budget_chars: number;
+  retained_messages: number;
+  retained_turns: number;
+  trimmed_messages: number;
+  prompt_tokens: number;
   cached_tokens: number;
 }

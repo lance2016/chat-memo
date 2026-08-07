@@ -69,7 +69,7 @@ WRITABLE: tuple[Field, ...] = (
     Field("effort", "推理强度", "enum",
           choices=("low", "medium", "high", "xhigh", "max"), provider="anthropic"),
     Field("consolidate_model", "整理专用模型", "str", allow_empty=True),
-    # 只在配了 ZHIPU_API_KEY 时生效；没配就退回聊天 provider。
+    # 配了 SILICONFLOW_API_KEY 或旧的 ZHIPU_API_KEY 时生效。
     Field("title_model", "标题专用模型", "str", allow_empty=True),
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
@@ -106,6 +106,9 @@ ENV_ONLY = (
     "anthropic_api_key",
     "deepseek_api_key",
     "deepseek_base_url",
+    "siliconflow_api_key",
+    "siliconflow_base_url",
+    "siliconflow_title_model",
     "zhipu_api_key",
     "zhipu_base_url",
     "api_key",

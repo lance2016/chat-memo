@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import debug
 from app.config import Settings, get_settings
+from app.db.session import get_sessionmaker
 from app.db.models import Conversation, Message
 from app.llm.events import (
     AgentEvent,
@@ -36,6 +37,7 @@ DEFAULT_TITLE = "新对话"
 
 # 标题最多让用户多等这么久。它和正文并行跑，正常不会触顶。
 TITLE_TIMEOUT = 5.0
+_background_title_tasks: set[asyncio.Task[None]] = set()
 
 # 标题只有十几个字，但不要卡得太死：万一模型忽略了「关闭思考」，
 # 预算太紧会只剩思考、正文被截断，结果是标题静默变空。
@@ -141,6 +143,25 @@ def trim_history(
 
     logger.info("✂ 历史超出 %d 字预算，丢弃最老的 %d 条消息", max_chars, start)
     return messages[start:]
+
+
+def history_window_stats(
+    messages: list[dict[str, Any]], max_chars: int
+) -> dict[str, int]:
+    """Return the effective history window using the exact production trim rules."""
+    retained = sanitize_history(trim_history(messages, max_chars))
+    real_user_messages = sum(
+        1
+        for message in retained
+        if message.get("role") == "user" and not _is_orphan_result(message)
+    )
+    return {
+        "history_chars": sum(_message_chars(message) for message in retained),
+        "history_budget_chars": max_chars,
+        "retained_messages": len(retained),
+        "retained_turns": real_user_messages,
+        "trimmed_messages": max(0, len(messages) - len(retained)),
+    }
 
 
 def sanitize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -321,6 +342,29 @@ class ChatService:
         conversation.updated_at = dt.datetime.now(dt.UTC)
         await self.session.commit()
 
+    def _continue_title_in_background(
+        self, conversation_id: int, task: asyncio.Task[str], route: str
+    ) -> None:
+        async def finish() -> None:
+            try:
+                title = await asyncio.wait_for(task, TITLE_TIMEOUT)
+                if not title:
+                    return
+                async with get_sessionmaker()() as session:
+                    conversation = await session.get(Conversation, conversation_id)
+                    if conversation is not None and conversation.title == DEFAULT_TITLE:
+                        conversation.title = title
+                        await session.commit()
+                logger.info("🏷 %s [%s · 后台]", title, route)
+            except TimeoutError:
+                logger.info("conv#%s 后台标题生成超过 %ss", conversation_id, TITLE_TIMEOUT)
+            except Exception:
+                logger.exception("后台生成标题失败 [%s]", route)
+
+        background = asyncio.create_task(finish())
+        _background_title_tasks.add(background)
+        background.add_done_callback(_background_title_tasks.discard)
+
     async def stream_reply(
         self, *, conversation: Conversation, system: str, user_text: str
     ) -> AsyncIterator[AgentEvent | tuple[str, dict[str, Any]]]:
@@ -358,6 +402,11 @@ class ChatService:
             asyncio.create_task(self._complete_title(user_text))
             if conversation.title == DEFAULT_TITLE
             else None
+        )
+        title_route = (
+            self.title_client.route
+            if self.title_client is not None
+            else f"{self.settings.provider} 不思考"
         )
         logger.info(
             "→ conv#%s %s %s",
@@ -416,19 +465,13 @@ class ChatService:
         if title_task is not None:
             if failed:
                 title_task.cancel()
+            elif not title_task.done():
+                self._continue_title_in_background(conversation.id, title_task, title_route)
             else:
-                # 裸 await 会让标题的尾延迟直接变成用户的等待时间：正文说完了，
-                # 流还开着、会话锁还占着，输入框也还是禁用的（前端要等流关闭）。
-                # 实测见过正文 1.4s 说完、标题又拖了 7.7s 的情况。
-                # 等不到就放手：标题仍是 DEFAULT_TITLE，下一轮会自动再试一次。
                 try:
-                    title = await asyncio.wait_for(title_task, TITLE_TIMEOUT)
-                except TimeoutError:
-                    logger.info(
-                        "conv#%s 标题生成超过 %ss，本轮先跳过",
-                        conversation.id,
-                        TITLE_TIMEOUT,
-                    )
+                    title = title_task.result()
+                except Exception:
+                    logger.exception("生成标题失败 [%s]", title_route)
                     title = ""
                 if title:
                     conversation.title = title
@@ -490,17 +533,13 @@ class ChatService:
 
         两条路都**关掉思考**：标题是一句话概括，推理在这里只会让用户白等
         （这段耗时在 done 之前被 await，会原样变成禁用输入框的时间）。
-        配了 ZHIPU_API_KEY 就走智谱那边的小模型，否则退回聊天 provider。
+        配了硅基流动或智谱标题 key 就走专用小模型，否则退回聊天 provider。
         """
         prompt = f"用户的第一条消息：\n\n{first_text}"
         client = self.title_client
         # 走哪条路、花了多久，都要能从日志里直接看出来 —— 否则「标题到底有没有
         # 用那个小模型」只能靠猜，配错了 key 也只表现为「又变慢了」。
-        route = (
-            f"zhipu/{self.settings.title_model}"
-            if client is not None
-            else f"{self.settings.provider} 不思考"
-        )
+        route = client.route if client is not None else f"{self.settings.provider} 不思考"
         started = time.monotonic()
         try:
             if client is not None:

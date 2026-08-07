@@ -5,6 +5,7 @@ import { ChatPage } from "./chat-page";
 const mocks = vi.hoisted(() => ({
   createConversation: vi.fn(),
   getMemoryStats: vi.fn(),
+  getConversationContext: vi.fn(),
   getTtsStatus: vi.fn(),
   listConversations: vi.fn(),
   listMessages: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/lib/api", () => ({
   deleteConversation: vi.fn(),
   errorMessage: (_cause: unknown, fallback: string) => fallback,
   getMemoryStats: mocks.getMemoryStats,
+  getConversationContext: mocks.getConversationContext,
   getNextSpeech: vi.fn(),
   getTtsStatus: mocks.getTtsStatus,
   listConversations: mocks.listConversations,
@@ -74,6 +76,7 @@ describe("ChatPage streaming lifecycle", () => {
     mocks.listMessages.mockResolvedValue([]);
     mocks.createConversation.mockResolvedValue(conversation);
     mocks.getMemoryStats.mockResolvedValue({ total_memories: 0 });
+    mocks.getConversationContext.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
     mocks.getTtsStatus.mockResolvedValue({ mode: "off", enabled: false });
     mocks.stopSpeech.mockResolvedValue({ dropped: 0 });
   });
