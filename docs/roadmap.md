@@ -62,6 +62,30 @@ Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` /
 
 配置提醒：iCloud 上的 vault 有 dataless 文件读不到的坑，`.env` 里配 `VAULT_PATH` 时注意。
 
+### 日志与可观测性：接 Phoenix（方案已定，未开工）
+
+现在的日志只有 stdout 一个出口：不留存、不可查询、同一轮对话的十几行日志没有共同标识
+（并发会话时交错就分不清谁是谁）。请求快照是内存里 20 条、默认关、藏在设置页弹窗
+（`app/debug/recorder.py`），不能当看板用。token 存在 `messages.usage` 里但从没聚合过，
+没算过钱；定时任务失败只留一行 warning，没人会发现。
+
+完整方案见 **[observability.md](observability.md)**。核心结论：**用 Arize Phoenix
+（一个容器 + SQLite）替掉自建看板**，因为本项目三条模型链路正好被两个自动埋点包全覆盖 ——
+Anthropic 走 `anthropic` SDK，DeepSeek 和硅基流动标题模型都走 `AsyncOpenAI`（只是换
+`base_url`）——`openinference-instrumentation-{anthropic,openai}` 装上就有请求列表、
+完整 payload、session 聚合、成本核算、prompt playground，5 处调用点零手工埋点。
+
+| # | 阶段 | 内容 |
+|---|---|---|
+| 0 | **先验证流式埋点** | 半小时。两条链路都是流式（`anthropic_provider.py:103` 的 `messages.stream()`、DeepSeek 的 `stream=True`），自动埋点对流式 + tool_use 的覆盖度**不能假设**。要确认三件事：span 里有没有完整 messages/tools、`llm.token_count.*` 有没有值、agent loop 多次 iteration 是不是同一 trace 下的多个 span。**这一步的结果决定后面做多少** |
+| 1 | trace + 双 formatter | `app/obs/{context,logging,middleware}.py`，trace id 取 OTel 当前 span（日志里 grep 到的短码能直接去 Phoenix 搜）。`LOG_FORMAT=json` 时不能插 ANSI —— 现在 `colorize()` 只看 `NO_COLOR` 就无条件上色 |
+| 2 | session 与 purpose | `using_session(conversation.id)` + `using_metadata({"purpose": ...})`。Phoenix UI 里手动加 DeepSeek / Qwen 价格（内置表只有 OpenAI / Anthropic，**只能在 UI 点**） |
+| 3 | 删旧代码 | `app/debug/{recorder,log,router}.py` 及前端 `DebugDialog`，**前提是阶段 0 确认 payload 完整**。`/api/debug/prompt` 挪走保留 |
+| 4 | 按需 | 应用内费用卡片（retention 到期 trace 就清了，年度费用会丢）、Dozzle 或 VictoriaLogs、复用 Bark 做告警 |
+
+两个已知让步：Phoenix 的界面在 `localhost:6006` **不在 workspace 里**；里面存的是完整
+对话原文和记忆正文且默认全存，所以 `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS` 必须配。
+
 ---
 
 ## 问题修复
