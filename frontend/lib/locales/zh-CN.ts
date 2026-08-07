@@ -401,4 +401,5 @@ export const zhCN = {
   "chat.context.cache": "缓存命中",
   "chat.phase.connecting": "正在连接…",
   "chat.phase.thinking": "正在思考…",
+  "chat.scrollToBottom": "回到最新消息",
 } as const;

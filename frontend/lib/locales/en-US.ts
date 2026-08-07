@@ -403,4 +403,5 @@ export const enUS = {
   "chat.context.cache": "Cache hit",
   "chat.phase.connecting": "Connecting…",
   "chat.phase.thinking": "Thinking…",
+  "chat.scrollToBottom": "Jump to latest",
 } satisfies Record<TranslationKey, string>;

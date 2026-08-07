@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ArrowRight, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowRight, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
 import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
@@ -16,6 +16,9 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InputDialog } from "@/components/input-dialog";
 import { VoiceInputButton } from "@/components/voice-input-button";
 import { useI18n } from "@/components/i18n-provider";
+import { SearchTrigger } from "@/components/global-search";
+import { LanguageControl } from "@/components/language-control";
+import { ThemeControl } from "@/components/theme-control";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -84,6 +87,7 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
   const { locale, t } = useI18n();
   const recent = conversations.slice(0, 3);
   return <div className="memory-home-scroll">
+    <div className="home-chat-tools"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
     <div className="memory-home">
       <section className="memory-home-hero">
         <div className="memory-home-copy">
@@ -144,7 +148,7 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
       {(turn.text || streaming) && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown>{streaming && <span className="streaming-cursor" />}</div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>{t("chat.interrupted")}</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
-      {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
+      {(turn.text || onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
         {turn.text && <button onClick={() => void copyTurn()} title={t("chat.copyAnswer")}><span>{copied ? <Check size={12} /> : <Copy size={12} />}</span>{copied ? t("chat.copied") : t("chat.copy")}</button>}
         {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason}>
           {ttsLoading ? <LoaderCircle size={12} className="spin" /> : <Volume2 size={12} />}{ttsLoading ? t("chat.tts.synthesizing") : ttsPlaying ? t("chat.tts.stop") : t("chat.tts.play")}
@@ -225,7 +229,11 @@ export function ChatPage() {
   const messageRefs = useRef(new Map<number, HTMLDivElement>());
   const messageRequestsRef = useRef(new LatestRequest());
   const shouldAutoScroll = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const programmaticScrollTimerRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
 
@@ -266,6 +274,7 @@ export function ChatPage() {
       speechQueueRef.current = [];
       if (speechPumpTimerRef.current !== null) window.clearTimeout(speechPumpTimerRef.current);
       if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
+      if (programmaticScrollTimerRef.current !== null) window.clearTimeout(programmaticScrollTimerRef.current);
       if (audio) resetMediaElement(audio);
       void stopSpeech().catch(() => undefined);
     };
@@ -351,10 +360,48 @@ export function ChatPage() {
     return () => window.clearTimeout(timer);
   }, [loadingMessages, messageFromUrl, turns]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (element && preferences.autoScroll && shouldAutoScroll.current) element.scrollTop = element.scrollHeight;
+    if (!element || !preferences.autoScroll || !shouldAutoScroll.current) return;
+    programmaticScrollRef.current = true;
+    element.scrollTop = element.scrollHeight;
+    setAwayFromBottom(false);
+    if (programmaticScrollTimerRef.current !== null) window.clearTimeout(programmaticScrollTimerRef.current);
+    programmaticScrollTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+      programmaticScrollTimerRef.current = null;
+    }, 80);
   }, [draft, pendingUser, preferences.autoScroll, turns]);
+
+  const handleMessageScroll = (element: HTMLDivElement) => {
+    const distance = Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight);
+    setAwayFromBottom(distance > 96);
+    if (programmaticScrollRef.current) return;
+    shouldAutoScroll.current = distance < 32;
+  };
+
+  const pauseAutoScroll = () => {
+    programmaticScrollRef.current = false;
+    if (programmaticScrollTimerRef.current !== null) window.clearTimeout(programmaticScrollTimerRef.current);
+    programmaticScrollTimerRef.current = null;
+    shouldAutoScroll.current = false;
+  };
+
+  const scrollToLatest = () => {
+    const element = scrollRef.current;
+    if (!element) return;
+    shouldAutoScroll.current = true;
+    programmaticScrollRef.current = true;
+    setAwayFromBottom(false);
+    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+    if (programmaticScrollTimerRef.current !== null) window.clearTimeout(programmaticScrollTimerRef.current);
+    programmaticScrollTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+      programmaticScrollTimerRef.current = null;
+      const current = scrollRef.current;
+      if (current) current.scrollTop = current.scrollHeight;
+    }, 420);
+  };
 
   useEffect(() => {
     const element = composerRef.current;
@@ -588,7 +635,17 @@ export function ChatPage() {
     if (draftFrameRef.current === null) draftFrameRef.current = window.requestAnimationFrame(flushDraftDeltas);
   };
 
-  const handleEvent = (event: ChatEvent, conversationId: number) => {
+  const handleEvent = (event: ChatEvent, conversationId: number | null) => {
+    if (event.type === "conversation") {
+      const created = event.conversation;
+      skipNextMessageLoadRef.current = created.id;
+      setConversations((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setSelectedId(created.id);
+      setTurns([]);
+      router.replace(`/?conversation=${created.id}`);
+      notifyWorkspaceConversationsChanged();
+      return;
+    }
     if (event.type === "thinking_delta") queueDraftDelta("thinking", event.text);
     if (event.type === "text_delta") {
       draftTextRef.current += event.text;
@@ -601,7 +658,7 @@ export function ChatPage() {
       if (speechAudioPlayingRef.current) setTtsPlayingId(event.message_id);
     }
     if (event.type === "done") { flushDraftDeltas(); streamDoneRef.current = true; }
-    if (event.type === "title") {
+    if (event.type === "title" && conversationId !== null) {
       setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, title: event.title } : item));
       notifyWorkspaceConversationsChanged();
     }
@@ -676,7 +733,8 @@ export function ChatPage() {
   const send = async (contentOverride?: string, targetIdOverride?: number, conversationIdOverride?: number) => {
     const content = (contentOverride ?? input).trim();
     const conversationId = conversationIdOverride ?? selectedId;
-    if (!content || !conversationId || sending) return;
+    if (!content || sending) return;
+    let activeConversationId = conversationId;
     const targetId = targetIdOverride ?? editingTarget;
     setSending(true);
     setError("");
@@ -690,19 +748,23 @@ export function ChatPage() {
     draftMessageIdRef.current = null;
     streamDoneRef.current = false;
     shouldAutoScroll.current = true;
+    setAwayFromBottom(false);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
       if (ttsStatus?.mode === "auto") await startAutoSpeech();
       else stopTtsPlayback();
-      if (targetId !== null && targetId !== undefined) {
+      if (targetId !== null && targetId !== undefined && activeConversationId !== null) {
         const targetIndex = apiMessages.findIndex((message) => message.id === targetId);
         if (targetIndex < 0) throw new Error("找不到要重发的消息");
         const after = targetIndex > 0 ? apiMessages[targetIndex - 1].id : 0;
-        await truncateMessages(conversationId, after);
+        await truncateMessages(activeConversationId, after);
         setTurns(toTurns(apiMessages.slice(0, targetIndex)));
       }
-      await streamChat(conversationId, content, (event) => handleEvent(event, conversationId), controller.signal);
+      await streamChat(activeConversationId, content, (event) => {
+        if (event.type === "conversation") activeConversationId = event.conversation.id;
+        handleEvent(event, activeConversationId);
+      }, controller.signal);
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
@@ -718,7 +780,7 @@ export function ChatPage() {
       // 临时态由 loadMessages 在换上权威历史的同一帧里清掉，这里不要提前清 ——
       // 提前清会让刚说完的回答先消失，等 fetch 回来再出现。
       await Promise.all([
-        loadMessages(conversationId, true),
+        activeConversationId === null ? Promise.resolve() : loadMessages(activeConversationId, true),
         loadConversations().catch(() => undefined),
       ]);
       window.setTimeout(() => { void loadConversations().catch(() => undefined); }, 1200);
@@ -729,22 +791,11 @@ export function ChatPage() {
     abortRef.current?.abort();
     stopTtsPlayback();
   };
-  const startHomeConversation = async (event: FormEvent) => {
+  const startHomeConversation = (event: FormEvent) => {
     event.preventDefault();
     const content = input.trim();
     if (!content || sending) return;
-    try {
-      const created = await createConversation();
-      setConversations((current) => [created, ...current]);
-      notifyWorkspaceConversationsChanged();
-      skipNextMessageLoadRef.current = created.id;
-      setSelectedId(created.id);
-      setTurns([]);
-      router.replace(`/?conversation=${created.id}`);
-      void send(content, undefined, created.id);
-    } catch (cause) {
-      setError(errorMessage(cause, "无法创建会话"));
-    }
+    void send(content);
   };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
   const appendTranscription = (text: string) => {
@@ -792,16 +843,37 @@ export function ChatPage() {
         {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong></div>
-            {selected && <div className="chat-conversation-actions">
-              <button type="button" className="icon-button" aria-label={t("chat.rename")} title={t("chat.rename")} onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
-              <button type="button" className="icon-button" aria-label={showArchived ? t("chat.restore") : t("chat.archive")} title={showArchived ? t("chat.restore") : t("chat.archive")} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
-              <button type="button" className="icon-button chat-delete-button" aria-label={t("chat.delete")} title={t("chat.delete")} onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
-            </div>}
+            <div className="chat-conversation-toolbar-right">
+              <div className="chat-conversation-utilities"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
+              {selected && <div className="chat-conversation-actions">
+                <button type="button" className="icon-button" aria-label={t("chat.rename")} title={t("chat.rename")} onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
+                <button type="button" className="icon-button" aria-label={showArchived ? t("chat.restore") : t("chat.archive")} title={showArchived ? t("chat.restore") : t("chat.archive")} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
+                <button type="button" className="icon-button chat-delete-button" aria-label={t("chat.delete")} title={t("chat.delete")} onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
+              </div>}
+            </div>
           </div>
-          <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
+          <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
             {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>
-          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} /><div className="composer-bottom"><ContextIndicator context={conversationContext} /><span className="composer-hint">{editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />{t("chat.stop")}</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? t("chat.resend") : t("chat.send")}</button>}</div></form></div>
+          {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
+          <div className="composer-wrap">
+            {error && <div className="error-banner">{error}</div>}
+            <form className="composer" onSubmit={onSubmit}>
+              <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
+              <div className="composer-bottom">
+                <div className="composer-meta">
+                  <ContextIndicator context={conversationContext} />
+                  <span className="composer-hint">{editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span>
+                </div>
+                <div className="composer-actions">
+                  <VoiceInputButton disabled={sending} onTranscript={appendTranscription} />
+                  {sending
+                    ? <button type="button" className="ghost-button stop-button composer-submit" onClick={stop} aria-label={t("chat.stop")} title={t("chat.stop")}><Square size={14} /></button>
+                    : <button type="submit" className="primary-button composer-submit" disabled={!input.trim()} aria-label={editingTarget !== null ? t("chat.resend") : t("chat.send")} title={editingTarget !== null ? t("chat.resend") : t("chat.send")}><Send size={17} /></button>}
+                </div>
+              </div>
+            </form>
+          </div>
         </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>

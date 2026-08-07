@@ -4,7 +4,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.service import ChatService, trim_history
+from app.chat.service import ChatService, history_window_stats, trim_history
 from app.config import Settings
 from app.db.models import Conversation, Message
 from app.llm.anthropic_provider import AnthropicProvider
@@ -95,6 +95,17 @@ def test_last_message_survives_even_if_it_alone_exceeds_budget() -> None:
 def test_disabled_when_budget_is_zero() -> None:
     messages = [user("一"), assistant("二"), user("三")]
     assert trim_history(messages, 0) == messages
+
+
+def test_history_window_stats_describes_the_effective_window() -> None:
+    messages = [user("旧" + "填" * 500), assistant("旧答" + "填" * 500), user("新问题")]
+
+    stats = history_window_stats(messages, 100)
+
+    assert stats["retained_turns"] == 1
+    assert stats["retained_messages"] == 1
+    assert stats["trimmed_messages"] == 2
+    assert stats["history_budget_chars"] == 100
 
 
 async def test_load_history_applies_the_budget(session: AsyncSession) -> None:

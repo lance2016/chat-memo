@@ -17,9 +17,10 @@ function activePage(pathname: string): WorkspacePage {
  */
 export function WorkspaceFrame({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const active = activePage(pathname);
 
-  return <div className="workspace-frame">
-    <WorkspaceTopbar active={activePage(pathname)} />
+  return <div className={`workspace-frame ${active === "chat" ? "workspace-frame-chat" : ""}`}>
+    <WorkspaceTopbar active={active} />
     <div className="workspace-route-content">{children}</div>
   </div>;
 }

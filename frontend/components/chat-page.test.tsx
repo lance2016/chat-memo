@@ -88,6 +88,7 @@ describe("ChatPage streaming lifecycle", () => {
   it("applies a title event to the conversation that owns the stream", async () => {
     let finishStream!: () => void;
     mocks.streamChat.mockImplementation(async (_id, _content, onEvent) => {
+      onEvent({ type: "conversation", conversation });
       onEvent({ type: "title", title: "服务端标题" });
       await new Promise<void>((resolve) => { finishStream = resolve; });
     });
