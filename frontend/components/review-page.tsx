@@ -1,9 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CheckCircle2, ChevronLeft, ChevronRight, LoaderCircle, Play, RefreshCw, Settings2, TriangleAlert } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, LoaderCircle, Play, RefreshCw, TriangleAlert } from "lucide-react";
 import { closeOpenLoop, consolidate, createOpenLoop, dropOpenLoop, errorMessage, getDailyUsage, getDigest, listAllMemoryVersions, listConversations, listOpenLoops, listReviewDays, listSummaries, reopenOpenLoop, restoreMemoryVersion } from "@/lib/api";
 import type { Conversation, ConversationSummary, ConsolidateResult, DailyDigest, DailyUsage, MemoryVersion, OpenLoop } from "@/lib/types";
 import { ReviewConversationList } from "@/components/review/review-conversation-list";
@@ -213,33 +212,37 @@ export function ReviewPage() {
   const newerDay = dayIndex > 0 ? availableDays?.[dayIndex - 1] : undefined;
   const todayIsAvailable = availableDays?.includes(today()) ?? false;
 
-  if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading"><LoaderCircle size={18} className="spin" />{t("review.days.loading")}</div></main></div>;
+  if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading review-page-state"><LoaderCircle size={18} className="spin" />{t("review.days.loading")}</div></main></div>;
 
-  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-heading review-heading-empty"><div><div className="eyebrow">{t("review.eyebrow")}</div><h1>{t("review.days.emptyTitle")}</h1><p>{t("review.days.emptyDescription")}</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
+  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-page-header review-page-header-empty"><div className="review-title-block"><div className="eyebrow">{t("review.eyebrow")}</div><h1>{t("review.days.emptyTitle")}</h1><p>{t("review.days.emptyDescription")}</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
 
   return <div className="review-shell">
     <main className="review-content">
-      <div className="review-heading">
-        <div className="review-heading-copy"><div className="eyebrow">{t("review.eyebrow")}</div><h1>{isToday ? t("review.title.today") : t("review.title.day")}</h1><p>{t("review.subtitle", { date: formatDayTitle(day, locale) })}</p></div>
-        <div className="review-controls">
-          <div className="review-control-row">
-            <div className="date-control">
-              <button className="icon-button date-step" aria-label={t("review.date.previous")} disabled={!olderDay} onClick={() => olderDay && selectDay(olderDay)}><ChevronLeft size={16} /></button>
-              <label htmlFor="review-day">{t("review.date.select")}</label>
-              <select id="review-day" value={day} onChange={(event) => selectDay(event.target.value)}>{availableDays.map((value) => <option value={value} key={value}>{value.replaceAll("-", "/")}</option>)}</select>
-              <button className="icon-button date-step" aria-label={t("review.date.next")} disabled={!newerDay} onClick={() => newerDay && selectDay(newerDay)}><ChevronRight size={16} /></button>
-            </div>
-            <span className="review-status-slot">{dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}</span>
-            <button className={`ghost-button today-button ${isToday || !todayIsAvailable ? "is-placeholder" : ""}`} disabled={isToday || !todayIsAvailable} aria-hidden={isToday || !todayIsAvailable} tabIndex={isToday || !todayIsAvailable ? -1 : 0} onClick={() => selectDay(today())}><RefreshCw size={13} />{t("review.today")}</button>
-            <Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />{t("review.settings")}</Link>
+      <header className="review-page-header">
+        <div className="review-title-block">
+          <div className="review-title-meta">
+            <span className="eyebrow">{t("review.eyebrow")}</span>
+            {dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}
           </div>
-          <button className="primary-button review-run-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />{t("review.running")}</> : <><Play size={14} />{dayDigest ? t("review.rerun") : t("review.run")}</>}</button>
+          <h1>{isToday ? t("review.title.today") : t("review.title.day")}</h1>
+          <p>{t("review.subtitle", { date: formatDayTitle(day, locale) })}</p>
         </div>
-      </div>
+
+        <div className="review-toolbar" role="toolbar" aria-label={t("review.date.select")}>
+          <div className="date-control review-date-control">
+            <button className="icon-button date-step" type="button" aria-label={t("review.date.previous")} disabled={!olderDay} onClick={() => olderDay && selectDay(olderDay)}><ChevronLeft size={16} /></button>
+            <label className="review-date-label" htmlFor="review-day">{t("review.date.select")}</label>
+            <select id="review-day" value={day} onChange={(event) => selectDay(event.target.value)}>{availableDays.map((value) => <option value={value} key={value}>{value.replaceAll("-", "/")}</option>)}</select>
+            <button className="icon-button date-step" type="button" aria-label={t("review.date.next")} disabled={!newerDay} onClick={() => newerDay && selectDay(newerDay)}><ChevronRight size={16} /></button>
+          </div>
+          {!isToday && todayIsAvailable && <button className="icon-button review-toolbar-icon" type="button" aria-label={t("review.today")} title={t("review.today")} onClick={() => selectDay(today())}><RefreshCw size={15} /></button>}
+          <button className="primary-button review-run-button" type="button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />{t("review.running")}</> : <><Play size={14} />{dayDigest ? t("review.rerun") : t("review.run")}</>}</button>
+        </div>
+      </header>
       {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />{t("review.retry")}</button></div>}
       {result && <div className={`review-result ${result.failed_summaries > 0 || result.digest_failed ? "review-warning" : ""}`}><CheckCircle2 size={17} /><div><strong>{result.skipped ? t("review.result.empty") : [result.title, result.headline].filter(Boolean).join(" · ") || t("review.result.done")}</strong><span>{result.digest_failed ? t("review.result.digestFailed") : result.detail || t("review.result.detail", { writes: result.memory_writes, newCount: result.new_loops, closedCount: result.closed_loops })}</span></div></div>}
-      {loading ? <div className="review-loading"><LoaderCircle size={18} className="spin" />{t("review.loading")}</div> : <>
-        <ReviewDigest digest={digest} error={sectionErrors.digest} running={running} onRun={() => void runConsolidation()} />
+      {loading ? <div className="review-loading review-page-state"><LoaderCircle size={18} className="spin" />{t("review.loading")}</div> : <div className="review-reading-flow">
+        <ReviewDigest digest={digest} error={sectionErrors.digest} running={running} onRun={() => void runConsolidation()} showAction={false} />
         <ReviewOpenLoops
           loops={loops}
           day={day}
@@ -249,12 +252,17 @@ export function ReviewPage() {
           onDrop={(loop) => mutateLoops(() => dropOpenLoop(loop.id))}
           onCreate={(text) => mutateLoops(() => createOpenLoop(text, day))}
         />
-        <details className="review-details">
-          <summary>{t("review.details")}</summary>
-          <div className="review-layout"><div className="review-main-column"><ReviewSummaryList summaries={summaries} error={sectionErrors.summaries} /><ReviewMemoryChanges changes={changes} error={sectionErrors.changes} onRestore={requestRestoreDeletedMemory} /></div><aside className="review-side-column"><ReviewConversationList conversations={conversations} error={sectionErrors.conversations} /><ReviewUsageCard usage={usage} selectedDay={day} error={sectionErrors.usage} /></aside></div>
-        </details>
-      </>}
-      <div className="review-note"><TriangleAlert size={13} />{t("review.note")}</div>
+        <div className="review-conversation-layer">
+          <ReviewSummaryList summaries={summaries} error={sectionErrors.summaries} />
+          <ReviewConversationList conversations={conversations} error={sectionErrors.conversations} />
+        </div>
+        <ReviewMemoryChanges changes={changes} error={sectionErrors.changes} onRestore={requestRestoreDeletedMemory} />
+        <ReviewUsageCard usage={usage} selectedDay={day} error={sectionErrors.usage} />
+      </div>}
+      <details className="review-note">
+        <summary><TriangleAlert size={13} />{t("review.details")}</summary>
+        <p>{t("review.note")}</p>
+      </details>
       <ConfirmDialog
         open={restoreTarget !== null}
         title={t("review.restore.title")}

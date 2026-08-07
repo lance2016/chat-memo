@@ -11,12 +11,13 @@ const mocks = vi.hoisted(() => ({
   listMessages: vi.fn(),
   stopSpeech: vi.fn(),
   streamChat: vi.fn(),
+  searchParams: "",
   router: { push: vi.fn(), replace: vi.fn() },
 }));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => mocks.router,
-  useSearchParams: () => new URLSearchParams(),
+  useSearchParams: () => new URLSearchParams(mocks.searchParams),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -40,6 +41,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 vi.mock("@/components/workspace-topbar", () => ({
+  conversationsChangedEvent: "chat-memo:conversations-changed",
   MemoryMark: () => <span />,
   notifyWorkspaceConversationsChanged: vi.fn(),
   WorkspacePageFallback: ({ message }: { message: string }) => <div>{message}</div>,
@@ -61,6 +63,12 @@ const conversation = {
   thinking: null,
 };
 
+const otherConversation = {
+  ...conversation,
+  id: 43,
+  title: "另一段对话",
+};
+
 async function startConversation() {
   render(<ChatPage />);
   const input = await screen.findByPlaceholderText("和我聊聊，或告诉我一件想记住的事……");
@@ -72,6 +80,7 @@ async function startConversation() {
 describe("ChatPage streaming lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.searchParams = "";
     mocks.listConversations.mockResolvedValue([]);
     mocks.listMessages.mockResolvedValue([]);
     mocks.createConversation.mockResolvedValue(conversation);
@@ -117,5 +126,44 @@ describe("ChatPage streaming lifecycle", () => {
     view.unmount();
 
     expect(streamSignal?.aborted).toBe(true);
+  });
+
+  it("keeps a live response and its final history scoped to the owning conversation", async () => {
+    mocks.searchParams = "conversation=42";
+    mocks.listConversations.mockResolvedValue([conversation, otherConversation]);
+    mocks.listMessages.mockImplementation(async (id: number) => id === 43 ? [{
+      id: 901,
+      role: "assistant",
+      content: [{ type: "text", text: "第二段会话的内容" }],
+      usage: null,
+      created_at: "2026-08-07T00:00:00Z",
+    }] : []);
+
+    let emit!: (event: { type: string; text?: string }) => void;
+    let finishStream!: () => void;
+    mocks.streamChat.mockImplementation(async (_id, _content, onEvent) => {
+      emit = onEvent;
+      await new Promise<void>((resolve) => { finishStream = resolve; });
+    });
+
+    const view = render(<ChatPage />);
+    const input = await screen.findByPlaceholderText("写下你的问题或想让我记住的事…");
+    fireEvent.change(input, { target: { value: "属于第一段的问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledOnce());
+    emit({ type: "text_delta", text: "第一段的流式回答" });
+    expect(await screen.findByText("第一段的流式回答")).toBeInTheDocument();
+
+    mocks.searchParams = "conversation=43";
+    view.rerender(<ChatPage />);
+    expect(await screen.findByText("第二段会话的内容")).toBeInTheDocument();
+
+    emit({ type: "text_delta", text: "不应该出现在第二段" });
+    await waitFor(() => expect(screen.queryByText("不应该出现在第二段")).not.toBeInTheDocument());
+
+    finishStream();
+    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledWith(42));
+    expect(screen.getByText("第二段会话的内容")).toBeInTheDocument();
+    expect(screen.queryByText("第一段的流式回答")).not.toBeInTheDocument();
   });
 });

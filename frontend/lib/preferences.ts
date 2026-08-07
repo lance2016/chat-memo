@@ -15,9 +15,9 @@ export interface UserPreferences {
 export const defaultPreferences: UserPreferences = {
   enterToSend: true,
   autoScroll: true,
-  showThinking: true,
+  showThinking: false,
   showToolActivity: true,
-  showUsage: true,
+  showUsage: false,
   theme: "light",
   locale: "zh-CN",
 };
@@ -34,9 +34,9 @@ export function readPreferences(): UserPreferences {
     return {
       enterToSend: parsed.enterToSend !== false,
       autoScroll: parsed.autoScroll !== false,
-      showThinking: parsed.showThinking !== false,
+      showThinking: parsed.showThinking === true,
       showToolActivity: parsed.showToolActivity !== false,
-      showUsage: parsed.showUsage !== false,
+      showUsage: parsed.showUsage === true,
       theme: parsed.theme === "light" || parsed.theme === "dark" ? parsed.theme : "system",
       locale: isLocale(parsed.locale) ? parsed.locale : "zh-CN",
     };

@@ -13,7 +13,15 @@ function EchoRow({ echo }: { echo: Echo }) {
   return <li><Icon size={13} aria-hidden="true" />{echo.text}</li>;
 }
 
-export function ReviewDigest({ digest, error, running, onRun }: { digest: DailyDigest | null; error?: string; running: boolean; onRun: () => void }) {
+type ReviewDigestProps = {
+  digest: DailyDigest | null;
+  error?: string;
+  running: boolean;
+  onRun: () => void;
+  showAction?: boolean;
+};
+
+export function ReviewDigest({ digest, error, running, onRun, showAction = true }: ReviewDigestProps) {
   const { t } = useI18n();
   if (error) return <section className="review-digest review-digest-empty"><div className="card-state card-state-error">{error}</div></section>;
 
@@ -21,7 +29,7 @@ export function ReviewDigest({ digest, error, running, onRun }: { digest: DailyD
     <Sparkles size={20} />
     <strong>{t("review.digest.emptyTitle")}</strong>
     <span>{t("review.digest.emptyDescription")}</span>
-    <button className="primary-button" onClick={onRun} disabled={running}><Play size={14} />{running ? t("review.running") : t("review.run")}</button>
+    {showAction && <button className="primary-button" onClick={onRun} disabled={running}><Play size={14} />{running ? t("review.running") : t("review.run")}</button>}
   </section>;
 
   return <section className="review-digest" aria-label={t("review.digest.label")}>

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Sparkles, Trash2, Wrench, X } from "lucide-react";
+import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
@@ -11,20 +11,19 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
 
-type SettingsSectionKey = "general" | "assistant" | "model" | "tools" | "review" | "voice" | "advanced" | "system";
+type SettingsSectionKey = "general" | "model" | "review" | "voice" | "system";
 
 const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
   { key: "general", icon: SlidersHorizontal },
-  { key: "assistant", icon: Sparkles },
   { key: "model", icon: Activity },
-  { key: "tools", icon: Wrench },
   { key: "review", icon: Clock3 },
   { key: "voice", icon: Headphones },
-  { key: "advanced", icon: Bug },
   { key: "system", icon: HardDriveDownload },
 ];
 
 const reviewFieldKeys = new Set(["consolidate_model", "consolidate_auto", "consolidate_hour"]);
+const modelPrimaryFieldKeys = new Set(["provider", "model", "deepseek_model", "effort", "deepseek_thinking"]);
+const ttsPrimaryFieldKeys = new Set(["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"]);
 
 const fieldHelp: Record<string, string> = {
   owner_name: "助手在对话中对你的称呼",
@@ -292,24 +291,24 @@ export function SettingsPage() {
   const activeFields = useMemo(() => runtime?.fields?.filter((field) => !field.provider || field.provider === activeProvider) ?? [], [activeProvider, runtime]);
   const ungroupedFields = useMemo(() => activeFields.filter((field) => (field.group ?? "") === ""), [activeFields]);
   const modelFields = useMemo(() => ungroupedFields.filter((field) => !reviewFieldKeys.has(field.key)), [ungroupedFields]);
+  const modelPrimaryFields = useMemo(() => modelFields.filter((field) => modelPrimaryFieldKeys.has(field.key)), [modelFields]);
+  const modelAdvancedFields = useMemo(() => modelFields.filter((field) => !modelPrimaryFieldKeys.has(field.key)), [modelFields]);
   const reviewFields = useMemo(() => ungroupedFields.filter((field) => reviewFieldKeys.has(field.key)), [ungroupedFields]);
+  const reviewAutoEnabled = draftValues.consolidate_auto === true;
+  const reviewPrimaryFields = useMemo(() => reviewFields.filter((field) => field.key === "consolidate_auto" || (field.key === "consolidate_hour" && reviewAutoEnabled)), [reviewAutoEnabled, reviewFields]);
+  const reviewAdvancedFields = useMemo(() => reviewFields.filter((field) => field.key === "consolidate_model"), [reviewFields]);
   const promptFields = useMemo(() => activeFields.filter((field) => field.group === "prompt"), [activeFields]);
   const ttsFields = useMemo(() => activeFields.filter((field) => field.group === "tts"), [activeFields]);
   const asrFields = useMemo(() => activeFields.filter((field) => field.group === "asr"), [activeFields]);
-  const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => ["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"].includes(field.key)), [ttsFields]);
-  const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"].includes(field.key)), [ttsFields]);
+  const ttsModeFields = useMemo(() => ttsFields.filter((field) => field.key === "tts_mode"), [ttsFields]);
+  const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => field.key !== "tts_mode" && ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
+  const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
   const changedKeys = useMemo(() => Array.from(new Set([
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
     ...pendingResets,
   ])), [activeFields, draftValues, pendingResets, runtime]);
   useNavigationGuard(changedKeys.length > 0, "设置页有尚未保存的修改，确定放弃并离开吗？");
-  const values = runtime?.values ?? {};
-  const consolidationAuto = typeof values.consolidate_auto === "boolean" ? values.consolidate_auto : undefined;
-  const consolidationHour = typeof values.consolidate_hour === "number" ? values.consolidate_hour : undefined;
-  const consolidationMode = consolidationAuto === undefined ? "后端配置" : consolidationAuto ? "自动整理" : "手动触发";
-  const consolidationSchedule = consolidationAuto === undefined ? "后端配置" : consolidationAuto ? `${String(consolidationHour ?? 4).padStart(2, "0")}:00` : "按需触发";
-  const consolidationModel = typeof values.consolidate_model === "string" && values.consolidate_model ? values.consolidate_model : runtime?.model ?? "—";
   const apiBase = apiBaseLabel();
   const connectionLabel = health?.status === "ok" ? "已连接" : health ? health.status : "未知";
   const thinkingDefault = runtime ? runtime.thinking_default ? "开启" : "关闭" : "—";
@@ -529,12 +528,12 @@ export function SettingsPage() {
     <main className="settings-content settings-content-refined">
       <header className="settings-heading settings-heading-refined">
         <div><div className="eyebrow">{t("settings.eyebrow")}</div><h1>{t("settings.title")}</h1><p>{t("settings.description")}</p></div>
-        <div className="settings-header-status">
-          <div className={`settings-connection-chip ${health?.status === "ok" ? "online" : ""}`}><span className={`status-dot ${health?.status === "ok" ? "online" : ""}`} /><div><strong>{health?.status === "ok" ? t("settings.service.ok") : t("settings.service.unknown")}</strong><span>{health?.provider && health?.model ? `${health.provider} · ${health.model}` : apiBase}</span></div></div>
-          <div className={`settings-knowledge-chip ${runtime?.kb_enabled ? "enabled" : ""}`} title={runtime?.kb_enabled ? t("settings.kb.enabledTitle") : t("settings.kb.disabledTitle")}>
-            <BookOpen size={15} />
-            <div><strong>{loading ? t("settings.kb.checking") : runtime?.kb_enabled ? t("settings.kb.enabled") : t("settings.kb.disabled")}</strong><span>{runtime?.kb_enabled ? t("settings.kb.enabledHint") : t("settings.kb.disabledHint")}</span></div>
-          </div>
+        <div className="settings-heading-meta" aria-label="运行状态">
+          <span className={`status-dot ${health?.status === "ok" ? "online" : ""}`} />
+          <span>{health?.status === "ok" ? t("settings.service.ok") : t("settings.service.unknown")}</span>
+          <span aria-hidden="true">·</span>
+          <BookOpen size={13} />
+          <span title={runtime?.kb_enabled ? t("settings.kb.enabledTitle") : t("settings.kb.disabledTitle")}>{loading ? t("settings.kb.checking") : runtime?.kb_enabled ? t("settings.kb.enabled") : t("settings.kb.disabled")}</span>
         </div>
       </header>
       {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />{t("settings.retry")}</button></div>}
@@ -546,23 +545,90 @@ export function SettingsPage() {
         </aside>
 
         <div className="settings-section-content">
-          {activeSection === "general" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">GENERAL</span><h2>{t("settings.section.general.label")}</h2><p>{t("settings.general.description")}</p></div><SlidersHorizontal size={17} /></div><div className="settings-toggle-list"><Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} /><Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} /><Toggle label={t("settings.general.thinking")} description={t("settings.general.thinkingDescription")} checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} /><Toggle label={t("settings.general.tools")} description={t("settings.general.toolsDescription")} checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} /><Toggle label={t("settings.general.usage")} description={t("settings.general.usageDescription")} checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} /></div><div className="settings-card-actions"><span>{t("settings.general.saved")}</span><button className="ghost-button" onClick={() => { setPreferences(defaultPreferences); writePreferences(defaultPreferences); }}>{t("settings.general.reset")}</button></div></section>}
+          {activeSection === "general" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">GENERAL</span><h2>聊天与个性化</h2><p>常用交互偏好保存在当前浏览器。</p></div><SlidersHorizontal size={17} /></div>
+            <div className="settings-toggle-list settings-compact-section">
+              <Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} />
+              <Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} />
+            </div>
+            <details className="tts-advanced-settings settings-disclosure">
+              <summary><span><strong>界面信息</strong><small>思考、工具活动和 token 用量</small></span><ChevronRight size={14} /></summary>
+              <div className="settings-toggle-list">
+                <Toggle label={t("settings.general.thinking")} description={t("settings.general.thinkingDescription")} checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} />
+                <Toggle label={t("settings.general.tools")} description={t("settings.general.toolsDescription")} checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} />
+                <Toggle label={t("settings.general.usage")} description={t("settings.general.usageDescription")} checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} />
+              </div>
+            </details>
+            <details className="tts-advanced-settings settings-disclosure">
+              <summary><span><strong>助手称呼与工作方式</strong><small>需要时再设定长期遵循的回答规则</small></span><ChevronRight size={14} /></summary>
+              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}
+              <div className="settings-card-actions settings-disclosure-actions"><span>事实、偏好和计划请交给长期记忆。</span><button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 Prompt"}</button></div>
+            </details>
+            <div className="settings-card-actions"><span>{t("settings.general.saved")}</span><button className="ghost-button" onClick={() => { setPreferences(defaultPreferences); writePreferences(defaultPreferences); }}>{t("settings.general.reset")}</button></div>
+          </section>}
 
-          {activeSection === "assistant" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ASSISTANT</span><h2>助手人格</h2><p>固定称呼和工作方式会加入每次模型请求，但不会被每日整理修改。</p></div><button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看完整 Prompt"}</button></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}<div className="prompt-boundary-note">固定指令适合约束回答方式；姓名、偏好和计划等事实应交给长期记忆。</div></section>}
+          {activeSection === "model" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>选择日常对话模型和思考方式。</p></div><Activity size={17} /></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? <>
+              {modelPrimaryFields.length > 0 && renderRuntimeFields(modelPrimaryFields)}
+              {modelAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>回答与工具限制</strong><small>输出上限、标题模型和最大工具次数</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(modelAdvancedFields)}</details>}
+            </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
+          </section>}
 
-          {activeSection === "model" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>控制日常对话模型、思考方式、输出长度和工具轮次。</p></div><Activity size={17} /></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? renderRuntimeFields(modelFields) : <div className="settings-empty">当前后端没有提供模型配置。</div>}</section>}
+          {activeSection === "review" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>决定是否自动整理，以及每天何时运行。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>每日回顾<ChevronRight size={13} /></Link></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? <>
+              {renderRuntimeFields(reviewPrimaryFields)}
+              {reviewAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>整理模型</strong><small>默认沿用日常聊天模型</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(reviewAdvancedFields)}</details>}
+            </> : <div className="settings-empty">当前后端没有提供整理配置。</div>}
+            <div className="settings-card-callout"><Clock3 size={14} /><span>关闭自动整理后，仍可在每日回顾页按需整理。</span></div>
+          </section>}
 
-          {activeSection === "tools" && <section className="settings-card settings-panel-card tool-catalog-card"><div className="settings-card-heading"><div><span className="card-kicker">TOOL CATALOG</span><h2>工具目录</h2><p>查看模型当前知道的全部工具、用途与输入约定。未启用的能力也会保留在目录中。</p></div><Wrench size={17} /></div><ToolCatalog /></section>}
+          {activeSection === "voice" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>先选择是否朗读；启用后再调整声音。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div>{ttsMode !== "off" && <button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button>}</div></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? <>
+              {renderRuntimeFields(ttsModeFields)}
+              {ttsMode === "off" ? <div className="settings-card-callout"><Headphones size={14} /><span>语音已关闭。选择手动或自动朗读后，可继续设置模型和音色。</span></div> : <>
+                <div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
+                {renderRuntimeFields(ttsPrimaryFields)}
+                {ttsAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>合成与播放选项</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(ttsAdvancedFields)}</details>}
+              </>}
+            </> : <div className="settings-empty">当前后端没有提供语音配置。</div>}
+            {(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}
+            <details className="tts-advanced-settings settings-disclosure settings-voice-input-disclosure">
+              <summary><span><strong>语音输入</strong><small>{asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"}</small></span><ChevronRight size={14} /></summary>
+              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <>
+                <div className="tts-model-overview"><div><span>本地缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
+                {renderRuntimeFields(asrFields)}
+              </> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}
+              {(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}
+            </details>
+            <audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} />
+          </section>}
 
-          {activeSection === "review" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>设置每日整理的触发方式、时间和专用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>打开每日回顾<ChevronRight size={13} /></Link></div><div className="settings-summary-strip"><div><span>整理方式</span><strong>{consolidationMode}</strong></div><div><span>整理时间</span><strong>{consolidationSchedule}</strong></div><div><span>整理模型</span><strong>{consolidationModel}</strong></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? renderRuntimeFields(reviewFields) : <div className="settings-empty">当前后端没有提供整理配置。</div>}<div className="settings-card-callout"><Clock3 size={14} /><span>自动整理关闭时仍可在每日回顾页手动触发，不会影响历史摘要和记忆版本。</span></div></section>}
-
-          {activeSection === "voice" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>选择本地模型及其匹配音色，并调整表达风格。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div><button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || ttsMode === "off" || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听当前设置"}</button></div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? <><div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div><div className="tts-settings-group"><div className="tts-settings-group-heading"><strong>声音与表达</strong><span>切换模型后，音色列表会自动匹配</span></div>{renderRuntimeFields(ttsPrimaryFields)}</div>{ttsAdvancedFields.length > 0 && <details className="tts-advanced-settings"><summary><span><strong>合成与播放选项</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(ttsAdvancedFields)}</details>}</> : <div className="settings-empty">当前后端没有提供语音配置。</div>}{(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}<audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} /></section>}
-
-          {activeSection === "voice" && <section className="settings-card settings-panel-card asr-settings-card"><div className="settings-card-heading"><div><span className="card-kicker">VOICE INPUT</span><h2>语音输入与识别</h2><p>模型、语言提示和输出上限保存后会在下一次录音时生效。</p></div><div className={`tts-status-badge ${asrStatusLoading ? "unknown" : !asrStatus?.reachable ? "offline" : asrStatus.loaded ? "online" : "warning"}`}><span className="tts-status-dot" />{asrStatusLoading ? "正在检查" : !asrStatus?.reachable ? "服务离线" : asrStatus.loaded ? "模型已加载" : "首次使用时加载"}</div></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <><div className="tts-model-overview"><div><span>识别模型缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div><div className="tts-settings-group"><div className="tts-settings-group-heading"><strong>识别性能</strong><span>固定语言和较小模型可缩短等待</span></div>{renderRuntimeFields(asrFields)}</div><div className="settings-card-callout"><Activity size={14} /><span>追求速度可下载并选择 Qwen3-ASR-0.6B-8bit；当前 1.7B 模型通常有更好的识别质量。</span></div></> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}{(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}</section>}
-
-          {activeSection === "advanced" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ADVANCED</span><h2>高级与调试</h2><p>仅在排查模型请求时开启。请求快照可能包含完整对话。</p></div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={14} className={debugRequestsLoading ? "spin" : ""} /></button></div>{debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}<div className="debug-retention-note"><Bug size={13} /><span>只在后端内存中保留最近 {debugRequests?.capacity ?? 20} 次请求，服务重启后自动清空。</span></div><div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => setClearDebugPending(true)}><Trash2 size={12} />清空</button>}</div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新的模型请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div></section>}
-
-          {activeSection === "system" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">SYSTEM & DATA</span><h2>系统与数据</h2><p>查看连接状态、运行模型，并手动创建数据备份。</p></div><Settings2 size={17} /></div><div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="连接状态" value={connectionLabel} tone={health?.status === "ok" ? "value-success" : ""} /><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="模型" value={runtime?.model ?? "—"} /><SettingValue label="知识库（只读）" value={runtime ? runtime.kb_enabled ? "已挂载" : "未启用" : "—"} tone={runtime?.kb_enabled ? "value-success" : ""} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div><div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆文件的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "立即备份"}</button></div>{backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}{runtime?.env_only?.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>以下配置修改后需要重启后端</strong></div><div className="settings-env-only-list">{runtime.env_only.map((key) => <code key={key}>{key}</code>)}</div></div> : null}</section>}
+          {activeSection === "system" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">SYSTEM & DATA</span><h2>系统与数据</h2><p>日常只需关注连接和备份；技术信息按需展开。</p></div><Settings2 size={17} /></div>
+            <div className="settings-summary-strip"><div><span>连接</span><strong className={health?.status === "ok" ? "value-success" : ""}>{connectionLabel}</strong></div><div><span>当前模型</span><strong>{runtime?.model ?? "—"}</strong></div><div><span>知识库</span><strong>{runtime ? runtime.kb_enabled ? "已挂载" : "未启用" : "—"}</strong></div></div>
+            <div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "创建备份"}</button></div>
+            {backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}
+            <details className="tts-advanced-settings settings-disclosure">
+              <summary><span><strong>运行与环境信息</strong><small>服务地址、Provider 和环境变量配置</small></span><ChevronRight size={14} /></summary>
+              <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div>
+              {runtime?.env_only?.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{runtime.env_only.map((key) => <code key={key}>{key}</code>)}</div></div> : null}
+            </details>
+            <details className="tts-advanced-settings settings-disclosure settings-developer-disclosure">
+              <summary><span><strong>开发者选项</strong><small>工具定义与可能包含对话原文的请求调试</small></span><ChevronRight size={14} /></summary>
+              <div className="settings-developer-stack">
+                <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>工具目录</strong><small>查看模型可用能力和参数约定</small></span><ChevronRight size={14} /></summary><div className="tool-catalog-card"><ToolCatalog /></div></details>
+                <details className="tts-advanced-settings settings-disclosure settings-danger-zone">
+                  <summary><span><strong>请求调试</strong><small>仅排查问题时开启；快照可能包含完整对话</small></span><ChevronRight size={14} /></summary>
+                  {debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}
+                  <div className="debug-retention-note"><Bug size={13} /><span>仅在后端内存保留最近 {debugRequests?.capacity ?? 20} 次请求，重启后自动清空。</span></div>
+                  <div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div><div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={13} className={debugRequestsLoading ? "spin" : ""} /></button>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => setClearDebugPending(true)}><Trash2 size={12} />清空</button>}</div></div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div>
+                </details>
+              </div>
+            </details>
+          </section>}
         </div>
       </div>
 

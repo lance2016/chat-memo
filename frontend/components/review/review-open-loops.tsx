@@ -48,7 +48,7 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
   const fresh = open.filter((loop) => loop.opened_on === day);
   const lingering = open.filter((loop) => loop.opened_on < day);
   const settled = loops.filter((loop) => loop.status !== "open" && loop.closed_on === day);
-  const empty = open.length === 0 && settled.length === 0;
+  const empty = open.length === 0;
 
   const row = (loop: OpenLoop, age?: number) => <li key={loop.id} className={age !== undefined && age >= 7 ? "loop-row loop-stale" : "loop-row"}>
     <button className="loop-check" onClick={() => void run(loop.id, () => actions.onClose(loop))} disabled={busy !== null} aria-label={t("review.followUps.markHandled")}><Check size={13} /></button>
@@ -70,19 +70,13 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
         <h2>{t("review.followUps.title")}</h2>
         <p className="card-description">{t("review.followUps.description")}</p>
       </div>
-      <span className="count-pill">{error ? "—" : open.length}</span>
+      <div className="review-card-actions">
+        <span className="count-pill">{error ? "—" : open.length}</span>
+        {!error && !empty && <button className="icon-button loop-add-button" type="button" aria-label={t("review.followUps.addOne")} title={t("review.followUps.addOne")} onClick={() => setComposing((value) => !value)}>{composing ? <X size={13} /> : <Plus size={13} />}</button>}
+      </div>
     </div>
 
     {error ? <div className="card-state card-state-error">{error}</div> : <>
-      {settled.length > 0 && <div className="loop-group loop-group-settled">
-        <h3>{t("review.followUps.settledToday")}</h3>
-        <ul>{settled.map((loop) => <li key={loop.id} className="loop-row loop-done">
-          <span className="loop-check loop-check-done" aria-hidden="true"><Check size={13} /></span>
-          <span className="loop-text"><s>{loop.text}</s>{loop.closed_note && <em>{loop.closed_note}</em>}</span>
-          <button className="loop-undo" onClick={() => void run(loop.id, () => actions.onReopen(loop))} disabled={busy !== null} aria-label={t("review.followUps.restore")}><Undo2 size={13} /></button>
-        </li>)}</ul>
-      </div>}
-
       {fresh.length > 0 && <div className="loop-group">
         <h3>{t("review.followUps.foundToday")}</h3>
         <ul>{fresh.map((loop) => row(loop))}</ul>
@@ -99,7 +93,16 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
         <button className="ghost-button loop-compose-toggle" type="button" onClick={() => setComposing((value) => !value)}>{composing ? <X size={12} /> : <Plus size={12} />}{composing ? t("review.followUps.collapse") : t("review.followUps.addOne")}</button>
       </div>}
 
-      {(!empty || composing) && composer}
+      {settled.length > 0 && <details className="loop-group loop-group-settled">
+        <summary><h3>{t("review.followUps.settledToday")}</h3><span>{settled.length}</span></summary>
+        <ul>{settled.map((loop) => <li key={loop.id} className="loop-row loop-done">
+          <span className="loop-check loop-check-done" aria-hidden="true"><Check size={13} /></span>
+          <span className="loop-text"><s>{loop.text}</s>{loop.closed_note && <em>{loop.closed_note}</em>}</span>
+          <button className="loop-undo" onClick={() => void run(loop.id, () => actions.onReopen(loop))} disabled={busy !== null} aria-label={t("review.followUps.restore")}><Undo2 size={13} /></button>
+        </li>)}</ul>
+      </details>}
+
+      {composing && composer}
     </>}
   </section>;
 }
