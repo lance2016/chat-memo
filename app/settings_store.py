@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import AppSetting
+from app.notify.channels import KNOWN_CHANNELS
 
 
 class SettingError(ValueError):
@@ -74,6 +75,29 @@ WRITABLE: tuple[Field, ...] = (
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
     Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
+    Field("notify_enabled", "主动通知", "bool", group="notify"),
+    Field("notify_channels", "启用的通道", "str", allow_empty=True, maximum=120,
+          group="notify"),
+    Field("notify_briefing", "每日简报", "bool", group="notify"),
+    Field("notify_briefing_hour", "简报时间（点）", "int", minimum=0, maximum=23,
+          group="notify"),
+    Field("notify_all_day_hour", "全天事项提醒时间（点）", "int", minimum=0, maximum=23,
+          group="notify"),
+    Field("notify_default_lead_minutes", "默认提前量（分钟）", "int", minimum=0,
+          maximum=10080, group="notify"),
+    Field("notify_catchup_hours", "补发窗口（小时）", "int", minimum=1, maximum=168,
+          group="notify"),
+    Field("notify_smart_copy", "让模型写提醒文案", "bool", group="notify"),
+    Field("notify_public_base_url", "通知跳转地址", "str", allow_empty=True,
+          maximum=200, group="notify"),
+    Field("bark_server", "Bark 服务器", "str", allow_empty=True, maximum=200,
+          group="notify"),
+    Field("bark_key", "Bark 设备 key", "str", allow_empty=True, maximum=120,
+          group="notify"),
+    Field("bark_sound", "Bark 提示音", "str", allow_empty=True, maximum=60,
+          group="notify"),
+    Field("bark_icon", "Bark 图标地址", "str", allow_empty=True, maximum=200,
+          group="notify"),
     Field("tts_mode", "语音播放", "enum", choices=("off", "manual", "auto"),
           group="tts"),
     Field("tts_model", "语音模型", "str", group="tts"),
@@ -180,6 +204,18 @@ def validate(key: str, value: Any, settings: Settings) -> Any:
             # 而且设置页自己也会显示错误状态 —— 直接拦在这里。
             raise SettingError(f"未配置 {value.upper()}_API_KEY，无法切换到该 provider")
         return value
+
+    if key == "notify_channels":
+        # 打错一个通道名就等于「这个通道静默不工作」，而通知的失败是看不见的 ——
+        # 没收到提醒和没有提醒长得一模一样。拦在写入时。
+        unknown = {
+            name.strip() for name in value.split(",") if name.strip()
+        } - set(KNOWN_CHANNELS)
+        if unknown:
+            raise SettingError(
+                f"未知的通知通道：{'、'.join(sorted(unknown))}。"
+                f"目前支持 {'、'.join(KNOWN_CHANNELS)}"
+            )
 
     if not value and not field.allow_empty:
         raise SettingError(f"{field.label}不能为空")

@@ -504,7 +504,12 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 executors: list[ToolExecutor] = [
                     MemoryToolExecutor(store),
                     TimelineToolExecutor(
-                        TimelineStore(session, actor="chat", conversation_id=conversation.id)
+                        TimelineStore(
+                            session,
+                            actor="chat",
+                            conversation_id=conversation.id,
+                            settings=settings,
+                        )
                     ),
                 ]
                 if settings.vault_path:

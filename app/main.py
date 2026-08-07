@@ -13,9 +13,10 @@ from app.asr.router import router as asr_router
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
 from app.jobs.router import router as jobs_router
-from app.jobs.scheduler import run_daily_consolidation
+from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
 from app.debug.router import router as debug_router
 from app.memory.router import router as memory_router
+from app.notify.router import router as notify_router
 from app.review.router import router as review_router
 from app.timeline.router import router as timeline_router
 from app.tool_catalog import router as tool_catalog_router
@@ -45,6 +46,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(factory())
         for enabled, factory in (
             (settings.consolidate_auto, run_daily_consolidation),
+            # 循环内部每分钟重新读一次设置，所以这里恒真 —— 在设置页打开通知
+            # 应该下一分钟就生效，而不是要重启进程。空转的代价只是一个 sleep。
+            (True, run_notification_ticker),
             (settings.tts_warmup, _warm_tts),
         )
         if enabled
@@ -95,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(memory_router)
     app.include_router(review_router)
     app.include_router(timeline_router)
+    app.include_router(notify_router)
     app.include_router(tool_catalog_router)
     app.include_router(jobs_router)
     app.include_router(tts_router)

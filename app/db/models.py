@@ -290,11 +290,62 @@ class TimelineItem(Base):
     actor: Mapped[str] = mapped_column(String(16), default="manual")
     source_conversation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ---- 主动提醒 ----
+    # 这一条要不要提醒。关掉但保留事项本身 —— 删掉才是「这件事不存在了」。
+    notify: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 提前多少分钟。NULL = 按 kind 取默认值（app/notify/schedule.py）。
+    lead_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 派生自 starts_at 和 lead_minutes，但**存下来**才能让 ticker 一条 SQL 扫完待发提醒，
+    # 而不是把整张表拉回 Python 里算。NULL = 不提醒（已完成、已取消或 notify 关掉了）。
+    remind_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # 用户在通知里点了「稍后」。到这个时间之前不再提醒。
+    snoozed_until: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Notification(Base):
+    """一条已生成的主动通知，以及它的送达结果。
+
+    幂等**靠 dedupe_key 的唯一约束**，不靠 item 上的 notified_at。ticker 是补跑式的
+    （查「该发而没发的」而不是精确定时触发），所以进程重启、笔记本睡醒之后一定会
+    重新扫到同一批；抢占这个 key 是唯一能防重的地方。
+
+    保留失败记录而不是删掉：通道挂了要能从这张表看出来是「没生成」还是「生成了没送出去」。
+    timeline_item_id 不设外键 —— 事项删了，这条送达记录本身还是排障证据。
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # item:<id>:<触发时刻> / briefing:<日期> / test:<时间戳>
+    dedupe_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(24))  # item|briefing|test
+    title: Mapped[str] = mapped_column(String(240))
+    body: Mapped[str] = mapped_column(Text, default="")
+    url: Mapped[str] = mapped_column(String(500), default="")
+    timeline_item_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 实际送达的通道，逗号分隔。空 = 一个都没成功。
+    channels: Mapped[str] = mapped_column(String(120), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    # 送达尝试次数。通道临时抽风时，下一次 tick 要能重试 —— 只认 dedupe_key
+    # 会让一条提醒因为对面挂了一分钟就永久丢失。到上限还没成功才放弃。
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    delivered_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 

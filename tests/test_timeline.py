@@ -89,6 +89,149 @@ async def test_timeline_crud_api(session: AsyncSession) -> None:
         assert (await client.get("/api/timeline")).json() == []
 
 
+# --- 逾期不能静默消失 ---------------------------------------------------------
+
+
+async def test_overdue_items_surface_in_todays_window(session: AsyncSession) -> None:
+    """「今天」视图曾经严格按 [今天00:00, 明天00:00) 查。
+
+    结果昨天没勾掉的事从今天和最近视图里一起消失，只有翻月历才找得回来 ——
+    加上通知漏发，这件事就是真的丢了。
+    """
+    store = TimelineStore(session, actor="manual")
+    yesterday = dt.datetime(2026, 8, 6, 10, 0, tzinfo=UTC8)
+    today_start = dt.datetime(2026, 8, 7, 0, 0, tzinfo=UTC8)
+    tomorrow = dt.datetime(2026, 8, 8, 0, 0, tzinfo=UTC8)
+
+    await store.create({"title": "昨天没做完", "starts_at": yesterday})
+    await store.create({"title": "昨天做完了", "starts_at": yesterday, "status": "completed"})
+    await store.create({"title": "今天的事", "starts_at": dt.datetime(2026, 8, 7, 15, 0, tzinfo=UTC8)})
+    await session.commit()
+
+    strict = await store.list(start=today_start, end=tomorrow)
+    assert [item.title for item in strict] == ["今天的事"]
+
+    with_overdue = await store.list(start=today_start, end=tomorrow, include_overdue=True)
+    # 逾期的排在前面（按开始时间），已完成的不算逾期。
+    assert [item.title for item in with_overdue] == ["昨天没做完", "今天的事"]
+
+
+# --- 每年重复必须真的重复 -----------------------------------------------------
+
+
+async def test_yearly_item_appears_in_later_years(session: AsyncSession) -> None:
+    """recurrence=yearly 过去只用来在卡片上印「每年重复」四个字。
+
+    查询是纯 starts_at 范围过滤，所以 2026 年记的生日在 2027 年的月历里
+    什么都不显示。
+    """
+    store = TimelineStore(session, actor="manual")
+    await store.create({
+        "title": "妈妈生日",
+        "kind": "birthday",
+        "starts_at": dt.datetime(2026, 8, 20, 0, 0, tzinfo=UTC8),
+        "all_day": True,
+        "recurrence": "yearly",
+    })
+    await session.commit()
+
+    for year in (2026, 2027, 2030):
+        window = await store.list(
+            start=dt.datetime(year, 8, 1, tzinfo=UTC8),
+            end=dt.datetime(year, 9, 1, tzinfo=UTC8),
+        )
+        assert [item.title for item in window] == ["妈妈生日"], f"{year} 年没查到"
+        assert window[0].starts_at.year == year
+
+    # 不重复的事项不该被展开到别的年份。
+    await store.create({
+        "title": "一次性会议",
+        "starts_at": dt.datetime(2026, 8, 21, 10, 0, tzinfo=UTC8),
+    })
+    await session.commit()
+    next_year = await store.list(
+        start=dt.datetime(2027, 8, 1, tzinfo=UTC8),
+        end=dt.datetime(2027, 9, 1, tzinfo=UTC8),
+    )
+    assert [item.title for item in next_year] == ["妈妈生日"]
+
+
+async def test_yearly_projection_does_not_rewrite_the_stored_row(session: AsyncSession) -> None:
+    """展开出来的是副本。改原对象会在 flush 时把生日永久挪到当年。"""
+    store = TimelineStore(session, actor="manual")
+    item = await store.create({
+        "title": "纪念日",
+        "starts_at": dt.datetime(2026, 3, 5, 0, 0, tzinfo=UTC8),
+        "all_day": True,
+        "recurrence": "yearly",
+    })
+    await session.commit()
+    item_id = item.id
+
+    projected = await store.list(
+        start=dt.datetime(2029, 1, 1, tzinfo=UTC8),
+        end=dt.datetime(2030, 1, 1, tzinfo=UTC8),
+    )
+    assert [entry.starts_at.year for entry in projected] == [2029]
+    await session.commit()
+
+    # 库里那一行还停在原来的年份。（SQLite 会抹掉时区，所以只比日期部分。）
+    await session.refresh(item)
+    stored = await store.get(item_id)
+    assert (stored.starts_at.year, stored.starts_at.month, stored.starts_at.day) == (2026, 3, 5)
+
+
+async def test_leap_day_falls_back_to_february_28(session: AsyncSession) -> None:
+    store = TimelineStore(session, actor="manual")
+    await store.create({
+        "title": "闰日纪念",
+        "starts_at": dt.datetime(2028, 2, 29, 0, 0, tzinfo=UTC8),
+        "all_day": True,
+        "recurrence": "yearly",
+    })
+    await session.commit()
+
+    window = await store.list(
+        start=dt.datetime(2027, 2, 1, tzinfo=UTC8),
+        end=dt.datetime(2027, 3, 1, tzinfo=UTC8),
+    )
+    assert [item.starts_at.day for item in window] == [28]
+
+
+async def test_snooze_endpoint(session: AsyncSession) -> None:
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post("/api/timeline", json={
+            "title": "体检", "kind": "event", "starts_at": "2026-08-20T09:00:00+08:00",
+        })
+        item_id = created.json()["id"]
+        assert created.json()["remind_at"] is not None
+
+        snoozed = await client.post(f"/api/timeline/{item_id}/snooze", json={"minutes": 30})
+        assert snoozed.status_code == 200
+        assert snoozed.json()["snoozed_until"] is not None
+
+        # 关掉提醒后 remind_at 必须清空 —— 留着旧值 ticker 还会扫到。
+        muted = await client.patch(f"/api/timeline/{item_id}", json={"notify": False})
+        assert muted.json()["remind_at"] is None
+
+
+async def test_notify_status_and_test_endpoints(session: AsyncSession) -> None:
+    app = create_app()
+    app.dependency_overrides[get_session] = lambda: session
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        status_body = (await client.get("/api/notify/status")).json()
+        assert [c["name"] for c in status_body["channels"]] == ["bark"]
+        # 默认没配 Bark key，必须如实报「没配好」而不是一个笼统的 ok。
+        assert status_body["ready"] is False
+        assert status_body["channels"][0]["configured"] is False
+
+        result = (await client.post("/api/notify/test")).json()
+        assert result["delivered"] is False
+        assert "没有配置好的通知通道" in result["error"]
+
+
 async def test_timeline_rejects_naive_datetime(session: AsyncSession) -> None:
     app = create_app()
     app.dependency_overrides[get_session] = lambda: session

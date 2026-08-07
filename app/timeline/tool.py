@@ -35,6 +35,12 @@ ITEM_PROPERTIES: dict[str, Any] = {
     "timezone": {"type": "string", "description": "IANA 时区，如 Asia/Shanghai"},
     "location": {"type": "string"},
     "recurrence": {"type": "string", "enum": ["none", "yearly"]},
+    "notify": {"type": "boolean", "description": "是否到点推送提醒，默认 true"},
+    "lead_minutes": {
+        "type": "integer",
+        "description": "提前多少分钟提醒。不填按类型取默认（会议 15 分钟、出行和生日提前一天、"
+        "截止日期提前三天）。主人说「提前一小时叫我」这类要求时填这里",
+    },
 }
 
 

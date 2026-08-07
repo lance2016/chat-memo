@@ -80,6 +80,40 @@ class Settings(BaseSettings):
     # 留空 = 不启用知识库工具。基础设施配置，只能改 .env —— 挂载点本来就要改 compose 才能变。
     vault_path: str = ""
 
+    # ---- 主动通知 ----
+    # 默认关。开之前得先配好通道，否则 ticker 每分钟空转还占一次查询。
+    notify_enabled: bool = False
+    # 启用的通道，逗号分隔。目前只有 bark；加了 Web Push 之后写 "bark,webpush"。
+    notify_channels: str = "bark"
+    # 每天早上一条：今天有什么、什么逾期了、什么待确认挂太久了。
+    notify_briefing: bool = True
+    notify_briefing_hour: int = 8
+    # 全天事项按当天几点提醒。全天事项的 starts_at 是当地 00:00，
+    # 直接减提前量会在半夜响 —— 见 app/notify/schedule.py。
+    notify_all_day_hour: int = 9
+    # kind 没有默认提前量时用这个。
+    notify_default_lead_minutes: int = 15
+    # 补跑窗口：开始时间已经过去这么久的事项不再单独推送，交给每日简报兜底。
+    # 没有这道闸，离线一周后一开机会被一周的提醒糊满屏幕。
+    notify_catchup_hours: int = 6
+    # 用便宜模型把提醒写成人话（走标题那条链路）。关掉则用模板。
+    notify_smart_copy: bool = True
+    # 通知点开后跳转的地址前缀，例如 http://192.168.1.10:13000。
+    # 留空则通知不带链接 —— 手机点开一个 localhost 只会失败。
+    notify_public_base_url: str = ""
+    # 通知链路上每一次外部调用的上限：推送通道的 POST，以及生成文案的模型调用。
+    # 文案那次尤其需要 —— ticker 是单条循环，一次卡住的调用会把之后所有提醒拖死。
+    notify_timeout: int = 10
+
+    # Bark（iOS 自建推送）。服务端 POST 一个 URL 就完事，手机不需要开着浏览器。
+    bark_server: str = "https://api.day.app"
+    # 放在可写设置里而不是 ENV_ONLY：它不是能造成损失的密钥（泄露的后果是别人能给你
+    # 发通知），而配置它的场景恰恰是「在手机上装好 App，回到设置页粘贴一次」。
+    bark_key: str = ""
+    bark_sound: str = ""
+    # 通知左侧的图标 URL，必须是手机能访问到的地址。
+    bark_icon: str = ""
+
     # ---- 文字转语音（本地 mlx-audio，OpenAI 兼容接口）----
     # 地址算基础设施，只能改 .env。容器里要用 host.docker.internal 才能回到宿主机。
     tts_base_url: str = "http://127.0.0.1:8001"
