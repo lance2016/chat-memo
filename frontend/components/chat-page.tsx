@@ -3,22 +3,17 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { Archive, ArchiveRestore, ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, Trash2, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, archiveConversation, createConversation, deleteConversation, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, updateConversation } from "@/lib/api";
+import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
+import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, ConversationContext, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
-import { conversationsChangedEvent, notifyWorkspaceConversationsChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
+import { conversationsChangedEvent, notifyWorkspaceConversationsChanged, notifyWorkspaceSelectedConversationChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
 import { resetMediaElement } from "@/lib/media-playback";
-import { ConfirmDialog } from "@/components/confirm-dialog";
-import { InputDialog } from "@/components/input-dialog";
 import { VoiceInputButton } from "@/components/voice-input-button";
 import { useI18n } from "@/components/i18n-provider";
-import { SearchTrigger } from "@/components/global-search";
-import { LanguageControl } from "@/components/language-control";
-import { ThemeControl } from "@/components/theme-control";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -89,7 +84,6 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   const { locale, t } = useI18n();
   const recent = conversations.slice(0, 2);
   return <div className="memory-home-scroll">
-    <div className="home-chat-tools"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
     <div className="memory-home">
       <section className="memory-home-hero">
         <div className="memory-home-copy">
@@ -101,8 +95,8 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
 
       {backgroundResponseTitle && <button type="button" className="home-background-stream" onClick={onReturnToResponse}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: backgroundResponseTitle })}</span><ArrowRight size={13} /></button>}
       <form className="home-capture" onSubmit={onSubmit}>
-        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.preference"))}>{t("chat.home.prompt.preference")}</button><span className="home-capture-hint">{backgroundResponseTitle ? t("chat.backgroundHint") : t("chat.sendHint")}</span></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
+        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
@@ -194,11 +188,6 @@ export function ChatPage() {
   const [error, setError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
-  const [renaming, setRenaming] = useState(false);
-  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
-  const [renameDraft, setRenameDraft] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
-  const [deletingConversation, setDeletingConversation] = useState(false);
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
@@ -341,9 +330,11 @@ export function ChatPage() {
         }
         if (validUrlId) {
           updateSelectedId(validUrlId);
+          notifyWorkspaceSelectedConversationChanged(validUrlId);
           if (validUrlId !== fromUrl) router.replace(`/?conversation=${validUrlId}`);
         } else {
           updateSelectedId(null);
+          notifyWorkspaceSelectedConversationChanged(null);
           setTurns([]);
           if (Number.isFinite(fromUrl) && fromUrl > 0) router.replace("/");
         }
@@ -484,78 +475,8 @@ export function ChatPage() {
     setEditingTarget(null);
     setInput("");
     setConversationContext(null);
+    notifyWorkspaceSelectedConversationChanged(id);
     router.push(`/?conversation=${id}`);
-  };
-
-  const toggleArchived = async (conversation: Conversation, archived: boolean) => {
-    try {
-      const updated = await archiveConversation(conversation.id, archived);
-      if (archived) {
-        const remaining = conversations.filter((item) => item.id !== conversation.id);
-        setConversations(remaining);
-        if (selectedId === conversation.id) {
-          const next = remaining[0] ?? await createConversation();
-          if (!remaining[0]) setConversations([next]);
-          selectConversation(next.id);
-        }
-      } else {
-        setArchivedConversations((current) => current.filter((item) => item.id !== conversation.id));
-        setConversations((current) => [updated, ...current.filter((item) => item.id !== updated.id)]);
-        setShowArchived(false);
-      }
-      notifyWorkspaceConversationsChanged();
-    } catch (cause) {
-      setError(errorMessage(cause, archived ? "归档失败" : "恢复会话失败"));
-    }
-  };
-
-  const renameSelectedConversation = async () => {
-    if (!selected || renaming || sending) return;
-    setRenameDraft(selected.title);
-    setRenameDialogOpen(true);
-  };
-
-  const confirmRename = async () => {
-    if (!selected || renaming) return;
-    const nextTitle = renameDraft.trim();
-    if (!nextTitle || nextTitle === selected.title) { setRenameDialogOpen(false); return; }
-    setRenaming(true);
-    setError("");
-    try {
-      const updated = await updateConversation(selected.id, { title: nextTitle });
-      setConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setArchivedConversations((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setRenameDialogOpen(false);
-      notifyWorkspaceConversationsChanged();
-    } catch (cause) {
-      setError(errorMessage(cause, "无法修改会话标题"));
-    } finally {
-      setRenaming(false);
-    }
-  };
-
-  const removeConversation = async () => {
-    const conversation = deleteTarget;
-    if (!conversation || deletingConversation) return;
-    setDeletingConversation(true);
-    setError("");
-    try {
-      await deleteConversation(conversation.id);
-      const remaining = (showArchived ? archivedConversations : conversations).filter((item) => item.id !== conversation.id);
-      if (showArchived) setArchivedConversations(remaining);
-      else setConversations(remaining);
-      if (selectedId === conversation.id) {
-        const next = remaining[0] ?? await createConversation();
-        if (!remaining[0]) setConversations([next]);
-        selectConversation(next.id);
-      }
-      setDeleteTarget(null);
-      notifyWorkspaceConversationsChanged();
-    } catch (cause) {
-      setError(errorMessage(cause, "无法删除会话"));
-    } finally {
-      setDeletingConversation(false);
-    }
   };
 
   function resetLocalSpeech() {
@@ -715,6 +636,7 @@ export function ChatPage() {
       if (selectedIdRef.current === null) {
         skipNextMessageLoadRef.current = created.id;
         updateSelectedId(created.id);
+        notifyWorkspaceSelectedConversationChanged(created.id);
         setTurns([]);
         router.replace(`/?conversation=${created.id}`);
       }
@@ -936,15 +858,11 @@ export function ChatPage() {
       <main className="main-panel">
         {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} /> : <>
           <div className="chat-conversation-toolbar">
-            <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong>{sending && streamBelongsToSelection && <em className="chat-live-status"><i />{t("chat.responding")}</em>}</div>
-            <div className="chat-conversation-toolbar-right">
-              {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
-              <div className="chat-conversation-utilities"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
-              {selected && <div className="chat-conversation-actions">
-                <button type="button" className="icon-button" aria-label={t("chat.rename")} title={t("chat.rename")} onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
-                <button type="button" className="icon-button" aria-label={showArchived ? t("chat.restore") : t("chat.archive")} title={showArchived ? t("chat.restore") : t("chat.archive")} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
-                <button type="button" className="icon-button chat-delete-button" aria-label={t("chat.delete")} title={t("chat.delete")} onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
-              </div>}
+            <div className="chat-conversation-toolbar-inner">
+              <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong>{sending && streamBelongsToSelection && <em className="chat-live-status"><i />{t("chat.responding")}</em>}</div>
+              <div className="chat-conversation-toolbar-right">
+                {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
+              </div>
             </div>
           </div>
           <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
@@ -973,18 +891,6 @@ export function ChatPage() {
         </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
-      <ConfirmDialog
-        open={deleteTarget !== null}
-        title={t("chat.deleteTitle")}
-        description={t("chat.deleteDescription")}
-        subject={deleteTarget?.title}
-        warning={selectedId === deleteTarget?.id ? t("chat.deleteWarning") : undefined}
-        confirmLabel={t("chat.deleteConfirm")}
-        busy={deletingConversation}
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={() => void removeConversation()}
-      />
-      <InputDialog open={renameDialogOpen} title={t("chat.rename")} description={t("chat.renameDescription")} value={renameDraft} onChange={setRenameDraft} onCancel={() => setRenameDialogOpen(false)} onConfirm={() => void confirmRename()} busy={renaming} />
     </div>
   );
 }

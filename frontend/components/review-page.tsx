@@ -219,13 +219,9 @@ export function ReviewPage() {
   return <div className="review-shell">
     <main className="review-content">
       <header className="review-page-header">
-        <div className="review-title-block">
-          <div className="review-title-meta">
-            <span className="eyebrow">{t("review.eyebrow")}</span>
-            {dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}
-          </div>
-          <h1>{isToday ? t("review.title.today") : t("review.title.day")}</h1>
-          <p>{t("review.subtitle", { date: formatDayTitle(day, locale) })}</p>
+        <div className="review-day-context">
+          <div><strong>{formatDayTitle(day, locale)}</strong><span>{isToday ? t("review.today") : day.replaceAll("-", "/")}</span></div>
+          {dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}
         </div>
 
         <div className="review-toolbar" role="toolbar" aria-label={t("review.date.select")}>

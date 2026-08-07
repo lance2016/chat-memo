@@ -13,11 +13,21 @@
 
 ## 未来规划
 
-### 时间线（MVP 已完成，继续演进）
+### 时间线（第二版已完成：主动通知）
 
-第一版已经打通对话提取、结构化存储、CRUD API 和 `/timeline` 的今天/最近/月历视图。
-下一阶段以真实提取准确率为依据推进重复检测、提醒通知、ICS/外部日历同步；在此之前不自动
-向外部日历写入。完整设计与验收边界见 [timeline.md](timeline.md)。
+第一版打通了对话提取、结构化存储、CRUD API 和 `/timeline` 的今天/最近/月历视图。
+第二版（2026-08-07）加了到点推送到手机（Bark），并修掉两个让事项静默丢失的缺陷：
+逾期项从今天/最近视图消失、`recurrence=yearly` 从来没生效过。
+
+还没做的：Web Push 通道、通知点开后落进预置上下文的新对话、重复与冲突检测、
+时间线接入全局搜索、把当天事项注入 runtime_context、ICS 导入导出。
+仍然不自动向外部日历写入。完整设计与验收边界见 [timeline.md](timeline.md)。
+
+> **已修复：共享侧栏不能用 `useSearchParams()`**。侧栏每个页面都渲染，一旦在里面调它，
+> `/review`、`/timeline`、`/_not-found` 的静态预渲染会全部 bail，`next build` 直接失败
+> （`useSearchParams() should be wrapped in a suspense boundary`）。
+> `workspace-topbar.tsx` 现在改读 `window.location.search`（`currentConversationId()`），
+> 会话切换靠 `selectedConversationChangedEvent` 广播。**往侧栏里加东西时别再引入这个 hook。**
 
 来自 2026-08-06 的记忆架构评审。整体架构不用动，优化按性价比分三档。当时因为本地代码
 不是最新而搁置，**逐条核对现状后确认下面这些仍未实现**（核对时间：2026-08-06）。

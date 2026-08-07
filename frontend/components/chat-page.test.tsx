@@ -44,6 +44,7 @@ vi.mock("@/components/workspace-topbar", () => ({
   conversationsChangedEvent: "chat-memo:conversations-changed",
   MemoryMark: () => <span />,
   notifyWorkspaceConversationsChanged: vi.fn(),
+  notifyWorkspaceSelectedConversationChanged: vi.fn(),
   WorkspacePageFallback: ({ message }: { message: string }) => <div>{message}</div>,
 }));
 

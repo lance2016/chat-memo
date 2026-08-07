@@ -341,6 +341,13 @@ export interface TimelineItem {
   actor: "chat" | "manual";
   source_conversation_id: number | null;
   source_message_id: number | null;
+  /** 这一条要不要推送提醒。关掉但保留事项本身。 */
+  notify: boolean;
+  /** 提前多少分钟提醒。null = 按类型取默认。 */
+  lead_minutes: number | null;
+  /** 实际推送时刻。null = 这条不提醒。 */
+  remind_at: string | null;
+  snoozed_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -356,6 +363,40 @@ export interface TimelineInput {
   timezone?: string;
   location?: string;
   recurrence?: "none" | "yearly";
+  notify?: boolean;
+  lead_minutes?: number | null;
+}
+
+export interface NotifyChannelStatus {
+  name: string;
+  enabled: boolean;
+  configured: boolean;
+  reason: string;
+}
+
+export interface NotificationRecord {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  channels: string;
+  error: string;
+  attempts: number;
+  created_at: string;
+  delivered_at: string | null;
+}
+
+export interface NotifyStatus {
+  enabled: boolean;
+  ready: boolean;
+  channels: NotifyChannelStatus[];
+  recent: NotificationRecord[];
+}
+
+export interface NotifyTestResult {
+  delivered: boolean;
+  channels: string;
+  error: string;
 }
 
 export interface ConversationSummary {

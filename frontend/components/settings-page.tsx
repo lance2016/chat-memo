@@ -1,29 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Activity, BookOpen, Bug, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, HardDriveDownload, Headphones, RefreshCw, RotateCcw, Save, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
+import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
-import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
+import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
 
-type SettingsSectionKey = "general" | "model" | "review" | "voice" | "system";
+type SettingsSectionKey = "general" | "assistant" | "model" | "review" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
 
 const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
   { key: "general", icon: SlidersHorizontal },
-  { key: "model", icon: Activity },
+  { key: "assistant", icon: UserRound },
+  { key: "model", icon: BrainCircuit },
   { key: "review", icon: Clock3 },
+  { key: "notify", icon: BellRing },
   { key: "voice", icon: Headphones },
+  { key: "voiceInput", icon: Mic2 },
   { key: "system", icon: HardDriveDownload },
+  { key: "advanced", icon: Bug },
 ];
 
 const reviewFieldKeys = new Set(["consolidate_model", "consolidate_auto", "consolidate_hour"]);
 const modelPrimaryFieldKeys = new Set(["provider", "model", "deepseek_model", "effort", "deepseek_thinking"]);
 const ttsPrimaryFieldKeys = new Set(["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"]);
+// 「怎么送到手机」和「什么时候响」分两屏 —— 配 Bark 是一次性动作，调提前量是长期反复调的。
+const notifyChannelFieldKeys = new Set(["notify_enabled", "notify_channels", "bark_server", "bark_key", "bark_sound", "bark_icon", "notify_public_base_url"]);
 
 const fieldHelp: Record<string, string> = {
   owner_name: "助手在对话中对你的称呼",
@@ -93,6 +99,20 @@ function Toggle({ checked, onChange, label, description }: { checked: boolean; o
 
 function SettingValue({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
   return <div className="settings-value"><span>{label}</span><strong className={tone}>{value}</strong></div>;
+}
+
+type SettingsVisualGroupTone = "neutral" | "accent" | "violet" | "warm" | "success";
+
+function SettingsVisualGroup({ icon: Icon, title, description, tone = "neutral", action, children, className = "" }: { icon: LucideIcon; title: string; description: string; tone?: SettingsVisualGroupTone; action?: ReactNode; children: ReactNode; className?: string }) {
+  const headingId = useId();
+  return <section className={`settings-visual-group tone-${tone} ${className}`.trim()} aria-labelledby={headingId}>
+    <header className="settings-visual-group-heading">
+      <span className="settings-visual-group-icon" aria-hidden="true"><Icon size={15} /></span>
+      <div><h3 id={headingId}>{title}</h3><p>{description}</p></div>
+      {action && <div className="settings-visual-group-action">{action}</div>}
+    </header>
+    <div className="settings-visual-group-body">{children}</div>
+  </section>;
 }
 
 function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
@@ -187,6 +207,9 @@ export function SettingsPage() {
   const [asrStatus, setAsrStatus] = useState<AsrStatus | null>(null);
   const [asrStatusLoading, setAsrStatusLoading] = useState(false);
   const [asrStatusError, setAsrStatusError] = useState("");
+  const [notifyStatus, setNotifyStatus] = useState<NotifyStatus | null>(null);
+  const [notifyTesting, setNotifyTesting] = useState(false);
+  const [notifyMessage, setNotifyMessage] = useState("");
   const [ttsVoices, setTtsVoices] = useState<string[]>([]);
   const [ttsVoicesLoading, setTtsVoicesLoading] = useState(false);
   const ttsVoiceRequestRef = useRef(0);
@@ -238,6 +261,31 @@ export function SettingsPage() {
       setTtsStatusLoading(false);
     }
   }, []);
+
+  const refreshNotifyStatus = useCallback(async () => {
+    try {
+      setNotifyStatus(await getNotifyStatus());
+    } catch {
+      // 状态读不到不该挡住整个设置页；面板会显示成「还没有推送记录」。
+      setNotifyStatus(null);
+    }
+  }, []);
+
+  const runNotifyTest = async () => {
+    setNotifyTesting(true);
+    setNotifyMessage("");
+    try {
+      const result = await sendTestNotification();
+      setNotifyMessage(result.delivered
+        ? t("settings.notify.testOk", { channels: result.channels })
+        : t("settings.notify.testFailed", { error: result.error || "unknown" }));
+      await refreshNotifyStatus();
+    } catch (cause) {
+      setNotifyMessage(t("settings.notify.testFailed", { error: errorMessage(cause, "unknown") }));
+    } finally {
+      setNotifyTesting(false);
+    }
+  };
 
   const refreshAsrStatus = useCallback(async () => {
     setAsrStatusLoading(true);
@@ -294,8 +342,7 @@ export function SettingsPage() {
   const modelPrimaryFields = useMemo(() => modelFields.filter((field) => modelPrimaryFieldKeys.has(field.key)), [modelFields]);
   const modelAdvancedFields = useMemo(() => modelFields.filter((field) => !modelPrimaryFieldKeys.has(field.key)), [modelFields]);
   const reviewFields = useMemo(() => ungroupedFields.filter((field) => reviewFieldKeys.has(field.key)), [ungroupedFields]);
-  const reviewAutoEnabled = draftValues.consolidate_auto === true;
-  const reviewPrimaryFields = useMemo(() => reviewFields.filter((field) => field.key === "consolidate_auto" || (field.key === "consolidate_hour" && reviewAutoEnabled)), [reviewAutoEnabled, reviewFields]);
+  const reviewPrimaryFields = useMemo(() => reviewFields.filter((field) => field.key !== "consolidate_model"), [reviewFields]);
   const reviewAdvancedFields = useMemo(() => reviewFields.filter((field) => field.key === "consolidate_model"), [reviewFields]);
   const promptFields = useMemo(() => activeFields.filter((field) => field.group === "prompt"), [activeFields]);
   const ttsFields = useMemo(() => activeFields.filter((field) => field.group === "tts"), [activeFields]);
@@ -303,6 +350,9 @@ export function SettingsPage() {
   const ttsModeFields = useMemo(() => ttsFields.filter((field) => field.key === "tts_mode"), [ttsFields]);
   const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => field.key !== "tts_mode" && ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
   const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
+  const notifyFields = useMemo(() => activeFields.filter((field) => field.group === "notify"), [activeFields]);
+  const notifyChannelFields = useMemo(() => notifyFields.filter((field) => notifyChannelFieldKeys.has(field.key)), [notifyFields]);
+  const notifyTimingFields = useMemo(() => notifyFields.filter((field) => !notifyChannelFieldKeys.has(field.key)), [notifyFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
   const changedKeys = useMemo(() => Array.from(new Set([
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
@@ -324,6 +374,10 @@ export function SettingsPage() {
   useEffect(() => {
     if (debugFields.length > 0) void refreshDebugRequests();
   }, [debugFields.length, refreshDebugRequests]);
+
+  useEffect(() => {
+    if (activeSection === "notify") void refreshNotifyStatus();
+  }, [activeSection, refreshNotifyStatus]);
 
   const saveRuntime = async () => {
     if (!runtime || !changedKeys.length || saving) return;
@@ -526,98 +580,119 @@ export function SettingsPage() {
 
   return <div className="settings-shell">
     <main className="settings-content settings-content-refined">
-      <header className="settings-heading settings-heading-refined">
-        <div><div className="eyebrow">{t("settings.eyebrow")}</div><h1>{t("settings.title")}</h1><p>{t("settings.description")}</p></div>
-        <div className="settings-heading-meta" aria-label="运行状态">
-          <span className={`status-dot ${health?.status === "ok" ? "online" : ""}`} />
-          <span>{health?.status === "ok" ? t("settings.service.ok") : t("settings.service.unknown")}</span>
-          <span aria-hidden="true">·</span>
-          <BookOpen size={13} />
-          <span title={runtime?.kb_enabled ? t("settings.kb.enabledTitle") : t("settings.kb.disabledTitle")}>{loading ? t("settings.kb.checking") : runtime?.kb_enabled ? t("settings.kb.enabled") : t("settings.kb.disabled")}</span>
-        </div>
-      </header>
       {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />{t("settings.retry")}</button></div>}
       {runtimeMessage && <div className="settings-success"><Check size={14} />{runtimeMessage}</div>}
 
-      <div className="settings-layout">
-        <aside className="settings-section-nav" aria-label={t("settings.navLabel")}>
-          {settingsSections.map(({ key, icon: Icon }) => <button className={activeSection === key ? "active" : ""} type="button" key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>)}
+      <div className="settings-layout settings-layout-aligned">
+        <aside className="settings-section-nav settings-nav-rail" aria-label={t("settings.navLabel")}>
+          {settingsSections.map(({ key, icon: Icon }) => <button className={activeSection === key ? "active" : ""} type="button" aria-current={activeSection === key ? "page" : undefined} key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>)}
         </aside>
 
-        <div className="settings-section-content">
+        <div className="settings-section-content settings-detail-column">
           {activeSection === "general" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">GENERAL</span><h2>聊天与个性化</h2><p>常用交互偏好保存在当前浏览器。</p></div><SlidersHorizontal size={17} /></div>
-            <div className="settings-toggle-list settings-compact-section">
-              <Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} />
-              <Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} />
-            </div>
-            <details className="tts-advanced-settings settings-disclosure">
-              <summary><span><strong>界面信息</strong><small>思考、工具活动和 token 用量</small></span><ChevronRight size={14} /></summary>
+            <div className="settings-card-heading"><div><span className="card-kicker">CHAT & DISPLAY</span><h2>聊天与显示</h2><p>消息发送、回答跟随和过程信息都在这里。</p></div><SlidersHorizontal size={17} /></div>
+            <SettingsVisualGroup icon={SlidersHorizontal} title="对话行为" description="发送方式与回答跟随" tone="accent">
+              <div className="settings-toggle-list">
+                <Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} />
+                <Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} />
+              </div>
+            </SettingsVisualGroup>
+            <SettingsVisualGroup icon={Eye} title="界面信息" description="控制思考、工具活动和 token 用量的呈现" tone="neutral">
               <div className="settings-toggle-list">
                 <Toggle label={t("settings.general.thinking")} description={t("settings.general.thinkingDescription")} checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} />
                 <Toggle label={t("settings.general.tools")} description={t("settings.general.toolsDescription")} checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} />
                 <Toggle label={t("settings.general.usage")} description={t("settings.general.usageDescription")} checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} />
               </div>
-            </details>
-            <details className="tts-advanced-settings settings-disclosure">
-              <summary><span><strong>助手称呼与工作方式</strong><small>需要时再设定长期遵循的回答规则</small></span><ChevronRight size={14} /></summary>
-              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}
-              <div className="settings-card-actions settings-disclosure-actions"><span>事实、偏好和计划请交给长期记忆。</span><button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 Prompt"}</button></div>
-            </details>
+            </SettingsVisualGroup>
             <div className="settings-card-actions"><span>{t("settings.general.saved")}</span><button className="ghost-button" onClick={() => { setPreferences(defaultPreferences); writePreferences(defaultPreferences); }}>{t("settings.general.reset")}</button></div>
+          </section>}
+
+          {activeSection === "assistant" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">ASSISTANT</span><h2>助手规则</h2><p>设置称呼，以及助手每次对话都应遵循的工作方式。</p></div><UserRound size={17} /></div>
+            <SettingsVisualGroup icon={UserRound} title="称呼与固定指令" description="长期有效的回答规则，不用于保存事实和计划" tone="violet" action={<button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 Prompt"}</button>}>
+              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}
+              <div className="prompt-boundary-note">事实、偏好和计划请交给长期记忆。</div>
+            </SettingsVisualGroup>
           </section>}
 
           {activeSection === "model" && <section className="settings-card settings-panel-card">
             <div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>选择日常对话模型和思考方式。</p></div><Activity size={17} /></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? <>
-              {modelPrimaryFields.length > 0 && renderRuntimeFields(modelPrimaryFields)}
-              {modelAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>回答与工具限制</strong><small>输出上限、标题模型和最大工具次数</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(modelAdvancedFields)}</details>}
+              <SettingsVisualGroup icon={BrainCircuit} title="日常模型" description="模型厂商、具体模型与默认推理方式" tone="accent">{modelPrimaryFields.length ? renderRuntimeFields(modelPrimaryFields) : <div className="settings-empty">当前没有日常模型字段。</div>}</SettingsVisualGroup>
+              <SettingsVisualGroup icon={Gauge} title="回答与工具限制" description="输出上限、标题模型和最大工具次数" tone="warm">{modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}</SettingsVisualGroup>
             </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
           </section>}
 
           {activeSection === "review" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">MEMORY & REVIEW</span><h2>记忆与每日回顾</h2><p>决定是否自动整理，以及每天何时运行。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>每日回顾<ChevronRight size={13} /></Link></div>
+            <div className="settings-card-heading"><div><span className="card-kicker">MEMORY REVIEW</span><h2>记忆整理</h2><p>管理每日整理的时间和使用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>每日回顾<ChevronRight size={13} /></Link></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? <>
-              {renderRuntimeFields(reviewPrimaryFields)}
-              {reviewAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>整理模型</strong><small>默认沿用日常聊天模型</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(reviewAdvancedFields)}</details>}
+              <SettingsVisualGroup icon={CalendarClock} title="自动整理" description="选择是否自动运行及每天的执行时间" tone="accent">{renderRuntimeFields(reviewPrimaryFields)}</SettingsVisualGroup>
+              <SettingsVisualGroup icon={BrainCircuit} title="整理模型" description="留空时沿用日常聊天模型" tone="violet">{reviewAdvancedFields.length ? renderRuntimeFields(reviewAdvancedFields) : <div className="settings-empty">当前没有独立的整理模型配置。</div>}</SettingsVisualGroup>
             </> : <div className="settings-empty">当前后端没有提供整理配置。</div>}
             <div className="settings-card-callout"><Clock3 size={14} /><span>关闭自动整理后，仍可在每日回顾页按需整理。</span></div>
           </section>}
 
+          {activeSection === "notify" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">NOTIFICATIONS</span><h2>手机提醒</h2><p>设置推送通道、提醒提前量和每日简报。</p></div><div className="notify-section-tools"><div className={`tts-status-badge ${notifyStatus?.ready ? "success" : "neutral"}`}><span className="tts-status-dot" />{notifyStatus?.ready ? t("settings.notify.channelReady") : t("settings.notify.channelMissing")}</div><button className="ghost-button" type="button" onClick={() => void runNotifyTest()} disabled={notifyTesting || !notifyStatus?.ready}><Send size={13} />{notifyTesting ? t("settings.notify.testing") : t("settings.notify.test")}</button></div></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取通知设置…</div> : notifyFields.length ? <>
+              <SettingsVisualGroup icon={Smartphone} title="推送通道" description="配置手机怎么收到提醒，测通之后再打开总开关" tone="accent">
+                <div className="notify-channel-list">{(notifyStatus?.channels ?? []).map((channel) => <div className={`notify-channel-row ${channel.configured ? "ready" : ""}`} key={channel.name}><span className="notify-channel-dot" /><div><strong>{channel.name}</strong><small>{channel.configured ? t("settings.notify.channelReady") : channel.reason || t("settings.notify.channelMissing")}</small></div><span className="notify-channel-flag">{channel.enabled ? "已启用" : "未启用"}</span></div>)}</div>
+                {renderRuntimeFields(notifyChannelFields)}
+                {notifyMessage && <div className="settings-card-callout"><BellRing size={14} /><span>{notifyMessage}</span></div>}
+                <div className="settings-card-callout"><Smartphone size={14} /><span>手机上安装 Bark 后打开 App 即可看到设备 key。通知跳转地址要填手机访问得到的局域网地址，localhost 点不开。</span></div>
+              </SettingsVisualGroup>
+              <SettingsVisualGroup icon={CalendarClock} title="提醒时机" description="提前多久叫你、每天几点给简报" tone="violet">
+                {renderRuntimeFields(notifyTimingFields)}
+                <div className="settings-card-callout"><Clock3 size={14} /><span>提前量按类型内置：会议 15 分钟、出行和生日提前一天、截止日期提前三天。单条事项可以在时间线里单独改。</span></div>
+              </SettingsVisualGroup>
+            </> : <div className="settings-empty">当前后端没有提供通知配置。</div>}
+            <div className="notify-recent"><div className="notify-recent-heading"><strong>{t("settings.notify.recent")}</strong><button className="icon-button neutral-hover" type="button" aria-label={t("settings.notify.recent")} onClick={() => void refreshNotifyStatus()}><RefreshCw size={13} /></button></div>{notifyStatus?.recent.length ? <div className="notify-recent-list">{notifyStatus.recent.map((row) => <div className={`notify-recent-row ${row.delivered_at ? "ok" : "failed"}`} key={row.id}><span className="notify-recent-main"><strong>{row.title}</strong><small>{row.body.split("\n")[0]}</small></span><span className="notify-recent-meta"><span>{row.delivered_at ? `${t("settings.notify.delivered")} · ${row.channels}` : `${t("settings.notify.failed")} · ${row.attempts}`}</span><span>{debugTime(row.created_at)}</span></span>{row.error && <span className="notify-recent-error">{row.error}</span>}</div>)}</div> : <div className="debug-empty"><BellRing size={16} /><strong>{t("settings.notify.noRecent")}</strong><span>配好通道后发一条测试通知试试。</span></div>}</div>
+          </section>}
+
           {activeSection === "voice" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>先选择是否朗读；启用后再调整声音。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div>{ttsMode !== "off" && <button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button>}</div></div>
+            <div className="settings-card-heading"><div><span className="card-kicker">VOICE PLAYBACK</span><h2>语音朗读</h2><p>设置回答是否朗读，以及模型、音色和播放质量。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div>{ttsMode !== "off" && <button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button>}</div></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? <>
-              {renderRuntimeFields(ttsModeFields)}
-              {ttsMode === "off" ? <div className="settings-card-callout"><Headphones size={14} /><span>语音已关闭。选择手动或自动朗读后，可继续设置模型和音色。</span></div> : <>
+              <SettingsVisualGroup icon={Volume2} title="播放方式" description="关闭、手动播放或回答后自动朗读" tone="accent">
+                {renderRuntimeFields(ttsModeFields)}
+                {ttsMode === "off" && <div className="settings-card-callout"><Headphones size={14} /><span>当前不会朗读回答；模型和音色仍可提前配置。</span></div>}
+              </SettingsVisualGroup>
+              <SettingsVisualGroup icon={AudioLines} title="声音与表达" description="选择模型、音色、语气和语速" tone="violet">
                 <div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
                 {renderRuntimeFields(ttsPrimaryFields)}
-                {ttsAdvancedFields.length > 0 && <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>合成与播放选项</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>{renderRuntimeFields(ttsAdvancedFields)}</details>}
-              </>}
+              </SettingsVisualGroup>
+              <SettingsVisualGroup icon={Gauge} title="合成与播放" description="语种、格式、流式传输及性能限制" tone="warm">{ttsAdvancedFields.length ? renderRuntimeFields(ttsAdvancedFields) : <div className="settings-empty">当前没有高级合成配置。</div>}</SettingsVisualGroup>
             </> : <div className="settings-empty">当前后端没有提供语音配置。</div>}
             {(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}
-            <details className="tts-advanced-settings settings-disclosure settings-voice-input-disclosure">
-              <summary><span><strong>语音输入</strong><small>{asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"}</small></span><ChevronRight size={14} /></summary>
+            <audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} />
+          </section>}
+
+          {activeSection === "voiceInput" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">VOICE INPUT</span><h2>语音输入</h2><p>设置录音转文字所使用的识别模型和语言。</p></div><Mic2 size={17} /></div>
+            <SettingsVisualGroup icon={Mic2} title="识别设置" description={asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"} tone={asrStatus?.reachable ? "success" : "neutral"} className="settings-voice-input-group">
               {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <>
                 <div className="tts-model-overview"><div><span>本地缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
                 {renderRuntimeFields(asrFields)}
               </> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}
               {(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}
-            </details>
-            <audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} />
+            </SettingsVisualGroup>
           </section>}
 
           {activeSection === "system" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">SYSTEM & DATA</span><h2>系统与数据</h2><p>日常只需关注连接和备份；技术信息按需展开。</p></div><Settings2 size={17} /></div>
-            <div className="settings-summary-strip"><div><span>连接</span><strong className={health?.status === "ok" ? "value-success" : ""}>{connectionLabel}</strong></div><div><span>当前模型</span><strong>{runtime?.model ?? "—"}</strong></div><div><span>知识库</span><strong>{runtime ? runtime.kb_enabled ? "已挂载" : "未启用" : "—"}</strong></div></div>
-            <div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "创建备份"}</button></div>
-            {backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}
-            <details className="tts-advanced-settings settings-disclosure">
-              <summary><span><strong>运行与环境信息</strong><small>服务地址、Provider 和环境变量配置</small></span><ChevronRight size={14} /></summary>
+            <div className="settings-card-heading"><div><span className="card-kicker">DATA & BACKUP</span><h2>数据与备份</h2><p>查看连接状态、创建快照并确认运行环境。</p></div><HardDriveDownload size={17} /></div>
+            <SettingsVisualGroup icon={HardDriveDownload} title="连接与备份" description="查看当前服务状态并创建数据快照" tone="success">
+              <div className="settings-summary-strip"><div><span>连接</span><strong className={health?.status === "ok" ? "value-success" : ""}>{connectionLabel}</strong></div><div><span>当前模型</span><strong>{runtime?.model ?? "—"}</strong></div><div><span>知识库</span><strong>{runtime ? runtime.kb_enabled ? "已挂载" : "未启用" : "—"}</strong></div></div>
+              <div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "创建备份"}</button></div>
+              {backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}
+            </SettingsVisualGroup>
+            <SettingsVisualGroup icon={ServerCog} title="运行与环境" description="服务地址、Provider 和需要重启的环境变量" tone="neutral" className="settings-runtime-group">
               <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div>
               {runtime?.env_only?.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{runtime.env_only.map((key) => <code key={key}>{key}</code>)}</div></div> : null}
-            </details>
-            <details className="tts-advanced-settings settings-disclosure settings-developer-disclosure">
-              <summary><span><strong>开发者选项</strong><small>工具定义与可能包含对话原文的请求调试</small></span><ChevronRight size={14} /></summary>
+            </SettingsVisualGroup>
+          </section>}
+
+          {activeSection === "advanced" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">DEVELOPER</span><h2>开发者</h2><p>只在排查模型工具和请求问题时使用。</p></div><Bug size={17} /></div>
+            <SettingsVisualGroup icon={Bug} title="开发者选项" description="工具定义与可能包含对话原文的请求调试" tone="warm" className="settings-developer-group">
               <div className="settings-developer-stack">
                 <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>工具目录</strong><small>查看模型可用能力和参数约定</small></span><ChevronRight size={14} /></summary><div className="tool-catalog-card"><ToolCatalog /></div></details>
                 <details className="tts-advanced-settings settings-disclosure settings-danger-zone">
@@ -627,7 +702,7 @@ export function SettingsPage() {
                   <div className="debug-request-panel"><div className="debug-request-panel-heading"><div><strong>最近请求</strong><span>{debugRequests?.enabled ? `${debugRequests.items.length} / ${debugRequests.capacity} 条` : "当前未记录"}</span></div><div><button className="icon-button neutral-hover" type="button" aria-label="刷新调试请求" title="刷新请求列表" onClick={() => void refreshDebugRequests()} disabled={debugRequestsLoading}><RefreshCw size={13} className={debugRequestsLoading ? "spin" : ""} /></button>{debugRequests?.enabled && debugRequests.items.length > 0 && <button className="ghost-button danger-button" type="button" onClick={() => setClearDebugPending(true)}><Trash2 size={12} />清空</button>}</div></div>{debugError && <div className="debug-inline-error">{debugError}</div>}{debugRequestsLoading && !debugRequests ? <div className="settings-loading"><RefreshCw size={14} className="spin" />读取请求列表…</div> : !debugRequests?.enabled ? <div className="debug-empty"><Bug size={16} /><strong>调试记录未开启</strong><span>开启并保存后，新请求会显示在这里。</span></div> : debugRequests.items.length === 0 ? <div className="debug-empty"><Clipboard size={16} /><strong>还没有请求快照</strong><span>发送一条消息后再回来查看。</span></div> : <div className="debug-request-list">{debugRequests.items.map((item) => <button className="debug-request-row" type="button" key={item.id} onClick={() => void openDebugRequest(item.id)}><span className="debug-request-row-main"><strong>请求 #{item.id}</strong><span>第 {item.iteration + 1} 次模型请求</span></span><span className="debug-request-row-meta"><span>{item.provider} · {item.model}</span><span>{item.conversation_id ? `会话 #${item.conversation_id}` : "无会话"} · {debugTime(item.at)}</span></span><span className="debug-request-row-stats"><span>{item.messages} messages</span><span>{item.tools} tools</span><span>{item.seconds.toFixed(2)}s</span></span>{item.error && <span className="debug-request-error">{item.error}</span>}<ChevronRight size={14} /></button>)}</div>}</div>
                 </details>
               </div>
-            </details>
+            </SettingsVisualGroup>
           </section>}
         </div>
       </div>

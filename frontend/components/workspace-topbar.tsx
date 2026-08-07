@@ -19,6 +19,7 @@ import { confirmAppNavigation } from "@/lib/navigation-guard";
 export type WorkspacePage = "chat" | "memories" | "review" | "timeline" | "settings";
 
 export const conversationsChangedEvent = "chat-memo:conversations-changed";
+export const selectedConversationChangedEvent = "chat-memo:selected-conversation-changed";
 
 export type WorkspaceConversationChange =
   | { type: "renamed"; conversation: Conversation }
@@ -29,6 +30,10 @@ export function notifyWorkspaceConversationsChanged(detail?: WorkspaceConversati
   window.dispatchEvent(detail
     ? new CustomEvent<WorkspaceConversationChange>(conversationsChangedEvent, { detail })
     : new Event(conversationsChangedEvent));
+}
+
+export function notifyWorkspaceSelectedConversationChanged(conversationId: number | null) {
+  window.dispatchEvent(new CustomEvent<number | null>(selectedConversationChangedEvent, { detail: conversationId }));
 }
 
 const navigation = [
@@ -47,14 +52,6 @@ function currentConversationId() {
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-const pageLabels: Record<WorkspacePage, TranslationKey> = {
-  chat: "nav.chat",
-  memories: "nav.memories",
-  review: "nav.review",
-  timeline: "nav.timeline",
-  settings: "nav.settings",
-};
-
 export function MemoryMark({ compact = false }: { compact?: boolean }) {
   return <span className={`memory-mark ${compact ? "compact" : ""}`} aria-hidden="true">
     <Image className="memory-mark-image" src="/morning-memory-logo.png" alt="" width={80} height={80} sizes={compact ? "80px" : "48px"} />
@@ -63,7 +60,7 @@ export function MemoryMark({ compact = false }: { compact?: boolean }) {
 
 export function MemoryBrand() {
   const { t } = useI18n();
-  return <Link className="memory-brand-link" href="/" aria-label={t("workspace.backHome")} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>
+  return <Link className="memory-brand-link" href="/" aria-label={t("workspace.backHome")} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); else notifyWorkspaceSelectedConversationChanged(null); }}>
     <Image className="memory-brand-lockup" src="/morning-memory-wordmark.png" alt="朝花夕拾" width={220} height={59} sizes="(max-width: 980px) 56px, 220px" priority />
   </Link>;
 }
@@ -102,6 +99,7 @@ export function WorkspaceProfile() {
 export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
   const { t } = useI18n();
   const router = useRouter();
+  const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
   const [showArchived, setShowArchived] = useState(false);
   const [menuTarget, setMenuTarget] = useState<Conversation | null>(null);
@@ -112,6 +110,22 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const [actionError, setActionError] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
   const activeRoute = navigation.find(({ key }) => key === active)?.href;
+
+  useEffect(() => {
+    const syncFromLocation = () => setSelectedConversationId(currentConversationId());
+    const handleSelectedConversation = (event: Event) => setSelectedConversationId((event as CustomEvent<number | null>).detail ?? null);
+    syncFromLocation();
+    window.addEventListener("popstate", syncFromLocation);
+    window.addEventListener(selectedConversationChangedEvent, handleSelectedConversation);
+    return () => {
+      window.removeEventListener("popstate", syncFromLocation);
+      window.removeEventListener(selectedConversationChangedEvent, handleSelectedConversation);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSelectedConversationId(active === "chat" ? currentConversationId() : null);
+  }, [active]);
 
   useEffect(() => {
     if (process.env.NODE_ENV !== "development") return;
@@ -234,8 +248,8 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
         <div className="workspace-sidebar-recent-heading">
           <span>{showArchived ? t("workspace.archived") : t("workspace.recent")}</span>
         </div>
-        {recentConversations.map((conversation) => <div className="workspace-sidebar-conversation" key={conversation.id}>
-          <Link href={`/?conversation=${conversation.id}`} title={conversation.title} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); }}><span>{conversation.title}</span></Link>
+        {recentConversations.map((conversation) => <div className={`workspace-sidebar-conversation ${selectedConversationId === conversation.id ? "selected" : ""}`} key={conversation.id}>
+          <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
           <button
             className="workspace-sidebar-conversation-more"
             type="button"
@@ -257,12 +271,9 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
           <span>{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</span>
         </button>
       </div>
+      <div className="workspace-sidebar-tools" aria-label={t("workspace.tools")}><SearchTrigger /><LanguageControl /><ThemeControl /></div>
       <WorkspaceProfile />
     </aside>
-    <header className="workspace-desktop-topbar">
-      <div className="workspace-breadcrumb"><span>{t("workspace.root")}</span><b>›</b><strong>{t(pageLabels[active])}</strong></div>
-      <div className="workspace-topbar-tools"><SearchTrigger /><LanguageControl /><ThemeControl /></div>
-    </header>
     <header className="workspace-mobile-topbar">
       <MemoryBrand />
       <div><SearchTrigger /><LanguageControl /><ThemeControl /></div>

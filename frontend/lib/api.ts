@@ -17,6 +17,8 @@ import type {
   MemoryNode,
   MemoryStats,
   MemoryVersion,
+  NotifyStatus,
+  NotifyTestResult,
   OpenLoop,
   PrepareResult,
   RuntimeSettings,
@@ -88,14 +90,27 @@ export function listConversations(limit = 50, archived = false) {
   return request<Conversation[]>(`/api/conversations?limit=${limit}&archived=${archived}`);
 }
 
-export function listTimeline(params: { from?: string; to?: string; statuses?: TimelineStatus[]; limit?: number } = {}, signal?: AbortSignal) {
+export function listTimeline(params: { from?: string; to?: string; statuses?: TimelineStatus[]; limit?: number; includeOverdue?: boolean } = {}, signal?: AbortSignal) {
   const query = new URLSearchParams();
   if (params.from) query.set("from", params.from);
   if (params.to) query.set("to", params.to);
   if (params.statuses?.length) query.set("status", params.statuses.join(","));
   if (params.limit) query.set("limit", String(params.limit));
+  if (params.includeOverdue) query.set("include_overdue", "true");
   const suffix = query.size ? `?${query.toString()}` : "";
   return request<TimelineItem[]>(`/api/timeline${suffix}`, { signal });
+}
+
+export function snoozeTimelineItem(id: number, minutes: number) {
+  return request<TimelineItem>(`/api/timeline/${id}/snooze`, { method: "POST", body: JSON.stringify({ minutes }) });
+}
+
+export function getNotifyStatus(signal?: AbortSignal) {
+  return request<NotifyStatus>("/api/notify/status", { signal });
+}
+
+export function sendTestNotification() {
+  return request<NotifyTestResult>("/api/notify/test", { method: "POST" });
 }
 
 export function createTimelineItem(input: TimelineInput) {
