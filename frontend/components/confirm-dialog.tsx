@@ -2,6 +2,7 @@
 
 import { type KeyboardEvent, useEffect, useId, useRef } from "react";
 import { LoaderCircle, TriangleAlert, X } from "lucide-react";
+import { useI18n } from "@/components/i18n-provider";
 
 export function ConfirmDialog({
   open,
@@ -24,6 +25,7 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLElement>(null);
@@ -69,7 +71,7 @@ export function ConfirmDialog({
       <header className="confirm-dialog-header">
         <span className="confirm-dialog-icon" aria-hidden="true"><TriangleAlert size={19} /></span>
         <div><span className="card-kicker">DANGER ZONE</span><h2 id={titleId}>{title}</h2></div>
-        <button className="icon-button" type="button" aria-label="关闭确认窗口" onClick={onCancel} disabled={busy}><X size={16} /></button>
+        <button className="icon-button" type="button" aria-label={t("common.close")} onClick={onCancel} disabled={busy}><X size={16} /></button>
       </header>
       <div className="confirm-dialog-body">
         <p id={descriptionId}>{description}</p>
@@ -77,8 +79,8 @@ export function ConfirmDialog({
         {warning && <div className="confirm-dialog-warning"><TriangleAlert size={13} /><span>{warning}</span></div>}
       </div>
       <footer className="confirm-dialog-actions">
-        <button ref={cancelRef} className="ghost-button" type="button" onClick={onCancel} disabled={busy}>取消</button>
-        <button className="danger-button confirm-danger-button" type="button" onClick={onConfirm} disabled={busy}>{busy ? <><LoaderCircle size={14} className="spin" />处理中…</> : confirmLabel}</button>
+        <button ref={cancelRef} className="ghost-button" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button>
+        <button className="danger-button confirm-danger-button" type="button" onClick={onConfirm} disabled={busy}>{busy ? <><LoaderCircle size={14} className="spin" />{t("common.processing")}</> : confirmLabel}</button>
       </footer>
     </section>
   </div>;

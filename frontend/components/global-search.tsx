@@ -6,10 +6,7 @@ import { useRouter } from "next/navigation";
 import { errorMessage, searchAll } from "@/lib/api";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
 import type { SearchConversationHit, SearchMemoryHit, SearchResults } from "@/lib/types";
-
-function formatTime(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
-}
+import { useI18n } from "@/components/i18n-provider";
 
 function HighlightText({ text, query }: { text: string; query: string }) {
   const normalizedText = text.toLocaleLowerCase();
@@ -30,26 +27,31 @@ function HighlightText({ text, query }: { text: string; query: string }) {
 }
 
 function ConversationResult({ hit, query, id, active, onActivate, onOpen }: { hit: SearchConversationHit; query: string; id: string; active: boolean; onActivate: () => void; onOpen: (hit: SearchConversationHit) => void }) {
+  const { locale, t } = useI18n();
+  const formattedTime = new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(hit.created_at));
   return <button id={id} role="option" aria-selected={active} className={`search-result ${active ? "active" : ""}`} onMouseEnter={onActivate} onFocus={onActivate} onClick={() => onOpen(hit)}>
     <span className="search-result-icon"><MessageSquare size={15} /></span>
     <span className="search-result-copy"><strong>{hit.title}</strong><span><HighlightText text={hit.snippet} query={query} /></span></span>
-    <span className="search-result-meta">{hit.matches > 1 ? `${hit.matches} 处` : "对话"} · {formatTime(hit.created_at)}<ArrowUpRight size={13} /></span>
+    <span className="search-result-meta">{hit.matches > 1 ? t("search.matches", { count: hit.matches }) : t("search.conversations")} · {formattedTime}<ArrowUpRight size={13} /></span>
   </button>;
 }
 
 function MemoryResult({ hit, query, id, active, onActivate, onOpen }: { hit: SearchMemoryHit; query: string; id: string; active: boolean; onActivate: () => void; onOpen: (hit: SearchMemoryHit) => void }) {
+  const { t } = useI18n();
   return <button id={id} role="option" aria-selected={active} className={`search-result ${active ? "active" : ""}`} onMouseEnter={onActivate} onFocus={onActivate} onClick={() => onOpen(hit)}>
     <span className="search-result-icon memory-result-icon"><BookOpen size={15} /></span>
     <span className="search-result-copy"><strong>{hit.path}</strong><span><HighlightText text={hit.snippet} query={query} /></span></span>
-    <span className="search-result-meta">记忆 <ArrowUpRight size={13} /></span>
+    <span className="search-result-meta">{t("search.memories")} <ArrowUpRight size={13} /></span>
   </button>;
 }
 
 export function SearchTrigger() {
-  return <button className="topbar-search-trigger" type="button" aria-label="全局搜索" title="全局搜索（⌘K / Ctrl+K）" onClick={() => window.dispatchEvent(new Event("open-global-search"))}><Search size={14} /><span>搜索</span><kbd><Command size={10} />K</kbd></button>;
+  const { t } = useI18n();
+  return <button className="topbar-search-trigger" type="button" aria-label={t("search.label")} title={t("search.title")} onClick={() => window.dispatchEvent(new Event("open-global-search"))}><Search size={14} /><span>{t("search.trigger")}</span><kbd><Command size={10} />K</kbd></button>;
 }
 
 export function GlobalSearch() {
+  const { t } = useI18n();
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
@@ -120,7 +122,7 @@ export function GlobalSearch() {
         .then(setResults)
         .catch((cause: unknown) => {
           if (cause instanceof DOMException && cause.name === "AbortError") return;
-          setError(errorMessage(cause, "搜索失败"));
+          setError(errorMessage(cause, t("search.failed")));
           setResults(null);
         })
         .finally(() => {
@@ -132,7 +134,7 @@ export function GlobalSearch() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [open, query]);
+  }, [open, query, t]);
 
   const close = () => {
     abortRef.current?.abort();
@@ -195,17 +197,17 @@ export function GlobalSearch() {
 
   return <>
     {open && <div className="search-overlay" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <section ref={dialogRef} className="search-dialog" role="dialog" aria-modal="true" aria-label="全局搜索" onKeyDown={handleDialogKeyDown}>
-        <div className="search-input-wrap"><Search size={17} /><input ref={inputRef} role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls="global-search-results" aria-activedescendant={items.length ? `global-search-result-${activeIndex}` : undefined} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索对话和记忆…" /><kbd>ESC</kbd><button className="icon-button" aria-label="关闭搜索" onClick={close}><X size={16} /></button></div>
-        <div className="search-body" id="global-search-results" role="listbox" aria-label="搜索结果">
-          {query.trim().length < 2 && <div className="search-hint"><Command size={16} /><span>搜索至少输入 2 个字符</span><small>支持搜索对话正文和记忆内容</small></div>}
-          {loading && <div className="search-status"><LoaderCircle size={16} className="spin" />正在搜索…</div>}
+      <section ref={dialogRef} className="search-dialog" role="dialog" aria-modal="true" aria-label={t("search.label")} onKeyDown={handleDialogKeyDown}>
+        <div className="search-input-wrap"><Search size={17} /><input ref={inputRef} role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls="global-search-results" aria-activedescendant={items.length ? `global-search-result-${activeIndex}` : undefined} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search.placeholder")} /><kbd>ESC</kbd><button className="icon-button" aria-label={t("common.close")} onClick={close}><X size={16} /></button></div>
+        <div className="search-body" id="global-search-results" role="listbox" aria-label={t("search.results")}>
+          {query.trim().length < 2 && <div className="search-hint"><Command size={16} /><span>{t("search.minChars")}</span><small>{t("search.scope")}</small></div>}
+          {loading && <div className="search-status"><LoaderCircle size={16} className="spin" />{t("search.searching")}</div>}
           {error && <div className="search-error">{error}</div>}
-          {!loading && !error && results && !results.conversations.length && !results.memories.length && <div className="search-status">没有找到与“{results.query}”相关的内容</div>}
-          {!loading && results && results.conversations.length > 0 && <div className="search-group" role="group" aria-label="对话"><div className="search-group-title"><MessageSquare size={13} />对话 <span>{results.conversations.length}</span></div>{results.conversations.map((hit, index) => <ConversationResult key={`${hit.conversation_id}-${hit.message_id}`} id={`global-search-result-${index}`} active={activeIndex === index} onActivate={() => setActiveIndex(index)} hit={hit} query={results.query} onOpen={openConversation} />)}</div>}
-          {!loading && results && results.memories.length > 0 && <div className="search-group" role="group" aria-label="记忆"><div className="search-group-title"><BookOpen size={13} />记忆 <span>{results.memories.length}</span></div>{results.memories.map((hit, index) => { const itemIndex = results.conversations.length + index; return <MemoryResult key={hit.path} id={`global-search-result-${itemIndex}`} active={activeIndex === itemIndex} onActivate={() => setActiveIndex(itemIndex)} hit={hit} query={results.query} onOpen={openMemory} />; })}</div>}
+          {!loading && !error && results && !results.conversations.length && !results.memories.length && <div className="search-status">{t("search.empty", { query: results.query })}</div>}
+          {!loading && results && results.conversations.length > 0 && <div className="search-group" role="group" aria-label={t("search.conversations")}><div className="search-group-title"><MessageSquare size={13} />{t("search.conversations")} <span>{results.conversations.length}</span></div>{results.conversations.map((hit, index) => <ConversationResult key={`${hit.conversation_id}-${hit.message_id}`} id={`global-search-result-${index}`} active={activeIndex === index} onActivate={() => setActiveIndex(index)} hit={hit} query={results.query} onOpen={openConversation} />)}</div>}
+          {!loading && results && results.memories.length > 0 && <div className="search-group" role="group" aria-label={t("search.memories")}><div className="search-group-title"><BookOpen size={13} />{t("search.memories")} <span>{results.memories.length}</span></div>{results.memories.map((hit, index) => { const itemIndex = results.conversations.length + index; return <MemoryResult key={hit.path} id={`global-search-result-${itemIndex}`} active={activeIndex === itemIndex} onActivate={() => setActiveIndex(itemIndex)} hit={hit} query={results.query} onOpen={openMemory} />; })}</div>}
         </div>
-        <footer className="search-footer"><span>点击结果打开</span><span>Esc 关闭</span><span>搜索内容来自对话正文和记忆文件</span></footer>
+        <footer className="search-footer"><span>{t("search.openHint")}</span><span>{t("search.closeHint")}</span><span>{t("search.sourceHint")}</span></footer>
       </section>
     </div>}
   </>;

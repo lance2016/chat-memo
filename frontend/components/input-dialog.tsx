@@ -2,6 +2,7 @@
 
 import { type KeyboardEvent, useEffect, useId, useRef } from "react";
 import { Check, X } from "lucide-react";
+import { useI18n } from "@/components/i18n-provider";
 
 export function InputDialog({ open, title, description, value, placeholder, busy = false, onChange, onConfirm, onCancel }: {
   open: boolean;
@@ -14,6 +15,7 @@ export function InputDialog({ open, title, description, value, placeholder, busy
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
   const dialogRef = useRef<HTMLElement>(null);
@@ -32,9 +34,9 @@ export function InputDialog({ open, title, description, value, placeholder, busy
   };
   return <div className="input-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onCancel(); }}>
     <section ref={dialogRef} className="input-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} onKeyDown={onKeyDown}>
-      <header><div><span className="card-kicker">CONVERSATION</span><h2 id={titleId}>{title}</h2></div><button className="icon-button" type="button" aria-label="关闭窗口" onClick={onCancel} disabled={busy}><X size={16} /></button></header>
-      <div className="input-dialog-body"><p id={descriptionId}>{description}</p><label><span>标题</span><input ref={inputRef} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={busy} /></label></div>
-      <footer><button className="ghost-button" type="button" onClick={onCancel} disabled={busy}>取消</button><button className="primary-button" type="button" onClick={onConfirm} disabled={!value.trim() || busy}><Check size={14} />保存标题</button></footer>
+      <header><div><span className="card-kicker">CONVERSATION</span><h2 id={titleId}>{title}</h2></div><button className="icon-button" type="button" aria-label={t("common.close")} onClick={onCancel} disabled={busy}><X size={16} /></button></header>
+      <div className="input-dialog-body"><p id={descriptionId}>{description}</p><label><span>{t("common.title")}</span><input ref={inputRef} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} disabled={busy} /></label></div>
+      <footer><button className="ghost-button" type="button" onClick={onCancel} disabled={busy}>{t("common.cancel")}</button><button className="primary-button" type="button" onClick={onConfirm} disabled={!value.trim() || busy}><Check size={14} />{t("common.saveTitle")}</button></footer>
     </section>
   </div>;
 }

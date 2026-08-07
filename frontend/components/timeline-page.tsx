@@ -6,12 +6,11 @@ import { CalendarCheck2, CalendarDays, Check, CheckCircle2, CircleDashed, Clock3
 import { createTimelineItem, deleteTimelineItem, errorMessage, listTimeline, updateTimelineItem } from "@/lib/api";
 import type { TimelineItem, TimelineKind, TimelineStatus } from "@/lib/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useI18n } from "@/components/i18n-provider";
 
 type View = "today" | "upcoming" | "month";
 
-const kindLabels: Record<TimelineKind, string> = {
-  todo: "待办", event: "日程", reminder: "提醒", birthday: "生日", travel: "旅行", deadline: "截止", note: "记录",
-};
+const timelineKinds: TimelineKind[] = ["todo", "event", "reminder", "birthday", "travel", "deadline", "note"];
 
 function startOfDay(value = new Date()) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -47,19 +46,19 @@ function rangeFor(view: View, cursor: Date) {
   return { from: start.toISOString(), to: end.toISOString() };
 }
 
-function dayTitle(key: string) {
+function dayTitle(key: string, locale: string, todayLabel: string, tomorrowLabel: string) {
   const date = new Date(`${key}T12:00:00`);
   const today = dateKey(new Date());
-  if (key === today) return "今天";
-  if (key === dateKey(addDays(startOfDay(), 1))) return "明天";
-  return new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "short" }).format(date);
+  if (key === today) return todayLabel;
+  if (key === dateKey(addDays(startOfDay(), 1))) return tomorrowLabel;
+  return new Intl.DateTimeFormat(locale, { month: "long", day: "numeric", weekday: "short" }).format(date);
 }
 
-function timeLabel(item: TimelineItem) {
-  if (item.all_day) return "全天";
+function timeLabel(item: TimelineItem, locale: string, allDayLabel: string) {
+  if (item.all_day) return allDayLabel;
   const start = new Date(item.starts_at);
   const end = item.ends_at ? new Date(item.ends_at) : null;
-  const format = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  const format = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false });
   return end ? `${format.format(start)}–${format.format(end)}` : format.format(start);
 }
 
@@ -69,26 +68,28 @@ function TimelineCard({ item, busy, onStatus, onDelete }: {
   onStatus: (status: TimelineStatus) => void;
   onDelete: () => void;
 }) {
+  const { locale, t } = useI18n();
   return <article className={`timeline-item kind-${item.kind} status-${item.status}`}>
     <div className="timeline-item-rail"><span /><i /></div>
     <div className="timeline-item-body">
       <div className="timeline-item-heading">
-        <div><span className="timeline-kind">{kindLabels[item.kind]}</span>{item.status === "pending" && <span className="timeline-pending"><CircleDashed size={11} />待确认</span>}</div>
+        <div><span className="timeline-kind">{t(`timeline.kind.${item.kind}`)}</span>{item.status === "pending" && <span className="timeline-pending"><CircleDashed size={11} />{t("timeline.pending")}</span>}</div>
         <strong>{item.title}</strong>
       </div>
       {item.details && <p>{item.details}</p>}
-      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item)}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>每年重复</span>}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>来自对话</Link>}</div>
+      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item, locale, t("timeline.allDay"))}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>{t("timeline.yearly")}</span>}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>{t("timeline.fromConversation")}</Link>}</div>
     </div>
     <div className="timeline-item-actions">
-      {item.status === "pending" && <button onClick={() => onStatus("confirmed")} disabled={busy} title="确认"><Check size={14} /></button>}
-      {item.status !== "completed" && item.status !== "cancelled" && <button onClick={() => onStatus("completed")} disabled={busy} title="完成"><CheckCircle2 size={14} /></button>}
-      {item.status === "completed" && <button onClick={() => onStatus("confirmed")} disabled={busy} title="重新打开"><RefreshCw size={13} /></button>}
-      <button onClick={onDelete} disabled={busy} title="删除"><Trash2 size={13} /></button>
+      {item.status === "pending" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.confirm")}><Check size={14} /></button>}
+      {item.status !== "completed" && item.status !== "cancelled" && <button onClick={() => onStatus("completed")} disabled={busy} title={t("timeline.complete")}><CheckCircle2 size={14} /></button>}
+      {item.status === "completed" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.reopen")}><RefreshCw size={13} /></button>}
+      <button onClick={onDelete} disabled={busy} title={t("timeline.delete")}><Trash2 size={13} /></button>
     </div>
   </article>;
 }
 
 export function TimelinePage() {
+  const { locale, t } = useI18n();
   const [view, setView] = useState<View>("today");
   const [cursor, setCursor] = useState(new Date());
   const [items, setItems] = useState<TimelineItem[]>([]);
@@ -107,11 +108,11 @@ export function TimelinePage() {
     try {
       setItems(await listTimeline({ ...rangeFor(view, cursor), statuses: ["pending", "confirmed", "completed"] }, signal));
     } catch (cause) {
-      if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(errorMessage(cause, "无法加载时间线"));
+      if (!(cause instanceof DOMException && cause.name === "AbortError")) setError(errorMessage(cause, t("timeline.loadError")));
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
-  }, [cursor, view]);
+  }, [cursor, t, view]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -141,7 +142,7 @@ export function TimelinePage() {
       setComposerOpen(false);
       await load();
     } catch (cause) {
-      setError(errorMessage(cause, "无法创建时间事项"));
+      setError(errorMessage(cause, t("timeline.createError")));
     } finally {
       setSaving(false);
     }
@@ -153,7 +154,7 @@ export function TimelinePage() {
       const updated = await updateTimelineItem(item.id, { status });
       setItems((current) => current.map((entry) => entry.id === item.id ? updated : entry));
     } catch (cause) {
-      setError(errorMessage(cause, "无法更新时间事项"));
+      setError(errorMessage(cause, t("timeline.updateError")));
     } finally {
       setBusyId(null);
     }
@@ -167,7 +168,7 @@ export function TimelinePage() {
       setItems((current) => current.filter((item) => item.id !== deleteTarget.id));
       setDeleteTarget(null);
     } catch (cause) {
-      setError(errorMessage(cause, "无法删除时间事项"));
+      setError(errorMessage(cause, t("timeline.deleteError")));
     } finally {
       setBusyId(null);
     }
@@ -180,16 +181,16 @@ export function TimelinePage() {
   }, [cursor]);
 
   return <div className="timeline-shell"><main className="timeline-content">
-    <header className="timeline-heading"><div><span className="eyebrow">Personal timeline</span><h1>把未来放在眼前。</h1><p>对话中提到的会议、旅行、生日和待办，会整理成可以确认与完成的时间事项。</p></div><button className="primary-button" onClick={() => setComposerOpen(true)}><Plus size={15} />手动添加</button></header>
+    <header className="timeline-heading"><div><span className="eyebrow">{t("timeline.eyebrow")}</span><h1>{t("timeline.title")}</h1><p>{t("timeline.description")}</p></div><button className="primary-button" onClick={() => setComposerOpen(true)}><Plus size={15} />{t("timeline.add")}</button></header>
 
     <div className="timeline-toolbar">
-      <div className="timeline-tabs" role="tablist">{(["today", "upcoming", "month"] as View[]).map((key) => <button role="tab" aria-selected={view === key} className={view === key ? "active" : ""} onClick={() => setView(key)} key={key}>{key === "today" ? "今天" : key === "upcoming" ? "最近 30 天" : "月视图"}</button>)}</div>
-      {view === "month" && <div className="timeline-month-nav"><button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button><strong>{cursor.getFullYear()} 年 {cursor.getMonth() + 1} 月</strong><button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button></div>}
+      <div className="timeline-tabs" role="tablist">{(["today", "upcoming", "month"] as View[]).map((key) => <button role="tab" aria-selected={view === key} className={view === key ? "active" : ""} onClick={() => setView(key)} key={key}>{t(`timeline.view.${key}`)}</button>)}</div>
+      {view === "month" && <div className="timeline-month-nav"><button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))}>‹</button><strong>{new Intl.DateTimeFormat(locale, { year: "numeric", month: "long" }).format(cursor)}</strong><button onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))}>›</button></div>}
     </div>
 
-    {composerOpen && <section className="timeline-composer"><div className="timeline-composer-title"><div><span>NEW ITEM</span><h2>添加时间事项</h2></div><button className="icon-button" onClick={() => setComposerOpen(false)} aria-label="关闭"><X size={16} /></button></div><div className="timeline-form-grid"><label><span>标题</span><input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：和产品团队开会" /></label><label><span>类型</span><select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value as TimelineKind })}>{Object.entries(kindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label><label><span>时间</span><input type="datetime-local" value={draft.startsAt} onChange={(event) => setDraft({ ...draft, startsAt: event.target.value })} /></label><label><span>地点</span><input value={draft.location} onChange={(event) => setDraft({ ...draft, location: event.target.value })} placeholder="可选" /></label><label className="timeline-details-field"><span>说明</span><textarea value={draft.details} onChange={(event) => setDraft({ ...draft, details: event.target.value })} placeholder="可选的补充信息" /></label><label className="timeline-check"><input type="checkbox" checked={draft.allDay} onChange={(event) => setDraft({ ...draft, allDay: event.target.checked })} />全天事项</label></div><div className="timeline-composer-actions"><button className="ghost-button" onClick={() => setComposerOpen(false)}>取消</button><button className="primary-button" onClick={() => void save()} disabled={!draft.title.trim() || !draft.startsAt || saving}>{saving ? "保存中…" : "保存事项"}</button></div></section>}
+    {composerOpen && <section className="timeline-composer"><div className="timeline-composer-title"><div><span>{t("timeline.newItem")}</span><h2>{t("timeline.addTitle")}</h2></div><button className="icon-button" onClick={() => setComposerOpen(false)} aria-label={t("common.close")}><X size={16} /></button></div><div className="timeline-form-grid"><label><span>{t("timeline.field.title")}</span><input autoFocus value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder={t("timeline.field.titlePlaceholder")} /></label><label><span>{t("timeline.field.kind")}</span><select value={draft.kind} onChange={(event) => setDraft({ ...draft, kind: event.target.value as TimelineKind })}>{timelineKinds.map((value) => <option value={value} key={value}>{t(`timeline.kind.${value}`)}</option>)}</select></label><label><span>{t("timeline.field.time")}</span><input type="datetime-local" value={draft.startsAt} onChange={(event) => setDraft({ ...draft, startsAt: event.target.value })} /></label><label><span>{t("timeline.field.location")}</span><input value={draft.location} onChange={(event) => setDraft({ ...draft, location: event.target.value })} placeholder={t("timeline.optional")} /></label><label className="timeline-details-field"><span>{t("timeline.field.details")}</span><textarea value={draft.details} onChange={(event) => setDraft({ ...draft, details: event.target.value })} placeholder={t("timeline.detailsPlaceholder")} /></label><label className="timeline-check"><input type="checkbox" checked={draft.allDay} onChange={(event) => setDraft({ ...draft, allDay: event.target.checked })} />{t("timeline.allDayItem")}</label></div><div className="timeline-composer-actions"><button className="ghost-button" onClick={() => setComposerOpen(false)}>{t("common.cancel")}</button><button className="primary-button" onClick={() => void save()} disabled={!draft.title.trim() || !draft.startsAt || saving}>{saving ? t("timeline.saving") : t("timeline.save")}</button></div></section>}
 
-    {error && <div className="timeline-error"><span>{error}</span><button onClick={() => void load()}><RefreshCw size={13} />重试</button></div>}
-    {loading ? <div className="timeline-empty"><RefreshCw className="spin" size={20} /><strong>正在整理时间线…</strong></div> : view === "month" ? <section className="timeline-calendar"><div className="timeline-weekdays">{"一二三四五六日".split("").map((day) => <span key={day}>周{day}</span>)}</div><div className="timeline-calendar-grid">{monthDays.map((day) => { const key = dateKey(day); const dayItems = items.filter((item) => dateKey(item.starts_at) === key); const currentMonth = day.getMonth() === cursor.getMonth(); return <div className={`timeline-day ${currentMonth ? "" : "outside"} ${key === dateKey(new Date()) ? "today" : ""}`} key={key}><time>{day.getDate()}</time><div>{dayItems.slice(0, 3).map((item) => <span className={`kind-${item.kind}`} title={item.title} key={item.id}>{item.title}</span>)}</div>{dayItems.length > 3 && <small>还有 {dayItems.length - 3} 项</small>}</div>; })}</div></section> : grouped.length ? <section className="timeline-list">{grouped.map(([key, dayItems]) => <div className="timeline-day-group" key={key}><div className="timeline-date"><CalendarDays size={15} /><div><strong>{dayTitle(key)}</strong><span>{key}</span></div></div><div className="timeline-day-items">{dayItems.map((item) => <TimelineCard item={item} busy={busyId === item.id} onStatus={(status) => void changeStatus(item, status)} onDelete={() => setDeleteTarget(item)} key={item.id} />)}</div></div>)}</section> : <div className="timeline-empty"><CalendarCheck2 size={28} /><strong>{view === "today" ? "今天还没有安排" : "最近没有时间事项"}</strong><span>在对话里告诉我你的计划，或手动添加第一条。</span><button className="ghost-button" onClick={() => setComposerOpen(true)}><Plus size={13} />添加事项</button></div>}
-  </main><ConfirmDialog open={deleteTarget !== null} title="删除这条时间事项？" description="删除后不会影响原始对话，但这条结构化记录无法恢复。" subject={deleteTarget?.title} confirmLabel="删除事项" busy={busyId === deleteTarget?.id} onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove()} /></div>;
+    {error && <div className="timeline-error"><span>{error}</span><button onClick={() => void load()}><RefreshCw size={13} />{t("timeline.retry")}</button></div>}
+    {loading ? <div className="timeline-empty"><RefreshCw className="spin" size={20} /><strong>{t("timeline.loading")}</strong></div> : view === "month" ? <section className="timeline-calendar"><div className="timeline-weekdays">{Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale, { weekday: "short" }).format(addDays(new Date(2024, 0, 1), index))).map((day) => <span key={day}>{day}</span>)}</div><div className="timeline-calendar-grid">{monthDays.map((day) => { const key = dateKey(day); const dayItems = items.filter((item) => dateKey(item.starts_at) === key); const currentMonth = day.getMonth() === cursor.getMonth(); return <div className={`timeline-day ${currentMonth ? "" : "outside"} ${key === dateKey(new Date()) ? "today" : ""}`} key={key}><time>{day.getDate()}</time><div>{dayItems.slice(0, 3).map((item) => <span className={`kind-${item.kind}`} title={item.title} key={item.id}>{item.title}</span>)}</div>{dayItems.length > 3 && <small>{t("timeline.more", { count: dayItems.length - 3 })}</small>}</div>; })}</div></section> : grouped.length ? <section className="timeline-list">{grouped.map(([key, dayItems]) => <div className="timeline-day-group" key={key}><div className="timeline-date"><CalendarDays size={15} /><div><strong>{dayTitle(key, locale, t("timeline.today"), t("timeline.tomorrow"))}</strong><span>{key}</span></div></div><div className="timeline-day-items">{dayItems.map((item) => <TimelineCard item={item} busy={busyId === item.id} onStatus={(status) => void changeStatus(item, status)} onDelete={() => setDeleteTarget(item)} key={item.id} />)}</div></div>)}</section> : <div className="timeline-empty"><CalendarCheck2 size={28} /><strong>{view === "today" ? t("timeline.emptyToday") : t("timeline.emptyUpcoming")}</strong><span>{t("timeline.emptyDescription")}</span><button className="ghost-button" onClick={() => setComposerOpen(true)}><Plus size={13} />{t("timeline.addItem")}</button></div>}
+  </main><ConfirmDialog open={deleteTarget !== null} title={t("timeline.deleteTitle")} description={t("timeline.deleteDescription")} subject={deleteTarget?.title} confirmLabel={t("timeline.deleteConfirm")} busy={busyId === deleteTarget?.id} onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove()} /></div>;
 }

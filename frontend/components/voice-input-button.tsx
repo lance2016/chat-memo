@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, LoaderCircle, Mic, X } from "lucide-react";
 import { errorMessage, transcribeAudio } from "@/lib/api";
+import { useI18n } from "@/components/i18n-provider";
 
 const MIME_TYPES = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"];
 const BAR_COUNT = 34;
@@ -22,6 +23,7 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
   disabled?: boolean;
   onTranscript: (text: string) => void;
 }) {
+  const { t } = useI18n();
   const [phase, setPhase] = useState<"idle" | "recording" | "transcribing">("idle");
   const [seconds, setSeconds] = useState(0);
   const [levels, setLevels] = useState(QUIET_LEVELS);
@@ -103,7 +105,7 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
     if (!audio.size) {
       setPhase("idle");
       setMessageTone("error");
-      setMessage("没有录到声音，请重试");
+      setMessage(t("voice.noAudio"));
       return;
     }
 
@@ -112,17 +114,18 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
       const result = await transcribeAudio(audio);
       if (!mountedRef.current) return;
       const text = result.text.trim();
-      if (!text) throw new Error("没有识别到可用文字");
+      if (!text) throw new Error(t("voice.noText"));
       onTranscript(text);
       setMessageTone("success");
-      setMessage("已添加到输入框");
+      const addedMessage = t("voice.added");
+      setMessage(addedMessage);
       window.setTimeout(() => {
-        if (mountedRef.current) setMessage((current) => current === "已添加到输入框" ? "" : current);
+        if (mountedRef.current) setMessage((current) => current === addedMessage ? "" : current);
       }, 1800);
     } catch (cause) {
       if (mountedRef.current) {
         setMessageTone("error");
-        setMessage(errorMessage(cause, "语音转写失败"));
+        setMessage(errorMessage(cause, t("voice.transcribeError")));
       }
     } finally {
       if (mountedRef.current) setPhase("idle");
@@ -133,7 +136,7 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
     setMessage("");
     if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setMessageTone("error");
-      setMessage("当前浏览器不支持录音");
+      setMessage(t("voice.unsupported"));
       return;
     }
     try {
@@ -155,7 +158,7 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
         if (mountedRef.current) {
           setPhase("idle");
           setMessageTone("error");
-          setMessage("录音失败，请重试");
+          setMessage(t("voice.recordError"));
         }
       };
       recorder.start(250);
@@ -166,7 +169,7 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
       releaseStream();
       const denied = cause instanceof DOMException && (cause.name === "NotAllowedError" || cause.name === "SecurityError");
       setMessageTone("error");
-      setMessage(denied ? "请允许浏览器使用麦克风" : errorMessage(cause, "无法启动录音"));
+      setMessage(denied ? t("voice.permission") : errorMessage(cause, t("voice.startError")));
     }
   };
 
@@ -187,13 +190,13 @@ export function VoiceInputButton({ disabled = false, onTranscript }: {
 
   if (phase === "idle") return <span className="voice-input-control idle">
     {message && <span className={`voice-input-message ${messageTone}`} role="status" title={message}>{message}</span>}
-    <button className="voice-input-button" type="button" aria-label="语音输入" title="语音输入" disabled={disabled} onClick={() => void startRecording()}><Mic size={16} /></button>
+    <button className="voice-input-button" type="button" aria-label={t("voice.input")} title={t("voice.input")} disabled={disabled} onClick={() => void startRecording()}><Mic size={16} /></button>
   </span>;
 
-  return <span className={`voice-input-control expanded ${phase}`} role="group" aria-label={phase === "recording" ? "正在录音" : "正在识别语音"}>
-    {phase === "recording" ? <button className="voice-input-action cancel" type="button" aria-label="取消录音" title="取消" onClick={cancelRecording}><X size={17} /></button> : <LoaderCircle size={17} className="spin voice-input-loader" />}
+  return <span className={`voice-input-control expanded ${phase}`} role="group" aria-label={phase === "recording" ? t("voice.recording") : t("voice.recognizing")}>
+    {phase === "recording" ? <button className="voice-input-action cancel" type="button" aria-label={t("voice.cancel")} title={t("common.cancel")} onClick={cancelRecording}><X size={17} /></button> : <LoaderCircle size={17} className="spin voice-input-loader" />}
     <span className="voice-input-waveform" aria-hidden="true">{levels.map((level, index) => <i key={index} style={{ height: `${phase === "transcribing" ? 22 + (index % 5) * 8 : level}%` }} />)}</span>
-    <span className="voice-input-state" aria-live="polite">{phase === "recording" ? <><strong>{durationLabel(seconds)}</strong><small>正在聆听</small></> : <><strong>识别中</strong><small>正在生成文字…</small></>}</span>
-    {phase === "recording" && <button className="voice-input-action finish" type="button" aria-label={`完成录音，已录制 ${durationLabel(seconds)}`} title="完成" onClick={stopRecording}><Check size={17} /></button>}
+    <span className="voice-input-state" aria-live="polite">{phase === "recording" ? <><strong>{durationLabel(seconds)}</strong><small>{t("voice.listening")}</small></> : <><strong>{t("voice.recognizingShort")}</strong><small>{t("voice.generating")}</small></>}</span>
+    {phase === "recording" && <button className="voice-input-action finish" type="button" aria-label={t("voice.finish", { duration: durationLabel(seconds) })} title={t("voice.complete")} onClick={stopRecording}><Check size={17} /></button>}
   </span>;
 }

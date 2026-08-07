@@ -15,37 +15,39 @@ import { resetMediaElement } from "@/lib/media-playback";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { InputDialog } from "@/components/input-dialog";
 import { VoiceInputButton } from "@/components/voice-input-button";
+import { useI18n } from "@/components/i18n-provider";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
-function dateLabel(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date(value));
+function dateLabel(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric" }).format(new Date(value));
 }
 
-function displayTool(tool: LiveTool | ToolActivity) {
+function displayTool(tool: LiveTool | ToolActivity, t: ReturnType<typeof useI18n>["t"]) {
   const running = "status" in tool && tool.status === "running";
   return (
     <div className={`tool-activity ${running ? "running" : tool.ok ? "" : "failed"}`} key={`${tool.name}-${tool.summary}-${JSON.stringify(tool.input)}`}>
       <span className="tool-activity-icon" aria-hidden="true">{running ? <LoaderCircle size={13} className="spin" /> : tool.ok ? "✓" : "!"}</span>
       <span className="tool-activity-label">{toolLabel(tool)}</span>
-      <span className="tool-activity-state">{running ? "处理中" : tool.ok ? "已完成" : "需注意"}</span>
+      <span className="tool-activity-state">{running ? t("chat.tool.processing") : tool.ok ? t("chat.tool.done") : t("chat.tool.attention")}</span>
       {!running && tool.summary && <span className="tool-summary" title={tool.summary}>{tool.summary}</span>}
     </div>
   );
 }
 
 function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
+  const { t } = useI18n();
   const runningCount = tools.filter((tool) => "status" in tool && tool.status === "running").length;
   const failedCount = tools.filter((tool) => !("status" in tool && tool.status === "running") && !tool.ok).length;
   const knowledgeBaseCount = tools.filter((tool) => tool.name.startsWith("kb_")).length;
   const timelineCount = tools.filter((tool) => tool.name.startsWith("timeline_")).length;
-  const groupName = knowledgeBaseCount === tools.length ? "知识库查询" : timelineCount === tools.length ? "时间线更新" : knowledgeBaseCount > 0 || timelineCount > 0 ? "工具操作" : "记忆操作";
-  const label = runningCount ? `正在处理 ${tools.length} 项${groupName}` : `${groupName} ${tools.length} 次`;
-  const state = runningCount ? `${runningCount} 项进行中` : failedCount ? `${failedCount} 项需注意` : "已完成";
+  const groupName = knowledgeBaseCount === tools.length ? t("chat.tool.knowledge") : timelineCount === tools.length ? t("chat.tool.timeline") : knowledgeBaseCount > 0 || timelineCount > 0 ? t("chat.tool.general") : t("chat.tool.memory");
+  const label = runningCount ? t("chat.tool.runningLabel", { count: tools.length, group: groupName }) : t("chat.tool.doneLabel", { count: tools.length, group: groupName });
+  const state = runningCount ? t("chat.tool.runningState", { count: runningCount }) : failedCount ? t("chat.tool.attentionState", { count: failedCount }) : t("chat.tool.done");
 
   return <details className={`tool-group ${failedCount ? "has-failure" : ""}`} open={runningCount > 0}>
     <summary><span className="tool-group-icon"><ListChecks size={13} /></span><span className="tool-group-label">{label}</span><span className="tool-group-state">{state}</span><ChevronDown size={13} className="tool-group-chevron" /></summary>
-    <div className="tool-group-list">{tools.map((tool) => displayTool(tool))}</div>
+    <div className="tool-group-list">{tools.map((tool) => displayTool(tool, t))}</div>
   </details>;
 }
 
@@ -54,17 +56,17 @@ function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usa
   return typeof output === "number" ? `${output.toLocaleString()} output tokens` : "";
 }
 
-function homeDateLabel() {
-  return new Intl.DateTimeFormat("zh-CN", { weekday: "long", month: "long", day: "numeric" }).format(new Date());
+function homeDateLabel(locale: string) {
+  return new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric" }).format(new Date());
 }
 
-function greeting() {
+function greeting(t: ReturnType<typeof useI18n>["t"]) {
   const hour = new Date().getHours();
-  if (hour < 6) return "夜深了";
-  if (hour < 11) return "早上好";
-  if (hour < 14) return "中午好";
-  if (hour < 18) return "下午好";
-  return "晚上好";
+  if (hour < 6) return t("chat.greeting.late");
+  if (hour < 11) return t("chat.greeting.morning");
+  if (hour < 14) return t("chat.greeting.noon");
+  if (hour < 18) return t("chat.greeting.afternoon");
+  return t("chat.greeting.evening");
 }
 
 function HomeDashboard({ conversations, input, memoryCount, sending, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation }: {
@@ -79,70 +81,74 @@ function HomeDashboard({ conversations, input, memoryCount, sending, composerRef
   onSubmit: (event: FormEvent) => void;
   onOpenConversation: (id: number) => void;
 }) {
+  const { locale, t } = useI18n();
   const recent = conversations.slice(0, 3);
   return <div className="memory-home-scroll">
     <div className="memory-home">
       <section className="memory-home-hero">
         <div className="memory-home-copy">
-          <p className="memory-date"><i /><i /><i />{homeDateLabel()}</p>
-          <h1>{greeting()}，Lance。<br /><em>今天想留下什么？</em></h1>
-          <p>我会替你保存重要的想法、偏好和约定，在需要时帮你重新想起。</p>
+          <p className="memory-date"><i /><i /><i />{homeDateLabel(locale)}</p>
+          <h1>{greeting(t)}, Lance.<br /><em>{t("chat.home.question")}</em></h1>
+          <p>{t("chat.home.description")}</p>
         </div>
         <div className="memory-orbit" aria-hidden="true">
           <i className="orbit-ring" /><i className="orbit-ring orbit-ring-wide" />
           <span className="orbit-core"><MemoryMark compact /></span>
           <i className="orbit-dot orbit-dot-mint" /><i className="orbit-dot orbit-dot-orange" /><i className="orbit-dot orbit-dot-blue" />
-          <span className="orbit-note"><Sparkles size={12} /><b>{memoryCount ?? "—"}</b> 条记忆</span>
+          <span className="orbit-note"><Sparkles size={12} /><b>{memoryCount ?? "—"}</b> {t("chat.home.memories")}</span>
         </div>
       </section>
 
       <form className="home-capture" onSubmit={onSubmit}>
-        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder="和我聊聊，或告诉我一件想记住的事……" disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput("帮我整理今天的想法")}>整理今天的想法</button><button type="button" onClick={() => onInput("回顾一下最近的计划")}>回顾最近的计划</button><button type="button" onClick={() => onInput("记住一个新的偏好：")}>记住一个偏好</button><span className="home-capture-hint">Enter 发送 · Shift + Enter 换行</span></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label="发送"><Send size={16} /></button></div></div>
+        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={t("chat.home.placeholder")} disabled={sending} /></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button><button type="button" onClick={() => onInput(t("chat.home.prompt.preference"))}>{t("chat.home.prompt.preference")}</button><span className="home-capture-hint">{t("chat.sendHint")}</span></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
         <div className="home-panel">
-          <div className="home-panel-heading"><div><span>RECENT CONVERSATIONS</span><h2>最近聊过的事情</h2></div><button type="button" onClick={() => conversations[0] && onOpenConversation(conversations[0].id)}>继续最近对话 <ArrowRight size={13} /></button></div>
+          <div className="home-panel-heading"><div><span>{t("chat.home.recentKicker")}</span><h2>{t("chat.home.recentTitle")}</h2></div><button type="button" onClick={() => conversations[0] && onOpenConversation(conversations[0].id)}>{t("chat.home.continue")} <ArrowRight size={13} /></button></div>
           <div className="home-stream">
-            {recent.length ? recent.map((conversation, index) => <button className="home-stream-item" type="button" onClick={() => onOpenConversation(conversation.id)} key={conversation.id}><i className={`home-stream-pin tone-${index + 1}`}><span /></i><span><time>{dateLabel(conversation.updated_at)}</time><strong>{conversation.title}</strong><small>打开这段对话，继续沿着当时的想法往下聊。</small><em>{index === 0 ? "最近" : "对话"}</em></span><ArrowRight size={15} /></button>) : <div className="home-stream-empty">还没有对话，从上方写下第一件想记住的事吧。</div>}
+            {recent.length ? recent.map((conversation, index) => <button className="home-stream-item" type="button" onClick={() => onOpenConversation(conversation.id)} key={conversation.id}><i className={`home-stream-pin tone-${index + 1}`}><span /></i><span><time>{dateLabel(conversation.updated_at, locale)}</time><strong>{conversation.title}</strong><small>{t("chat.home.openDescription")}</small><em>{index === 0 ? t("chat.home.latest") : t("chat.home.conversation")}</em></span><ArrowRight size={15} /></button>) : <div className="home-stream-empty">{t("chat.home.empty")}</div>}
           </div>
         </div>
         <aside className="home-rail">
-          <Link className="home-review-card" href="/review"><span className="review-scene"><i className="review-sun" /><i className="review-hill back" /><i className="review-hill front" /></span><span className="home-review-copy"><small>TODAY&apos;S REVIEW</small><strong>回看今天<br />留下的脉络</strong><em>开始今日回顾 <ArrowRight size={13} /></em></span></Link>
+          <Link className="home-review-card" href="/review"><span className="review-scene"><i className="review-sun" /><i className="review-hill back" /><i className="review-hill front" /></span><span className="home-review-copy"><small>{t("chat.home.reviewKicker")}</small><strong>{t("chat.home.reviewTitle").split("\n").map((line, index) => <span key={line}>{index > 0 && <br />}{line}</span>)}</strong><em>{t("chat.home.reviewAction")} <ArrowRight size={13} /></em></span></Link>
         </aside>
       </section>
     </div>
   </div>;
 }
 
-function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason = "语音服务状态未知", turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
+function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
+  const { t } = useI18n();
+  const unavailableReason = ttsDisabledReason ?? t("chat.tts.unknown");
   if (turn.kind === "user") {
-    return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div>{onEdit && <div className="turn-actions"><button onClick={onEdit}><Pencil size={12} />编辑重发</button></div>}</div></div>;
+    return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div>{onEdit && <div className="turn-actions"><button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button></div>}</div></div>;
   }
   return (
     <div className={`turn assistant-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
       {showThinking && turn.thinking && (
         <details className="thinking">
-          <summary>{streaming ? "思考中…" : "思考过程"}</summary>
+          <summary>{streaming ? t("chat.thinkingActive") : t("chat.thinking")}</summary>
           <div className="thinking-body">{turn.thinking}</div>
         </details>
       )}
       {showToolActivity && turn.tools.length > 0 && <ToolActivityGroup tools={turn.tools} />}
       {(turn.text || streaming) && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown>{streaming && <span className="streaming-cursor" />}</div>}
-      {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>回答被中断，已保留已生成的内容</span></div>}
+      {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>{t("chat.interrupted")}</span></div>}
       {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
       {(onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
-        {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? "停止播放" : "播放这条回答") : ttsDisabledReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? "停止播放" : "播放这条回答") : ttsDisabledReason}>
-          {ttsLoading ? <LoaderCircle size={12} className="spin" /> : <Volume2 size={12} />}{ttsLoading ? "合成中…" : ttsPlaying ? "停止播放" : "播放语音"}
+        {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason}>
+          {ttsLoading ? <LoaderCircle size={12} className="spin" /> : <Volume2 size={12} />}{ttsLoading ? t("chat.tts.synthesizing") : ttsPlaying ? t("chat.tts.stop") : t("chat.tts.play")}
         </button>}
-        {onRegenerate && <button onClick={onRegenerate}><RefreshCw size={12} />重新生成</button>}
+        {onRegenerate && <button onClick={onRegenerate}><RefreshCw size={12} />{t("chat.regenerate")}</button>}
       </div>}
     </div>
   );
 }
 
 export function ChatPage() {
+  const { t } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const selectedFromUrl = Number(searchParams.get("conversation"));
@@ -572,10 +578,10 @@ export function ChatPage() {
 
   const ttsAvailable = Boolean(ttsStatus && ttsStatus.mode !== "off" && ttsStatus.enabled);
   const ttsDisabledReason = !ttsStatus
-    ? "正在检查语音服务"
+    ? t("chat.tts.unknown")
     : !ttsStatus.enabled
-      ? "语音播放未启用"
-      : "语音播放已关闭";
+      ? t("chat.tts.unknown")
+      : t("chat.tts.unknown");
 
   const speakText = async (text: string, messageId?: number) => {
     if (!text.trim() || !ttsStatus || ttsStatus.mode === "off") return;
@@ -733,32 +739,32 @@ export function ChatPage() {
       <main className="main-panel">
         {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} /> : <>
           <div className="chat-conversation-toolbar">
-            <div className="chat-conversation-title"><span>{showArchived ? "已归档对话" : "当前对话"}</span><strong>{selected?.title ?? "正在打开对话…"}</strong></div>
+            <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong></div>
             {selected && <div className="chat-conversation-actions">
-              <button type="button" className="icon-button" aria-label="修改会话标题" title="修改会话标题" onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
-              <button type="button" className="icon-button" aria-label={showArchived ? "恢复会话" : "归档会话"} title={showArchived ? "恢复会话" : "归档会话"} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
-              <button type="button" className="icon-button chat-delete-button" aria-label="删除会话" title="删除会话" onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
+              <button type="button" className="icon-button" aria-label={t("chat.rename")} title={t("chat.rename")} onClick={() => void renameSelectedConversation()} disabled={renaming || sending}><Pencil size={14} /></button>
+              <button type="button" className="icon-button" aria-label={showArchived ? t("chat.restore") : t("chat.archive")} title={showArchived ? t("chat.restore") : t("chat.archive")} onClick={() => void toggleArchived(selected, !showArchived)} disabled={sending}>{showArchived ? <ArchiveRestore size={14} /> : <Archive size={14} />}</button>
+              <button type="button" className="icon-button chat-delete-button" aria-label={t("chat.delete")} title={t("chat.delete")} onClick={() => setDeleteTarget(selected)} disabled={sending}><Trash2 size={14} /></button>
             </div>}
           </div>
           <div className="message-scroll" ref={scrollRef} onScroll={(event) => { const element = event.currentTarget; shouldAutoScroll.current = element.scrollHeight - element.scrollTop - element.clientHeight < 90; }}>
-            {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">加载消息中…</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
+            {loadingMessages && !pendingUser && !sending ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${index}`} />; })}
           </div>
-          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? "编辑这条消息后重新发送…" : "写下你的问题或想让我记住的事…"} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? "编辑重发 · Esc 取消" : "Enter 发送 · Shift + Enter 换行"}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />停止</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? "重发" : "发送"}</button>}</div></form></div>
+          <div className="composer-wrap">{error && <div className="error-banner">{error}</div>}<form className="composer" onSubmit={onSubmit}><textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} /><div className="composer-bottom"><span className="composer-hint">{editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span><VoiceInputButton disabled={sending} onTranscript={appendTranscription} />{sending ? <button type="button" className="ghost-button stop-button" onClick={stop}><Square size={13} />{t("chat.stop")}</button> : <button type="submit" className="primary-button" disabled={!input.trim()}>{editingTarget !== null ? t("chat.resend") : t("chat.send")}</button>}</div></form></div>
         </>}
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
       <ConfirmDialog
         open={deleteTarget !== null}
-        title="删除这段会话？"
-        description="会话中的全部消息和关联记录都会被永久删除。这个操作无法撤销。"
+        title={t("chat.deleteTitle")}
+        description={t("chat.deleteDescription")}
         subject={deleteTarget?.title}
-        warning={selectedId === deleteTarget?.id ? "删除当前会话后，将自动切换到下一段会话。" : undefined}
-        confirmLabel="永久删除会话"
+        warning={selectedId === deleteTarget?.id ? t("chat.deleteWarning") : undefined}
+        confirmLabel={t("chat.deleteConfirm")}
         busy={deletingConversation}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => void removeConversation()}
       />
-      <InputDialog open={renameDialogOpen} title="修改会话标题" description="给这段对话一个更容易记住的名字。标题只会影响当前会话。" value={renameDraft} onChange={setRenameDraft} onCancel={() => setRenameDialogOpen(false)} onConfirm={() => void confirmRename()} busy={renaming} />
+      <InputDialog open={renameDialogOpen} title={t("chat.rename")} description={t("chat.renameDescription")} value={renameDraft} onChange={setRenameDraft} onCancel={() => setRenameDialogOpen(false)} onConfirm={() => void confirmRename()} busy={renaming} />
     </div>
   );
 }

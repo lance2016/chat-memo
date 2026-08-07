@@ -11,6 +11,7 @@ import { Markdown } from "@/components/markdown";
 import { LatestRequest } from "@/lib/latest-request";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useI18n } from "@/components/i18n-provider";
 
 function actorLabel(actor: MemoryVersion["actor"]) {
   return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
@@ -79,6 +80,7 @@ function MemoryStatsPanel({ stats, loading, error, onRetry, onOpenFile, onDelete
 }
 
 export function MemoriesPage() {
+  const { t } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [nodes, setNodes] = useState<MemoryNode[]>([]);
@@ -273,17 +275,17 @@ export function MemoriesPage() {
     <div className="memory-shell">
       <div className="memory-workspace">
       <aside className={`memory-tree-panel ${treeOpen ? "mobile-open" : ""}`}>
-        <div className="memory-header"><h1>长期记忆</h1><p>模型会在聊天中读取和更新这些文件。这里保留每次变更的完整历史。</p></div>
+        <div className="memory-header"><h1>{t("memories.title")}</h1><p>{t("memories.description")}</p></div>
         <div className="tree">{loadingTree ? <div className="centered-empty">加载中…</div> : treeError ? <div className="centered-empty"><div className="centered-state"><TriangleAlert size={20} /><strong>无法加载记忆目录</strong><span>{treeError}</span><button className="ghost-button" onClick={() => { setLoadingTree(true); void loadTree().then(syncTreeSelection).catch((cause: unknown) => setTreeError(errorMessage(cause, "无法加载记忆树"))).finally(() => setLoadingTree(false)); }}><RefreshCw size={12} />重试</button></div></div> : tree.length ? tree.map((entry) => <TreeEntryView key={entry.path} entry={entry} selected={selectedPath} onSelect={selectFile} onDeleteDirectory={(entry) => setDeleteTarget({ path: entry.path, isDirectory: true })} />) : <div className="centered-empty"><div className="centered-state"><strong>还没有长期记忆</strong><span>当助手保存值得长期保留的信息后，文件会出现在这里。</span></div></div>}</div>
       </aside>
-      {treeOpen && <button className="sidebar-backdrop" aria-label="关闭记忆树" onClick={() => setTreeOpen(false)} />}
+      {treeOpen && <button className="sidebar-backdrop" aria-label={t("memories.closeTree")} onClick={() => setTreeOpen(false)} />}
       <main className="memory-editor-panel">
         <header className="editor-topbar">
-          <div className="path-title"><button className="icon-button mobile-menu" aria-label="打开记忆树" onClick={() => setTreeOpen(true)}><Menu size={19} /></button><FileText size={16} color="var(--accent)" /><div className="memory-context"><span>记忆管理</span><ChevronRight size={13} /><strong>{showStats ? "使用分析" : memory?.path ?? "选择一个文件"}</strong>{!showStats && hasChanges && <em>未保存</em>}</div></div>
-          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label="记忆视图"><button className={!showStats ? "active" : ""} role="tab" aria-selected={!showStats} onClick={() => showStats && toggleStats()}><FileText size={13} />文件</button><button className={showStats ? "active" : ""} role="tab" aria-selected={showStats} onClick={() => !showStats && toggleStats()}><BarChart3 size={13} />使用分析</button></div>{!showStats && memory && <><button className="danger-button" onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={13} />删除</button><button className="primary-button" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? "保存中…" : "保存"}</button></>}</div>
+          <div className="path-title"><button className="icon-button mobile-menu" aria-label={t("memories.openTree")} onClick={() => setTreeOpen(true)}><Menu size={19} /></button><FileText size={16} color="var(--accent)" /><div className="memory-context"><span>{t("memories.manager")}</span><ChevronRight size={13} /><strong>{showStats ? t("memories.analytics") : memory?.path ?? t("memories.selectFile")}</strong>{!showStats && hasChanges && <em>{t("memories.unsaved")}</em>}</div></div>
+          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={!showStats ? "active" : ""} role="tab" aria-selected={!showStats} onClick={() => showStats && toggleStats()}><FileText size={13} />{t("memories.files")}</button><button className={showStats ? "active" : ""} role="tab" aria-selected={showStats} onClick={() => !showStats && toggleStats()}><BarChart3 size={13} />{t("memories.analytics")}</button></div>{!showStats && memory && <><button className="danger-button" onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={13} />{t("memories.delete")}</button><button className="primary-button" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
         </header>
         {showStats ? <MemoryStatsPanel stats={stats} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={(path) => setDeleteTarget({ path, isDirectory: false })} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
-          <div className="editor-tabs"><button className={`editor-tab ${tab === "edit" ? "active" : ""}`} onClick={() => setTab("edit")}>编辑</button><button className={`editor-tab ${tab === "preview" ? "active" : ""}`} onClick={() => setTab("preview")}>预览</button></div>
+          <div className="editor-tabs"><button className={`editor-tab ${tab === "edit" ? "active" : ""}`} onClick={() => setTab("edit")}>{t("memories.edit")}</button><button className={`editor-tab ${tab === "preview" ? "active" : ""}`} onClick={() => setTab("preview")}>{t("memories.preview")}</button></div>
           <div className="editor-area">{loadingFile ? <div className="centered-empty">打开文件中…</div> : tab === "edit" ? <textarea className="editor-textarea" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /> : <div className="preview assistant-content"><Markdown>{content}</Markdown></div>}</div>
           <section className="versions-panel"><div className="versions-head"><span><History size={14} style={{ verticalAlign: "-3px", marginRight: 5 }} />版本历史（{versions.length}）</span><div className="version-selectors">{versions.length > 0 && <><select aria-label="较旧版本" value={olderId ?? ""} onChange={(event) => setOlderId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><select aria-label="较新版本" value={newerId ?? ""} onChange={(event) => setNewerId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><button className="ghost-button" onClick={requestRestore} disabled={!older || restoring}><RotateCcw size={12} />{restoring ? "恢复中…" : "恢复"}</button></>}</div></div>
             {older && newer && older.id !== newer.id && <DiffView before={older.content} after={newer.content} />}

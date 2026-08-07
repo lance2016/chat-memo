@@ -14,6 +14,7 @@ import { ReviewSummaryList } from "@/components/review/review-summary-list";
 import { ReviewUsageCard } from "@/components/review/review-usage-card";
 import { LatestRequest } from "@/lib/latest-request";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { useI18n } from "@/components/i18n-provider";
 
 type SectionKey = "conversations" | "changes" | "summaries" | "usage" | "digest" | "loops";
 type SectionErrors = Partial<Record<SectionKey, string>>;
@@ -31,8 +32,8 @@ function localDay(value: string) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function formatDayTitle(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date(`${value}T12:00:00`));
+function formatDayTitle(value: string, locale: string) {
+  return new Intl.DateTimeFormat(locale, { year: "numeric", month: "long", day: "numeric", weekday: "long" }).format(new Date(`${value}T12:00:00`));
 }
 
 function moveDay(value: string, amount: number) {
@@ -54,6 +55,7 @@ function isFulfilled<T>(result: PromiseSettledResult<T>): result is PromiseFulfi
 }
 
 export function ReviewPage() {
+  const { locale, t } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedDay = searchParams.get("day");
@@ -89,10 +91,10 @@ export function ReviewPage() {
       .catch((cause) => {
         if (!active) return;
         setAvailableDays([]);
-        setError(errorMessage(cause, "无法读取可回顾日期"));
+        setError(errorMessage(cause, t("review.days.error")));
       });
     return () => { active = false; };
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (availableDays === null || availableDays.length === 0) return;
@@ -118,13 +120,13 @@ export function ReviewPage() {
     if (!reviewRequestsRef.current.isCurrent(request)) return;
 
     const nextErrors: SectionErrors = {};
-    if (!isFulfilled(activeResult) && !isFulfilled(archivedResult)) nextErrors.conversations = errorMessage(activeResult.reason, "无法加载当天会话");
-    else if (!isFulfilled(activeResult) || !isFulfilled(archivedResult)) nextErrors.conversations = "部分会话列表暂时无法加载";
-    if (!isFulfilled(changesResult)) nextErrors.changes = errorMessage(changesResult.reason, "无法加载记忆变更");
-    if (!isFulfilled(summariesResult)) nextErrors.summaries = errorMessage(summariesResult.reason, "无法加载会话摘要");
-    if (!isFulfilled(usageResult)) nextErrors.usage = errorMessage(usageResult.reason, "无法加载用量统计");
-    if (!isFulfilled(digestResult)) nextErrors.digest = errorMessage(digestResult.reason, "无法加载今日回顾");
-    if (!isFulfilled(loopsResult)) nextErrors.loops = errorMessage(loopsResult.reason, "无法加载需要关注的事项");
+    if (!isFulfilled(activeResult) && !isFulfilled(archivedResult)) nextErrors.conversations = errorMessage(activeResult.reason, t("review.conversationsError"));
+    else if (!isFulfilled(activeResult) || !isFulfilled(archivedResult)) nextErrors.conversations = t("review.partialConversationsError");
+    if (!isFulfilled(changesResult)) nextErrors.changes = errorMessage(changesResult.reason, t("review.changesError"));
+    if (!isFulfilled(summariesResult)) nextErrors.summaries = errorMessage(summariesResult.reason, t("review.summariesError"));
+    if (!isFulfilled(usageResult)) nextErrors.usage = errorMessage(usageResult.reason, t("review.usageError"));
+    if (!isFulfilled(digestResult)) nextErrors.digest = errorMessage(digestResult.reason, t("review.digestError"));
+    if (!isFulfilled(loopsResult)) nextErrors.loops = errorMessage(loopsResult.reason, t("review.followUps.loadError"));
 
     const allConversations = [
       ...(isFulfilled(activeResult) ? activeResult.value : []),
@@ -139,9 +141,9 @@ export function ReviewPage() {
     if (isFulfilled(loopsResult)) setLoops(loopsResult.value);
     setSectionErrors(nextErrors);
     setLoadedDay(selectedDay);
-    if (Object.keys(nextErrors).length) setError("部分数据加载失败，可以点击重试；可用区块仍然保留。");
+    if (Object.keys(nextErrors).length) setError(t("review.partialError"));
     setLoading(false);
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (availableDays?.includes(day)) void loadReview(day);
@@ -158,7 +160,7 @@ export function ReviewPage() {
       await loadReview(targetDay);
       if (selectedDayRef.current === targetDay) setResult(summary);
     } catch (cause) {
-      setError(errorMessage(cause, "整理失败"));
+      setError(errorMessage(cause, t("review.runError")));
     } finally {
       setRunning(false);
     }
@@ -172,9 +174,9 @@ export function ReviewPage() {
       const next = await listOpenLoops(targetDay);
       if (selectedDayRef.current === targetDay) setLoops(next);
     } catch (cause) {
-      setError(errorMessage(cause, "更新待办失败"));
+      setError(errorMessage(cause, t("review.followUps.updateError")));
     }
-  }, []);
+  }, [t]);
 
   const requestRestoreDeletedMemory = (change: MemoryVersion) => {
     if (change.operation !== "deleted") return;
@@ -190,7 +192,7 @@ export function ReviewPage() {
       await loadReview(day);
       setRestoreTarget(null);
     } catch (cause) {
-      setError(errorMessage(cause, "恢复记忆失败"));
+      setError(errorMessage(cause, t("review.restoreError")));
     } finally {
       setRestoring(false);
     }
@@ -211,32 +213,32 @@ export function ReviewPage() {
   const newerDay = dayIndex > 0 ? availableDays?.[dayIndex - 1] : undefined;
   const todayIsAvailable = availableDays?.includes(today()) ?? false;
 
-  if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading"><LoaderCircle size={18} className="spin" />正在读取可回顾日期…</div></main></div>;
+  if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading"><LoaderCircle size={18} className="spin" />{t("review.days.loading")}</div></main></div>;
 
-  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-heading review-heading-empty"><div><div className="eyebrow">Daily review</div><h1>还没有可以回看的日子。</h1><p>有过对话之后，这里才会出现可选择的日期。</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
+  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-heading review-heading-empty"><div><div className="eyebrow">{t("review.eyebrow")}</div><h1>{t("review.days.emptyTitle")}</h1><p>{t("review.days.emptyDescription")}</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
 
   return <div className="review-shell">
     <main className="review-content">
       <div className="review-heading">
-        <div className="review-heading-copy"><div className="eyebrow">Daily review</div><h1>{isToday ? "回看今天。" : "回看这一天。"}</h1><p>{formatDayTitle(day)} · 把对话、记忆和使用情况放在同一条脉络里。</p></div>
+        <div className="review-heading-copy"><div className="eyebrow">{t("review.eyebrow")}</div><h1>{isToday ? t("review.title.today") : t("review.title.day")}</h1><p>{t("review.subtitle", { date: formatDayTitle(day, locale) })}</p></div>
         <div className="review-controls">
           <div className="review-control-row">
             <div className="date-control">
-              <button className="icon-button date-step" aria-label="上一个有记录的日期" disabled={!olderDay} onClick={() => olderDay && selectDay(olderDay)}><ChevronLeft size={16} /></button>
-              <label htmlFor="review-day">选择日期</label>
+              <button className="icon-button date-step" aria-label={t("review.date.previous")} disabled={!olderDay} onClick={() => olderDay && selectDay(olderDay)}><ChevronLeft size={16} /></button>
+              <label htmlFor="review-day">{t("review.date.select")}</label>
               <select id="review-day" value={day} onChange={(event) => selectDay(event.target.value)}>{availableDays.map((value) => <option value={value} key={value}>{value.replaceAll("-", "/")}</option>)}</select>
-              <button className="icon-button date-step" aria-label="下一个有记录的日期" disabled={!newerDay} onClick={() => newerDay && selectDay(newerDay)}><ChevronRight size={16} /></button>
+              <button className="icon-button date-step" aria-label={t("review.date.next")} disabled={!newerDay} onClick={() => newerDay && selectDay(newerDay)}><ChevronRight size={16} /></button>
             </div>
-            <span className="review-status-slot">{dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />已整理 · {new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at))}</span>}</span>
-            <button className={`ghost-button today-button ${isToday || !todayIsAvailable ? "is-placeholder" : ""}`} disabled={isToday || !todayIsAvailable} aria-hidden={isToday || !todayIsAvailable} tabIndex={isToday || !todayIsAvailable ? -1 : 0} onClick={() => selectDay(today())}><RefreshCw size={13} />今天</button>
-            <Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />整理设置</Link>
+            <span className="review-status-slot">{dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}</span>
+            <button className={`ghost-button today-button ${isToday || !todayIsAvailable ? "is-placeholder" : ""}`} disabled={isToday || !todayIsAvailable} aria-hidden={isToday || !todayIsAvailable} tabIndex={isToday || !todayIsAvailable ? -1 : 0} onClick={() => selectDay(today())}><RefreshCw size={13} />{t("review.today")}</button>
+            <Link className="ghost-button review-settings-link" href="/settings"><Settings2 size={13} />{t("review.settings")}</Link>
           </div>
-          <button className="primary-button review-run-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />整理中…</> : <><Play size={14} />{dayDigest ? "重新整理这一天" : "整理这一天"}</>}</button>
+          <button className="primary-button review-run-button" onClick={() => void runConsolidation()} disabled={running}>{running ? <><LoaderCircle size={14} className="spin" />{t("review.running")}</> : <><Play size={14} />{dayDigest ? t("review.rerun") : t("review.run")}</>}</button>
         </div>
       </div>
-      {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />重试</button></div>}
-      {result && <div className={`review-result ${result.failed_summaries > 0 || result.digest_failed ? "review-warning" : ""}`}><CheckCircle2 size={17} /><div><strong>{result.skipped ? "这一天没有需要整理的对话" : [result.title, result.headline].filter(Boolean).join(" · ") || "整理完成"}</strong><span>{result.digest_failed ? "回顾生成失败，记忆已照常整理 —— 可以再跑一次" : result.detail || `记忆写入 ${result.memory_writes} 次 · 新增待办 ${result.new_loops} 条 · 闭环 ${result.closed_loops} 条`}</span></div></div>}
-      {loading ? <div className="review-loading"><LoaderCircle size={18} className="spin" />正在读取这一天的记录…</div> : <>
+      {error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadReview(day)} disabled={loading}><RefreshCw size={12} />{t("review.retry")}</button></div>}
+      {result && <div className={`review-result ${result.failed_summaries > 0 || result.digest_failed ? "review-warning" : ""}`}><CheckCircle2 size={17} /><div><strong>{result.skipped ? t("review.result.empty") : [result.title, result.headline].filter(Boolean).join(" · ") || t("review.result.done")}</strong><span>{result.digest_failed ? t("review.result.digestFailed") : result.detail || t("review.result.detail", { writes: result.memory_writes, newCount: result.new_loops, closedCount: result.closed_loops })}</span></div></div>}
+      {loading ? <div className="review-loading"><LoaderCircle size={18} className="spin" />{t("review.loading")}</div> : <>
         <ReviewDigest digest={digest} error={sectionErrors.digest} running={running} onRun={() => void runConsolidation()} />
         <ReviewOpenLoops
           loops={loops}
@@ -248,17 +250,17 @@ export function ReviewPage() {
           onCreate={(text) => mutateLoops(() => createOpenLoop(text, day))}
         />
         <details className="review-details">
-          <summary>细节：会话摘要、记忆变更、用量</summary>
+          <summary>{t("review.details")}</summary>
           <div className="review-layout"><div className="review-main-column"><ReviewSummaryList summaries={summaries} error={sectionErrors.summaries} /><ReviewMemoryChanges changes={changes} error={sectionErrors.changes} onRestore={requestRestoreDeletedMemory} /></div><aside className="review-side-column"><ReviewConversationList conversations={conversations} error={sectionErrors.conversations} /><ReviewUsageCard usage={usage} selectedDay={day} error={sectionErrors.usage} /></aside></div>
         </details>
       </>}
-      <div className="review-note"><TriangleAlert size={13} />回顾和摘要只在运行每日整理后生成；记忆时间线包含已删除文件的历史快照。</div>
+      <div className="review-note"><TriangleAlert size={13} />{t("review.note")}</div>
       <ConfirmDialog
         open={restoreTarget !== null}
-        title="恢复已删除的记忆？"
-        description="这会按历史快照重新创建记忆文件，并保留完整的恢复记录。"
+        title={t("review.restore.title")}
+        description={t("review.restore.description")}
         subject={restoreTarget?.path}
-        confirmLabel="恢复记忆"
+        confirmLabel={t("review.restore.confirm")}
         busy={restoring}
         onCancel={() => setRestoreTarget(null)}
         onConfirm={() => void confirmRestoreDeletedMemory()}

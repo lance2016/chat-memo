@@ -9,18 +9,19 @@ import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugReq
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ToolCatalog } from "@/components/tool-catalog";
+import { useI18n } from "@/components/i18n-provider";
 
 type SettingsSectionKey = "general" | "assistant" | "model" | "tools" | "review" | "voice" | "advanced" | "system";
 
-const settingsSections: Array<{ key: SettingsSectionKey; label: string; description: string; icon: typeof Settings2 }> = [
-  { key: "general", label: "通用与聊天", description: "输入与显示偏好", icon: SlidersHorizontal },
-  { key: "assistant", label: "助手人格", description: "称呼与固定指令", icon: Sparkles },
-  { key: "model", label: "模型与回答", description: "模型、思考与工具", icon: Activity },
-  { key: "tools", label: "工具目录", description: "能力、参数与 Schema", icon: Wrench },
-  { key: "review", label: "记忆与回顾", description: "每日整理策略", icon: Clock3 },
-  { key: "voice", label: "语音", description: "语音输入与朗读", icon: Headphones },
-  { key: "advanced", label: "高级与调试", description: "请求记录与 Prompt", icon: Bug },
-  { key: "system", label: "系统与数据", description: "连接、备份与环境", icon: HardDriveDownload },
+const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
+  { key: "general", icon: SlidersHorizontal },
+  { key: "assistant", icon: Sparkles },
+  { key: "model", icon: Activity },
+  { key: "tools", icon: Wrench },
+  { key: "review", icon: Clock3 },
+  { key: "voice", icon: Headphones },
+  { key: "advanced", icon: Bug },
+  { key: "system", icon: HardDriveDownload },
 ];
 
 const reviewFieldKeys = new Set(["consolidate_model", "consolidate_auto", "consolidate_hour"]);
@@ -168,6 +169,7 @@ function DebugDialog({ kind, prompt, request, loading, error, copied, onClose, o
 }
 
 export function SettingsPage() {
+  const { t } = useI18n();
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("general");
   const [runtime, setRuntime] = useState<RuntimeSettings | null>(null);
   const [draftValues, setDraftValues] = useState<Record<string, unknown>>({});
@@ -526,25 +528,25 @@ export function SettingsPage() {
   return <div className="settings-shell">
     <main className="settings-content settings-content-refined">
       <header className="settings-heading settings-heading-refined">
-        <div><div className="eyebrow">Settings</div><h1>设置</h1><p>按用途管理助手。主题可随时从右上角快速切换。</p></div>
+        <div><div className="eyebrow">{t("settings.eyebrow")}</div><h1>{t("settings.title")}</h1><p>{t("settings.description")}</p></div>
         <div className="settings-header-status">
-          <div className={`settings-connection-chip ${health?.status === "ok" ? "online" : ""}`}><span className={`status-dot ${health?.status === "ok" ? "online" : ""}`} /><div><strong>{health?.status === "ok" ? "服务正常" : "服务状态未知"}</strong><span>{health?.provider && health?.model ? `${health.provider} · ${health.model}` : apiBase}</span></div></div>
-          <div className={`settings-knowledge-chip ${runtime?.kb_enabled ? "enabled" : ""}`} title={runtime?.kb_enabled ? "只读 Obsidian 知识库已挂载" : "在 .env 设置 VAULT_PATH 后重启容器"}>
+          <div className={`settings-connection-chip ${health?.status === "ok" ? "online" : ""}`}><span className={`status-dot ${health?.status === "ok" ? "online" : ""}`} /><div><strong>{health?.status === "ok" ? t("settings.service.ok") : t("settings.service.unknown")}</strong><span>{health?.provider && health?.model ? `${health.provider} · ${health.model}` : apiBase}</span></div></div>
+          <div className={`settings-knowledge-chip ${runtime?.kb_enabled ? "enabled" : ""}`} title={runtime?.kb_enabled ? t("settings.kb.enabledTitle") : t("settings.kb.disabledTitle")}>
             <BookOpen size={15} />
-            <div><strong>{loading ? "知识库检测中" : runtime?.kb_enabled ? "知识库已挂载" : "知识库未启用"}</strong><span>{runtime?.kb_enabled ? "只读 Obsidian vault" : "设置 VAULT_PATH 后启用"}</span></div>
+            <div><strong>{loading ? t("settings.kb.checking") : runtime?.kb_enabled ? t("settings.kb.enabled") : t("settings.kb.disabled")}</strong><span>{runtime?.kb_enabled ? t("settings.kb.enabledHint") : t("settings.kb.disabledHint")}</span></div>
           </div>
         </div>
       </header>
-      {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />重试</button></div>}
+      {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />{t("settings.retry")}</button></div>}
       {runtimeMessage && <div className="settings-success"><Check size={14} />{runtimeMessage}</div>}
 
       <div className="settings-layout">
-        <aside className="settings-section-nav" aria-label="设置分类">
-          {settingsSections.map(({ key, label, description, icon: Icon }) => <button className={activeSection === key ? "active" : ""} type="button" key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{label}</strong><small>{description}</small></span><ChevronRight size={13} /></button>)}
+        <aside className="settings-section-nav" aria-label={t("settings.navLabel")}>
+          {settingsSections.map(({ key, icon: Icon }) => <button className={activeSection === key ? "active" : ""} type="button" key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>)}
         </aside>
 
         <div className="settings-section-content">
-          {activeSection === "general" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">GENERAL</span><h2>通用与聊天</h2><p>这些偏好只保存在当前浏览器，修改后立即生效。</p></div><SlidersHorizontal size={17} /></div><div className="settings-toggle-list"><Toggle label="Enter 发送" description="按 Enter 发送消息，Shift + Enter 换行。" checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} /><Toggle label="自动跟随新回答" description="流式回答时自动滚动到底部；手动上滑后暂停跟随。" checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} /><Toggle label="显示思考过程" description="思考内容默认折叠，需要时再展开。" checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} /><Toggle label="显示记忆操作" description="显示助手读取、更新和删除记忆的简洁状态。" checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} /><Toggle label="显示 token 用量" description="在已完成回答下显示输出 token 数。" checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} /></div><div className="settings-card-actions"><span>浏览器配置会自动保存</span><button className="ghost-button" onClick={() => { setPreferences(defaultPreferences); writePreferences(defaultPreferences); }}>恢复默认</button></div></section>}
+          {activeSection === "general" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">GENERAL</span><h2>{t("settings.section.general.label")}</h2><p>{t("settings.general.description")}</p></div><SlidersHorizontal size={17} /></div><div className="settings-toggle-list"><Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} /><Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} /><Toggle label={t("settings.general.thinking")} description={t("settings.general.thinkingDescription")} checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} /><Toggle label={t("settings.general.tools")} description={t("settings.general.toolsDescription")} checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} /><Toggle label={t("settings.general.usage")} description={t("settings.general.usageDescription")} checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} /></div><div className="settings-card-actions"><span>{t("settings.general.saved")}</span><button className="ghost-button" onClick={() => { setPreferences(defaultPreferences); writePreferences(defaultPreferences); }}>{t("settings.general.reset")}</button></div></section>}
 
           {activeSection === "assistant" && <section className="settings-card settings-panel-card"><div className="settings-card-heading"><div><span className="card-kicker">ASSISTANT</span><h2>助手人格</h2><p>固定称呼和工作方式会加入每次模型请求，但不会被每日整理修改。</p></div><button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看完整 Prompt"}</button></div>{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}<div className="prompt-boundary-note">固定指令适合约束回答方式；姓名、偏好和计划等事实应交给长期记忆。</div></section>}
 

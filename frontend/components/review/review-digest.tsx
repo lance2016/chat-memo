@@ -1,5 +1,6 @@
 import { CalendarClock, CornerDownRight, Eye, Play, Repeat2, Sparkles } from "lucide-react";
 import type { DailyDigest, Echo } from "@/lib/types";
+import { useI18n } from "@/components/i18n-provider";
 
 const ECHO_ICON = {
   recurring: Repeat2,
@@ -13,16 +14,17 @@ function EchoRow({ echo }: { echo: Echo }) {
 }
 
 export function ReviewDigest({ digest, error, running, onRun }: { digest: DailyDigest | null; error?: string; running: boolean; onRun: () => void }) {
+  const { t } = useI18n();
   if (error) return <section className="review-digest review-digest-empty"><div className="card-state card-state-error">{error}</div></section>;
 
   if (!digest) return <section className="review-digest review-digest-empty">
     <Sparkles size={20} />
-    <strong>这一天还没有回顾</strong>
-    <span>整理之后，这里会是这一天的名字、发生了什么，以及一句只有看过全天对话才写得出的观察。</span>
-    <button className="primary-button" onClick={onRun} disabled={running}><Play size={14} />{running ? "整理中…" : "整理这一天"}</button>
+    <strong>{t("review.digest.emptyTitle")}</strong>
+    <span>{t("review.digest.emptyDescription")}</span>
+    <button className="primary-button" onClick={onRun} disabled={running}><Play size={14} />{running ? t("review.running") : t("review.run")}</button>
   </section>;
 
-  return <section className="review-digest" aria-label="今日回顾">
+  return <section className="review-digest" aria-label={t("review.digest.label")}>
     {digest.title && <p className="digest-title">{digest.title}</p>}
     <p className="digest-headline">{digest.headline}</p>
 
@@ -32,7 +34,7 @@ export function ReviewDigest({ digest, error, running, onRun }: { digest: DailyD
 
     {digest.observation && <p className="digest-observation"><Eye size={14} aria-hidden="true" /><span>{digest.observation}</span></p>}
 
-    {digest.quote && <blockquote className="digest-quote">{digest.quote}<cite>你，这天说的</cite></blockquote>}
+    {digest.quote && <blockquote className="digest-quote">{digest.quote}<cite>{t("review.digest.quoteBy")}</cite></blockquote>}
 
     {digest.echoes.length > 0 && <ul className="digest-echoes">
       {digest.echoes.map((echo, index) => <EchoRow echo={echo} key={index} />)}
