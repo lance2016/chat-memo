@@ -271,8 +271,10 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
           <span>{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</span>
         </button>
       </div>
-      <div className="workspace-sidebar-tools" aria-label={t("workspace.tools")}><SearchTrigger /><LanguageControl /><ThemeControl /></div>
-      <WorkspaceProfile />
+      <footer className="workspace-sidebar-footer">
+        <div className="workspace-sidebar-tools" aria-label={t("workspace.tools")}><SearchTrigger /><LanguageControl /><ThemeControl /></div>
+        <WorkspaceProfile />
+      </footer>
     </aside>
     <header className="workspace-mobile-topbar">
       <MemoryBrand />
