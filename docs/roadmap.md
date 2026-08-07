@@ -1,246 +1,173 @@
-# 规划与问题
+# 路线图
 
-这份文档是跨机器开发的交接清单：**未来规划**记还没做的事，**问题修复**记已经定位的缺陷
-（含已修好的和原因，避免换台机器重构时又踩回去）。
+跨机器开发的交接清单：**按优先级**记还没做的事，每条带证据和文件位置。
+动手前先核对现状 —— 有些点可能已经被另一台机器上的进度做掉了。
 
-结论都带证据和文件位置，动手前先按「怎么验证」那一栏复现一遍再改 —— 有些点可能已经
-被另一台机器上的进度做掉了。
+- 已修复缺陷的原因档案（防复发注记）在 **[fixes.md](fixes.md)**
+- 前端的体验与架构改造另有分阶段计划：**[roadmap-frontend.md](roadmap-frontend.md)**
+- 时间事项模块的设计、边界和阶段计划见 **[timeline.md](timeline.md)**
+- 日志与可观测性的完整方案见 **[observability.md](observability.md)**
 
-前端的体验与架构改造另有一份分阶段计划：**[roadmap-frontend.md](roadmap-frontend.md)**。
-时间事项是独立的大模块，设计、边界和阶段计划见 **[timeline.md](timeline.md)**。
+## 排序原则
+
+1. **产品价值 = 记忆质量 × 可靠性**。这是个记东西的助手，"静默不运转"比"报错"危险得多 ——
+   报错会被看见，静默失败要过好几天才隐约觉得"它怎么不记得了"。保命项永远排最前。
+2. **数据驱动，不拍脑袋**。好几条决策明确写着"等信号"（KB 写权限看 `kb_reads`，
+   性能优化看实测），而信号来自可观测性 —— 所以它排在功能前面。
+3. **单人单机，不为不存在的规模付税**。评审过并否决的东西记在"明确不做"，
+   免得反复讨论。
 
 ---
 
-## 未来规划
+## P0 — 保命：核心循环与数据安全
 
-### 时间线（第二版已完成：主动通知）
+### 1. 每日整理可靠运转
 
-第一版打通了对话提取、结构化存储、CRUD API 和 `/timeline` 的今天/最近/月历视图。
-第二版（2026-08-07）加了到点推送到手机（Bark），并修掉两个让事项静默丢失的缺陷：
-逾期项从今天/最近视图消失、`recurrence=yearly` 从来没生效过。
+**现状**：`consolidate_auto` 默认关（`app/config.py`），靠人手动 `POST /api/jobs/consolidate`。
+原因写在 `.env` 注释里：进程一重启计时器就从头开始，笔记本凌晨多半在睡眠，定时器很容易
+整天不触发。**一个帮人记事的助手，自己的记忆整理却依赖人记得去触发。**
 
-还没做的：Web Push 通道、通知点开后落进预置上下文的新对话、重复与冲突检测、
-时间线接入全局搜索、把当天事项注入 runtime_context、ICS 导入导出。
-仍然不自动向外部日历写入。完整设计与验收边界见 [timeline.md](timeline.md)。
+解法在这个仓库里已经验证过一遍：notify 模块的补跑式扫描（`app/notify/sweep.py` 开头
+写着同一条教训）—— 查"该做而没做的"，不做精确定时，睡醒就补。照搬：
 
-> **已修复：共享侧栏不能用 `useSearchParams()`**。侧栏每个页面都渲染，一旦在里面调它，
-> `/review`、`/timeline`、`/_not-found` 的静态预渲染会全部 bail，`next build` 直接失败
-> （`useSearchParams() should be wrapped in a suspense boundary`）。
-> `workspace-topbar.tsx` 现在改读 `window.location.search`（`currentConversationId()`），
-> 会话切换靠 `selectedConversationChangedEvent` 广播。**往侧栏里加东西时别再引入这个 hook。**
+- 加 `consolidation_runs` 表记录每次执行（时间、状态、错误）
+- 启动时 + ticker 里查"昨天该整理但没记录"，有就补跑
+- 顺带：整理完成后**机械校验** `MEMORY.md` 索引与实际记忆文件是否一致，差异喂回下次
+  整理 prompt。现在全靠 prompt 让模型自己维护索引（`app/jobs/consolidate.py:46`），
+  索引漏了哪个文件，那条记忆就实质性死亡 —— 文件还在，但渐进式披露永远不会读到它
 
-来自 2026-08-06 的记忆架构评审。整体架构不用动，优化按性价比分三档。当时因为本地代码
-不是最新而搁置，**逐条核对现状后确认下面这些仍未实现**（核对时间：2026-08-06）。
+**验证**：改系统时间或注入时钟跨过 `consolidate_hour`，杀进程重启，观察补跑且
+`consolidation_runs` 有记录；故意在 `MEMORY.md` 删一行索引，下次整理后校验报告差异。
 
-### 第一档：小改动补短板
+### 2. 备份闭环
 
-| # | 事项 | 现状 |
-|---|---|---|
-| 1 | 整理任务后机械校验 `MEMORY.md` 索引与实际文件是否一致，差异喂回下次整理 prompt | 现在只靠 prompt 让模型自己更新索引（`app/jobs/consolidate.py:46`），没有任何机械校验 |
-| 2 | 加 `consolidation_runs` 记录 + 启动时补跑错过的每日整理 | 表不存在。`.env` 的注释已经说明了痛点：进程重启会重置计时器，笔记本凌晨多半在睡眠，很容易整天不触发 |
-| 3 | `build_system_prompt` 不要每轮 `list_all()` 全量加载，只查索引单行 | `app/memory/prompt.py:100` 仍是每轮 `await store.list_all()`。记忆越多，每轮的固定开销越大 |
+**现状**（核对 `app/backup.py`，2026-08-07）：pg_dump + 记忆导出 .md 树都有了，但 ——
 
-### 第二档
+- **纯手动**：只有 `POST /api/jobs/backup`，lifespan 里没有备份循环
+- **同一块盘**：`./backups` 挂载在同一台机器，磁盘坏了数据和备份一起走
+- **恢复从没演练过**：全仓库 grep `restore` 只有 pg_dump 注释提了一句，没文档没测试
 
-- 整理任务加一个只读的「回查对话原文」工具。摘要是有损的，这是**质量收益最大的单项**
-- 摘要生成并行化，同时给整理 prompt 加体量保护
-- 把 `stats` 里的 `unused` / `missed_reads` 数据喂回整理流程，让整理知道哪些记忆没被用过
+对策，按顺序：
 
-### 第三档：等信号再做
+1. 备份挂进已有 ticker（补跑模式，和上一条同一套基建），dump 文件按数量/天数轮换
+2. `backups/` 同步到异机（iCloud / rsync / 另一台开发机 —— 零代码，compose 挂载决策）
+3. 写一节恢复手册（`pg_restore` 到干净卷的完整命令）并**真的演练一次**
 
-- 索引分层，控制它随记忆数量线性增长
-- pgvector 归档检索
-- 写记忆时打 prompt cache 的缓解
+**验证**：在干净的 Postgres 卷上从最新 dump 恢复，起服务，对话/记忆/时间线都在。
+没恢复过的备份不是备份。
 
-### 知识库写权限
+---
 
-Obsidian vault 目前是**只读**接入（`kb_search` / `kb_read` / `kb_list` / `kb_backlinks`），
-写保护做在挂载层（compose 里 `:ro`），不依赖 prompt 约束。
+## P1 — 放大器：眼睛与守门
 
-要不要开写权限**靠埋点表 `kb_reads` 的数据决定**，不靠拍脑袋。真要开，顺序是
-`append` → 白名单 `create` → `str_replace`，一步一停。
+### 3. 可观测性：接 Phoenix（方案已定，未开工）
 
-配置提醒：iCloud 上的 vault 有 dataless 文件读不到的坑，`.env` 里配 `VAULT_PATH` 时注意。
+现在的日志只有 stdout 一个出口：不留存、不可查询、一轮对话的十几行没有共同标识；
+请求快照是内存 20 条 + 默认关（`app/debug/recorder.py`）；token 存了没算过钱；
+定时任务失败只留一行 warning。完整方案与选型论证见 [observability.md](observability.md)。
 
-### 日志与可观测性：接 Phoenix（方案已定，未开工）
-
-现在的日志只有 stdout 一个出口：不留存、不可查询、同一轮对话的十几行日志没有共同标识
-（并发会话时交错就分不清谁是谁）。请求快照是内存里 20 条、默认关、藏在设置页弹窗
-（`app/debug/recorder.py`），不能当看板用。token 存在 `messages.usage` 里但从没聚合过，
-没算过钱；定时任务失败只留一行 warning，没人会发现。
-
-完整方案见 **[observability.md](observability.md)**。核心结论：**用 Arize Phoenix
-（一个容器 + SQLite）替掉自建看板**，因为本项目三条模型链路正好被两个自动埋点包全覆盖 ——
-Anthropic 走 `anthropic` SDK，DeepSeek 和硅基流动标题模型都走 `AsyncOpenAI`（只是换
-`base_url`）——`openinference-instrumentation-{anthropic,openai}` 装上就有请求列表、
-完整 payload、session 聚合、成本核算、prompt playground，5 处调用点零手工埋点。
+核心结论：**用 Arize Phoenix（一个容器 + SQLite）替掉自建看板** —— 三条模型链路
+（anthropic SDK、DeepSeek 和硅基流动都走 `AsyncOpenAI`）正好被
+`openinference-instrumentation-{anthropic,openai}` 全覆盖，5 处调用点零手工埋点，
+就有请求列表、完整 payload、session 聚合、成本核算、prompt playground。
 
 | # | 阶段 | 内容 |
 |---|---|---|
-| 0 | **先验证流式埋点** | 半小时。两条链路都是流式（`anthropic_provider.py:103` 的 `messages.stream()`、DeepSeek 的 `stream=True`），自动埋点对流式 + tool_use 的覆盖度**不能假设**。要确认三件事：span 里有没有完整 messages/tools、`llm.token_count.*` 有没有值、agent loop 多次 iteration 是不是同一 trace 下的多个 span。**这一步的结果决定后面做多少** |
-| 1 | trace + 双 formatter | `app/obs/{context,logging,middleware}.py`，trace id 取 OTel 当前 span（日志里 grep 到的短码能直接去 Phoenix 搜）。`LOG_FORMAT=json` 时不能插 ANSI —— 现在 `colorize()` 只看 `NO_COLOR` 就无条件上色 |
-| 2 | session 与 purpose | `using_session(conversation.id)` + `using_metadata({"purpose": ...})`。Phoenix UI 里手动加 DeepSeek / Qwen 价格（内置表只有 OpenAI / Anthropic，**只能在 UI 点**） |
-| 3 | 删旧代码 | `app/debug/{recorder,log,router}.py` 及前端 `DebugDialog`，**前提是阶段 0 确认 payload 完整**。`/api/debug/prompt` 挪走保留 |
-| 4 | 按需 | 应用内费用卡片（retention 到期 trace 就清了，年度费用会丢）、Dozzle 或 VictoriaLogs、复用 Bark 做告警 |
+| 0 | **先验证流式埋点** | 半小时。两条链路都是流式，自动埋点对流式 + tool_use 的覆盖度**不能假设**。确认三件事：span 里有没有完整 messages/tools、`llm.token_count.*` 有没有值、agent loop 多次 iteration 是否同一 trace。**结果决定后面做多少** |
+| 1 | trace + 双 formatter | `app/obs/`，trace id 取 OTel 当前 span（日志短码能直接去 Phoenix 搜）。`LOG_FORMAT=json` 时不能插 ANSI —— 现在 `colorize()` 只看 `NO_COLOR` 就无条件上色 |
+| 2 | session 与 purpose | `using_session(conversation.id)` + `using_metadata({"purpose": ...})`。Phoenix UI 手动加 DeepSeek / Qwen 价格（内置表只有 OpenAI / Anthropic，**只能在 UI 点**） |
+| 3 | 删旧代码 | `app/debug/` 及前端 `DebugDialog`，**前提是阶段 0 确认 payload 完整**。`/api/debug/prompt` 挪走保留 |
+| 4 | 按需 | 应用内费用卡片（retention 到期 trace 就清，年度费用会丢）、Dozzle 或 VictoriaLogs、复用 Bark 做告警 |
 
-两个已知让步：Phoenix 的界面在 `localhost:6006` **不在 workspace 里**；里面存的是完整
-对话原文和记忆正文且默认全存，所以 `PHOENIX_DEFAULT_RETENTION_POLICY_DAYS` 必须配。
+两个已知让步：Phoenix 界面在 `localhost:6006` **不在 workspace 里**；它默认全存完整
+对话原文，`PHOENIX_DEFAULT_RETENTION_POLICY_DAYS` 必须配。
 
----
+### 4. 最小 CI
 
-## 问题修复
+**现状**：没有 `.github/workflows`、没有 pre-commit。两台机器开发，而这份文档的上一个
+版本就靠一条"前端构建当前是坏的"手写注记做交接 —— 在文档里躺了一天才在提交前被撞上。
 
-### 已修复：生成标题优化
+一个 workflow 挡住整类问题：`pytest` + `tsc --noEmit` + `vitest` + `next build`。
+约 30 行 yaml。本地对应加一个 `make check`（或 justfile），推之前手动跑同一套。
 
-**症状**：第一轮对话正文已经说完，还要再等约 3 秒流才结束 —— 这段时间输入框是禁用的、
-停止按钮还挂着，后端那把会话锁也还占着。
-
-**根因**：标题生成开着扩展思考。`run()` 是显式关思考的
-（`app/llm/deepseek_provider.py:93`，`want_thinking` 为假时发
-`extra_body={"thinking": {"type": "disabled"}}`，注释也写明「不传就是默认开着」），
-但标题走的是 `complete()`，**它从来不发这个字段**。Anthropic 那边更直接，
-`app/llm/anthropic_provider.py:186` 写死了 `thinking={"type": "adaptive"}`。
-两条 provider 路径都在为一个 16 字的标题做扩展思考。
-
-而 `stream_reply` 在 yield `done` **之前** await 标题（`app/chat/service.py`），
-所以流不关闭 → 前端的 `await streamChat(...)` 不返回 → `sending` 一直是 true。
-
-**实测证据**
-
-同一会话，第一轮 vs 第二轮（第二轮已有标题，不再调用）：
-
-| | 最后一个 `text_delta` | 流关闭 | 正文说完后的死等 |
-|---|---|---|---|
-| 第 1 轮（生成标题） | 0.91s | 3.77s | **2.86s** |
-| 第 2 轮（不生成） | 1.02s | 1.06s | 0.04s |
-
-标题调用本身，容器内直连同一模型同一 prompt：
-
-| 输入 | 思考开（现状） | 思考关 |
-|---|---|---|
-| `你好` ×3 | 3.27s / 2.36s / **8.25s**，输出 208 / 127 / 542 token | 0.69s / 0.67s / 0.67s，输出 2 / 1 / 1 token |
-| `记住：我用 uv 管理 Python 依赖…` | **13.50s** → `记住用uv不用pip` | 0.60s → `使用uv管理Python依赖` |
-| `帮我看看为什么 docker compose…502` | **21.53s** → `容器编排前端连后端502排查` | 0.86s → `Docker Compose前端502排查` |
-| `我下周三要和张老师开会…` | 1.33s → `提醒准备论文实验数据` | 0.64s → `提醒准备周三论文会` |
-
-为一个 5～10 字的标题烧掉 127～542 个思考 token、2.4～21.5 秒，**而且标题质量并没有更好** ——
-关掉思考后 `Docker Compose前端502排查` 明显比 `容器编排前端连后端502排查` 干净。
-这不是速度换质量的取舍，是纯亏。
-
-**改法**：标题单独走一条便宜的路（智谱开放平台的 `glm-4.7-flash`，免费档），并且**两条路都关掉推理**。
-
-- `app/llm/title.py`（新增）：`TitleClient` 走智谱的 OpenAI 兼容端点
-  （`https://open.bigmodel.cn/api/paas/v4`），发 `extra_body={"thinking": {"type": "disabled"}}`
-  —— GLM 默认开着思考，不显式关掉标题照样白等。`get_title_client()` 在没配
-  `ZHIPU_API_KEY` / `TITLE_MODEL` 时返回 `None`
-- `complete()` 全线加 `thinking: bool = True` 开关（`app/llm/provider.py` 协议、
-  DeepSeek 发 `extra_body={"thinking": {"type": "disabled"}}`、Anthropic 把写死的
-  `adaptive` 改成按参数走）
-- `app/chat/service.py` 的 `_complete_title`：配了 key 走智谱，
-  否则退回聊天 provider 并传 `thinking=False`。`max_tokens` 收到
-  `TITLE_MAX_TOKENS = 500`（不敢更小：万一模型忽略关闭指令，预算太紧会只剩思考、
-  标题静默变空）
-- `app/jobs/consolidate.py` **没动** —— 每日整理是质量最敏感、频率最低的活，
-  `.env` 还专门留了 `CONSOLIDATE_MODEL` 给它，思考该留着。
-  `tests/test_title_generation.py::test_consolidation_keeps_thinking` 守着这条线
-- `TITLE_TIMEOUT` 作为兜底保留。标题降到约 0.7s 后它和正文（约 1s）并行，
-  正常会**先于正文完成**，死等趋近于 0，兜底基本不触发
-
-配置：`ZHIPU_API_KEY` 和 `ZHIPU_BASE_URL` 是 `ENV_ONLY`（和其他 key 一致，
-界面上不给入口）；`TITLE_MODEL` 可以在设置页改。
-
-`tests/test_title_generation.py` 覆盖两条路，两个「关推理」断言都做过 RED 检查
-（去掉开关就红）。
-
-**已验证**（下面这组数据测于最初的 OpenRouter 小模型，换成智谱 Flash 后同属
-一个量级）：配好 key 后实测，死等从 **2.86s 降到 0.05s**。
-日志里能直接看到标题比正文早 3 秒就完成了，所以它已经完全不占用户的时间：
-
-```
-21:13:00  🏷 解决 Docker Compose 前后端连接问题 [zhipu/glm-4.7-flash · 1.3s]
-21:13:03  ← conv#31 4.6s · 2 工具 · 4143 tok · 缓存 3456
-```
-
-**怎么确认标题走了哪条路**：`_complete_title` 每次都会打一行 `🏷`，带上标题、
-路由（`zhipu/<模型>` 或 `<provider> 不思考`）和耗时。
-
-```bash
-docker compose logs -f api | grep 🏷
-```
-
-复现下面这段可以自己量一次：
-
-```bash
-set -a && . ./.env && set +a
-CID=$(curl -s --noproxy '*' -X POST -H "X-API-Key: $API_KEY" \
-  http://localhost:13000/backend/api/conversations | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d "{\"conversation_id\":$CID,\"content\":\"你好\"}" http://localhost:13000/backend/api/chat
-```
-
-> 免费档的模型有速率限制，偶尔会慢或失败。标题本来就是锦上添花 ——
-> 失败会被 `_complete_title` 吞掉、超时有 `TITLE_TIMEOUT` 兜着，
-> 两种情况都只是保留「新对话」并在下一轮重试，不影响这次回答。
-
-```bash
-set -a && . ./.env && set +a
-CID=$(curl -s --noproxy '*' -X POST -H "X-API-Key: $API_KEY" \
-  http://localhost:13000/backend/api/conversations | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -d "{\"conversation_id\":$CID,\"content\":\"你好\"}" http://localhost:13000/backend/api/chat
-```
+**验证**：故意在共享组件里引入 `useSearchParams()`（见 fixes.md 第一条），CI 必须红。
 
 ---
 
-### 已修复：流式看起来不流式
+## P2 — 功能：用了才涨价值
 
-一次回归里叠了好几层，**每一层单独都足以让界面看起来「转圈很久，然后整段蹦出来」**。
-记在这里是因为其中两层没法用测试锁住，换台机器重构很容易又踩回去。
+### 5. 整理任务的回查原文工具
 
-#### 1. SSE 被同源代理的 gzip 缓冲（传输层，主因）
+给每日整理加一个只读的「回查对话原文」工具。摘要是有损的，这是 2026-08-06 评审认定的
+**质量收益最大的单项**。前置是 P0-1 —— 先让整理可靠地跑起来，再优化它的质量。
 
-浏览器经 Next 的 `/backend` rewrite 访问 API，而 Next **在转发前无条件挂了 gzip 中间件**：
-`router-server.js` 里只要 `compress !== false` 就创建它，并且远在 `proxyRequest` 之前
-就把 `res` 包掉了。`text/event-stream` 命中它的 compressible 正则、阈值 1KB、且**从不 flush** ——
-每个回答的前 1KB 都被扣着不发。
+### 6. 当天事项注入 runtime_context
 
-`X-Accel-Buffering: no` 只有 nginx 认。这个中间件认的是 `no-transform`。
+聊天时助手直接知道今天有什么安排，不用先调 timeline 工具。小改动（system prompt
+组装处加一段），体验提升明显 —— 时间线遗留项里性价比最高的一个。
 
-修法：`app/chat/router.py` 的 SSE 响应头声明 `Cache-Control: no-cache, no-transform`。
-已由 `tests/test_chat_regressions.py::test_sse_headers_opt_out_of_proxy_compression` 锁住。
+### 7. 时间线重复与冲突检测
 
-> 别改成在 `next.config.ts` 里写 `compress: false` —— 那会把其余接口的压缩也一起关掉。
-> `no-transform` 是 RFC 9111 的标准信号，对 Next、nginx、任何前置代理都有效。
+通知上线后这条升级了：以前提取重复只是列表难看，现在是**手机响两次**。
+判重先做最朴素的（同日 + 标题相似），有误杀再调。
 
-#### 2. `.message-scroll` 的平滑滚动打死了自动跟随（渲染层）
+---
 
-**这一层没有测试保护，最容易复发。**
+## P3 — 等信号再做
 
-流式跟随靠每个 delta 赋值 `scrollTop`。一旦给 `.message-scroll` 设了
-`scroll-behavior: smooth`，赋值就变成动画，而**动画自己派发的 scroll 事件和用户上滚
-无法区分** —— `onScroll` 里那个「用户上滚了就停止跟随」的判定于是自己把跟随关掉，
-正文全长到视口外面去了。
+| 事项 | 等什么信号 |
+|---|---|
+| `build_system_prompt` 别每轮 `list_all()`（`app/memory/prompt.py:100`） | Phoenix 显示 system prompt 体积/耗时随记忆量可感增长 |
+| 摘要生成并行化 + 整理 prompt 体量保护 | 整理耗时开始可感 |
+| `stats` 的 `unused` / `missed_reads` 喂回整理流程 | 埋点数据积累出可读的规律 |
+| 记忆索引分层 | 索引随记忆数量线性增长到碍事 |
+| pgvector 归档检索 | 关键词检索开始明显漏召回 |
+| 写记忆时 prompt cache 失效的缓解 | 成本数据（Phoenix）证明值得做 |
+| KB（Obsidian vault）写权限 | `kb_reads` 埋点数据。真要开，顺序是 `append` → 白名单 `create` → `str_replace`，一步一停 |
+| Web Push 通道 | Bark 真的不够用（现在够用） |
+| 通知点开落进预置上下文的新对话 | 通知功能日常用起来之后 |
+| ICS 导入导出、时间线接全局搜索 | 使用信号 |
 
-`frontend/app/globals.css` 里 `.message-scroll` 的 `scroll-behavior` **必须保持默认的 auto**，
-原地留了注释说明。需要平滑的那处跳转在 `chat-page.tsx` 里显式传 `behavior` 参数，不受影响。
+---
 
-#### 3. 流结束时闪一下
+## 明确不做（评审过，别再提）
 
-`send` 的 `finally` 原先先清 `draft` 再 `loadMessages()`，而后者会挂
-「加载消息中…」占位 —— 刚说完的回答先整段消失、列表被占位替换一瞬、再完整重现，
-观感就是「正文是一次性出现的」。
+- **Redis**（2026-08-07 评审）：每个典型用途在这里要么不存在（缓存热点、限流、会话）、
+  要么已被更合适的东西解决（幂等靠 `dedupe_key` 唯一约束、队列靠补跑式 DB 扫描、SSE 单进程
+  直接 yield）。单进程是前提不是缺陷；真出现队列需求 Postgres 的
+  `FOR UPDATE SKIP LOCKED` / `LISTEN/NOTIFY` 也先顶着。重新考虑的信号：多 worker/多实例部署
+- **自动向外部日历写入**：时间线只进不出，出错的代价不对称
+- **多用户、插件化、通用 RAG 框架**：单人助手，没有这些需求存在的证据
 
-现在 `loadMessages` 有 silent 模式，并且**在 `setTurns` 的同一批状态更新里**清掉
-`pendingUser` / `draft`。分开清会先渲染出「权威历史 + 还没清掉的 draft」那一帧，也就是重影。
+---
 
-#### 4. 首个 token 之前没有任何反馈
+## 暴露面 checklist
 
-`displayTurns` 原先要求 `draft` 已有内容才给出助手气泡，所以从点发送到首字之间界面上
-什么都没有，看着像卡死。现在只要 `sending` 就给出气泡，配合那个一直没人用的
-`.streaming-cursor` 显示闪烁光标。顺带解决了偏好里关掉 thinking/tools 时渲染出空白卡片的问题。
+单机 localhost 时都不是问题；**任何一步把服务暴露到局域网之前过一遍**：
 
-#### 5. 标题超时兜底（止血，非治因）
+- [ ] `api_key` 非空 —— `app/security.py` 里空值 = 完全不校验。配 `notify_public_base_url`
+      让手机能点开通知**就属于这一步**，这两个设定目前是独立的，没人把它们放在一起看
+- [ ] Phoenix 端口（默认 16006）只绑 localhost —— 里面是完整对话原文和记忆正文
+- [ ] vault 保持挂载层只读（compose `:ro`），写保护不依赖 prompt 约束
 
-`app/chat/service.py` 的 `TITLE_TIMEOUT = 5.0` 把最坏等待挡住了，但这只是止血：
-标题超时后会被丢掉，会话停在「新对话」，留到下一轮重试。
-真正的治因是上面那条**已修复：生成标题优化** —— 标题降到约 0.7s 后这个兜底基本不再触发。
+## 环境与配置坑
+
+- iCloud 上的 Obsidian vault 有 dataless 文件读不到的坑，`.env` 配 `VAULT_PATH` 时注意
+- 容器时区必须 `TZ=Asia/Shanghai`（compose 已配）：UTC 会让「今天」的判断、注入给模型的
+  日期、`local_day_bounds` 全部差 8 小时
+
+---
+
+## 已完成里程碑
+
+倒序，只记一行；细节和防复发注记在 [fixes.md](fixes.md) 与各模块文档。
+
+- **2026-08-07** 时间线第二版：到点推送到手机（Bark，补跑式 ticker + `dedupe_key` 幂等），
+  顺带修掉逾期项消失、`recurrence=yearly` 不生效两个静默缺陷
+- **2026-08-07** 可观测性方案定稿（[observability.md](observability.md)）
+- **2026-08-0x** 会话管理收敛到侧栏；设置页按「我要改什么」重新分组
+- **2026-08-0x** 标题生成走免费小模型 + 全线关思考，死等 2.86s → 0.05s（fixes.md）
+- **2026-08-0x** 流式回归五层修复：gzip 缓冲、平滑滚动、结束闪烁等（fixes.md）
+- **2026-08-06** 记忆架构评审：整体不用动，优化按性价比分档 —— 即上面 P0-1、P2-5 和 P3 各条
+- 更早：时间线第一版（提取 + CRUD + 三视图）、每日回顾改叙事、界面全量 i18n、
+  语音输入/朗读（本地 mlx-audio）、Obsidian vault 只读接入
