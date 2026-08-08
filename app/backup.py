@@ -16,7 +16,7 @@ import datetime as dt
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -32,6 +32,61 @@ logger = logging.getLogger(__name__)
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
 DUMP_TIMEOUT = 120
 
+# 文件名就是记录。`chat-20260808-041500.dump`
+DUMP_PREFIX = "chat-"
+DUMP_SUFFIX = ".dump"
+_STAMP = "%Y%m%d-%H%M%S"
+
+
+def dump_files(directory: Path | None = None) -> list[Path]:
+    """已有的 dump，新的在前。"""
+    directory = directory or BACKUP_DIR
+    if not directory.exists():
+        return []
+    return sorted(
+        directory.glob(f"{DUMP_PREFIX}*{DUMP_SUFFIX}"), key=lambda p: p.name, reverse=True
+    )
+
+
+def dump_day(path: Path) -> dt.date | None:
+    """从文件名解析出这份 dump 是哪天的。解析不了返回 None。"""
+    stem = path.name[len(DUMP_PREFIX) : -len(DUMP_SUFFIX)]
+    try:
+        return dt.datetime.strptime(stem, _STAMP).date()
+    except ValueError:
+        return None
+
+
+def is_due(today: dt.date | None = None, directory: Path | None = None) -> bool:
+    """今天该备份吗。
+
+    **判据是「今天有没有备份过」，不是「到点了没有」** —— 和 notify 的补跑式扫描
+    同一条教训（见 `app/notify/sweep.py`）：进程一重启计时器就从头开始，笔记本
+    凌晨多半在睡眠，定时触发在这台机器上必然漏，查询式则是睡醒就补。
+
+    而且**不需要新建一张表**：dump 的文件名里带日期，备份目录本身就是那份记录。
+    少一张表、少一次迁移，也不会出现「表说备份过了但文件被删了」的假象。
+    """
+    today = today or dt.date.today()
+    return not any(dump_day(path) == today for path in dump_files(directory))
+
+
+def prune(keep: int, directory: Path | None = None) -> list[str]:
+    """只留最近 `keep` 份，返回删掉的文件名。
+
+    不轮换的话磁盘会被慢慢吃满，而磁盘满的第一个症状通常是**别的东西先坏**。
+    """
+    directory = directory or BACKUP_DIR
+    doomed = dump_files(directory)[max(keep, 1) :]
+    removed = []
+    for path in doomed:
+        try:
+            path.unlink()
+            removed.append(path.name)
+        except OSError:
+            logger.warning("旧备份删不掉：%s", path.name, exc_info=True)
+    return removed
+
 
 @dataclass
 class BackupResult:
@@ -41,6 +96,8 @@ class BackupResult:
     memory_dir: str
     created_at: str
     detail: str = ""
+    # 本次轮换掉的旧备份
+    pruned: list[str] = field(default_factory=list)
 
 
 async def run_backup(
@@ -48,14 +105,17 @@ async def run_backup(
 ) -> BackupResult:
     settings = settings or get_settings()
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = dt.datetime.now().strftime(_STAMP)
 
     memory_dir = BACKUP_DIR / "memories"
     count = await export_memories(session, memory_dir)
 
-    dump_path = BACKUP_DIR / f"chat-{stamp}.dump"
+    dump_path = BACKUP_DIR / f"{DUMP_PREFIX}{stamp}{DUMP_SUFFIX}"
     detail = await _pg_dump(settings.database_url, dump_path)
     size = dump_path.stat().st_size if dump_path.exists() else 0
+
+    # dump 失败时不要轮换：那会在「今天没备份成功」的情况下顺手删掉旧的好备份。
+    pruned = prune(settings.backup_keep) if size else []
 
     logger.info(
         "💾 备份完成：%s (%s) · %d 条记忆导出到 %s",
@@ -65,6 +125,7 @@ async def run_backup(
         memory_dir,
     )
     return BackupResult(
+        pruned=pruned,
         dump_file=dump_path.name,
         dump_bytes=size,
         memory_files=count,

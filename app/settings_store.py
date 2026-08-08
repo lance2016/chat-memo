@@ -62,6 +62,8 @@ WRITABLE: tuple[Field, ...] = (
     Field("provider", "模型厂商", "enum", choices=("anthropic", "deepseek")),
     # 可观测性的两个开关。运行时生效（apply_tracing 会重新 instrument），
     # 所以可以放这儿 —— 其余 obs_* 是启动期读的，不进白名单，由状态卡如实报告。
+    Field("backup_auto", "每天自动备份", "bool"),
+    Field("backup_keep", "保留备份份数", "int", minimum=1, maximum=365),
     Field("obs_tracing", "记录模型调用链路", "bool", group="debug"),
     Field("obs_capture_content", "链路里保存对话正文", "bool", group="debug"),
     # 由模型目录管理，保留在 Settings 里只是为了让旧的配置解析链路能够读取。

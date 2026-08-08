@@ -7,6 +7,7 @@
 - 前端的体验与架构改造另有分阶段计划：**[roadmap-frontend.md](roadmap-frontend.md)**
 - 时间事项模块的设计、边界和阶段计划见 **[timeline.md](timeline.md)**
 - 日志与可观测性的完整方案见 **[observability.md](observability.md)**
+- 备份与恢复演练见 **[backup.md](backup.md)**
 - 记忆质量怎么测、指标怎么选见 **[evaluation.md](evaluation.md)**
 
 ## 排序原则
@@ -42,22 +43,18 @@
 `consolidation_runs` 有记录。索引校验部分已由 `tests/test_memory_audit.py` 和
 `tests/test_consolidate.py` 钉住。
 
-### 2. 备份闭环
+### 2. ~~备份闭环~~ ✅ 已实现（剩一个挂载决策）
 
-**现状**（核对 `app/backup.py`，2026-08-07）：pg_dump + 记忆导出 .md 树都有了，但 ——
+方案与恢复手册见 **[backup.md](backup.md)**。
 
-- **纯手动**：只有 `POST /api/jobs/backup`，lifespan 里没有备份循环
-- **同一块盘**：`./backups` 挂载在同一台机器，磁盘坏了数据和备份一起走
-- **恢复从没演练过**：全仓库 grep `restore` 只有 pg_dump 注释提了一句，没文档没测试
+- ~~纯手动~~ → 补跑式 ticker（判据是「今天备份过没有」，文件名就是记录，不建表），
+  默认开，留最近 14 份，开关和份数在设置页
+- ~~恢复从没演练过~~ → **2026-08-08 真跑过一遍**：干净的 pgvector 容器 →
+  `pg_restore` → 五张表行数全对 + 记忆正文抽查 → 真后端连上去 `/health` ok、
+  API 读得到数据、索引校验结果和生产库一致。每一步命令都写进手册了
 
-对策，按顺序：
-
-1. 备份挂进已有 ticker（补跑模式，和上一条同一套基建），dump 文件按数量/天数轮换
-2. `backups/` 同步到异机（iCloud / rsync / 另一台开发机 —— 零代码，compose 挂载决策）
-3. 写一节恢复手册（`pg_restore` 到干净卷的完整命令）并**真的演练一次**
-
-**验证**：在干净的 Postgres 卷上从最新 dump 恢复，起服务，对话/记忆/时间线都在。
-没恢复过的备份不是备份。
+**还剩一件事，是挂载决策不是代码**：`backups/` 仍和数据同一块盘，磁盘坏了一起走。
+改 compose 里一行挂到 iCloud / 外置盘 / 另一台机器即可，见 backup.md「同一块盘」那节。
 
 ---
 

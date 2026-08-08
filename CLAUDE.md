@@ -116,7 +116,8 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
 
 `docs/internals.md` 是设计取舍与踩坑清单的权威文档，改任何一个模块前先读对应章节；
 `docs/frontend-api.md` 是前后端契约；`docs/roadmap.md` 是未做事项；
-`docs/evaluation.md` 是记忆质量怎么测（三层指标：机械 / 过程 / 模型裁判）。
+`docs/evaluation.md` 是记忆质量怎么测（三层指标：机械 / 过程 / 模型裁判）；
+`docs/backup.md` 是备份与**恢复演练手册**（命令都真跑过）。
 
 ## 改代码时最容易踩的坑
 

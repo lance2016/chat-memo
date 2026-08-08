@@ -15,7 +15,11 @@ from app.db.session import get_session, get_sessionmaker
 from app.debug.router import router as debug_router
 from app.eval.router import router as eval_router
 from app.jobs.router import router as jobs_router
-from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
+from app.jobs.scheduler import (
+    run_backup_ticker,
+    run_daily_consolidation,
+    run_notification_ticker,
+)
 from app.llm.catalog import resolve_model_target
 from app.llm.router import router as model_router
 from app.llm.target import ModelTarget
@@ -67,6 +71,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # 循环内部每分钟重新读一次设置，所以这里恒真 —— 在设置页打开通知
             # 应该下一分钟就生效，而不是要重启进程。空转的代价只是一个 sleep。
             (True, run_notification_ticker),
+            # 恒真：开关在循环内部每轮重读，在设置页关掉下一轮就生效，
+            # 不用重启进程。空转的代价只是一个 sleep。
+            (True, run_backup_ticker),
             (settings.tts_warmup, _warm_tts),
         )
         if enabled

@@ -98,7 +98,8 @@ docker compose exec api pytest -q
 - [内部机制](docs/internals.md)：记忆、工具调用和后台流程的实现说明
 - [前端与 API 契约](docs/frontend-api.md)：前后端接口和模型选择约定
 - [时间线设计](docs/timeline.md)：事项提取、重复规则和通知边界
-- [可观测性](docs/observability.md) · [评测](docs/evaluation.md)：调试链路与记忆质量评估
+- [可观测性](docs/observability.md)
+- [备份与恢复](docs/backup.md) · [评测](docs/evaluation.md)：调试链路与记忆质量评估
 
 ## 项目状态
 

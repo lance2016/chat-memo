@@ -4,6 +4,8 @@ import asyncio
 import datetime as dt
 import logging
 
+from app import backup
+from app.backup import run_backup
 from app.config import get_settings
 from app.db.session import get_sessionmaker
 from app.jobs.consolidate import Consolidator
@@ -15,6 +17,10 @@ from app.obs import trace
 from app.settings_store import resolve_settings
 
 logger = logging.getLogger(__name__)
+
+# 备份检查的间隔。比通知宽松得多 —— 备份晚十分钟没有任何代价，
+# 而每分钟去 stat 一次目录纯属浪费。
+BACKUP_TICK_SECONDS = 600
 
 # 提醒的时间精度。一分钟对「提前 15 分钟叫我」够用，也不值得更密 ——
 # 每次 tick 都是一条带索引的查询，但空转一整天也是 1440 次。
@@ -100,6 +106,42 @@ async def run_notification_ticker() -> None:
         except Exception:
             # 一次失败不能停掉整个循环，下一分钟照常再试。
             logger.exception("通知扫描失败")
+
+
+async def run_backup_ticker() -> None:
+    """定期检查「今天备份过没有」，没有就补。
+
+    **不是定时到点跑**：查的是有没有今天的 dump（`backup.is_due`），
+    所以笔记本睡醒之后会自动补上。和 notify 的补跑式扫描同一套路子。
+
+    间隔比通知宽松得多 —— 备份晚十分钟没有任何代价，而每分钟去 stat 一次目录
+    纯属浪费。开关每轮重新读，在设置页关掉下一轮就生效。
+    """
+    while True:
+        try:
+            await asyncio.sleep(BACKUP_TICK_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+        try:
+            async with get_sessionmaker()() as session:
+                settings = await resolve_settings(session)
+                if not settings.backup_auto or not backup.is_due():
+                    continue
+                result = await run_backup(session, settings)
+            if result.detail:
+                # dump 失败不是致命错误（记忆文件已经导出了），但必须说出来 ——
+                # 一个静默失败的备份等于没有备份。
+                logger.error("自动备份未完成：%s", result.detail)
+            else:
+                logger.info(
+                    "自动备份完成 %s · 轮换 %d 份", result.dump_file, len(result.pruned)
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 一次失败不能停掉整个循环，下一轮照常再试。
+            logger.exception("自动备份失败")
 
 
 def _seconds_until(hour: int) -> float:

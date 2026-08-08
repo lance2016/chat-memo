@@ -85,6 +85,13 @@ class Settings(BaseSettings):
 
     # 自动每日整理默认关闭：进程一重启计时器就从头开始，笔记本凌晨多半是睡眠状态，
     # 这个定时器很容易整天不触发。手动 POST /api/jobs/consolidate 更可靠。
+    # 自动备份。补跑式（查「今天备份过没有」），不做精确定时 —— 笔记本凌晨在睡眠，
+    # 定时器必然漏，查询式则是睡醒就补。见 app/backup.py 的 is_due。
+    backup_auto: bool = True
+    # 留最近几份 dump。不轮换的话磁盘会被慢慢吃满，而磁盘满的第一个症状
+    # 通常是**别的东西先坏**。
+    backup_keep: int = 14
+
     consolidate_auto: bool = False
     consolidate_hour: int = 4
 
