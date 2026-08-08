@@ -1,4 +1,10 @@
+import os
 from collections.abc import AsyncIterator
+
+# tracing 默认开着（见 config.obs_tracing），但测试里不该真去 instrument：
+# 会连 Phoenix、会把 span 发到网上（本机有代理时还会超时重试拖慢整轮），
+# 而且 instrumentor 是全局状态，跨用例互相污染。必须在任何 Settings 构造之前设。
+os.environ.setdefault("OBS_TRACING", "false")
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

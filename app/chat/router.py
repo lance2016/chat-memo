@@ -22,6 +22,7 @@ from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
 from app.llm.catalog import resolve_model_target
 from app.llm.target import ModelTarget
+from app.obs.tracing import apply_tracing
 from app.llm.title import get_title_client
 from app.search import search as run_search
 from app.settings_store import (
@@ -118,6 +119,9 @@ async def update_runtime_settings(
     await session.flush()
     settings = await resolve_settings(session, base)
     overrides = await load_overrides(session)
+    # tracing 的开关在设置页里，改完必须当场生效 —— 否则又变成「点了没反应」。
+    # 幂等，配置没变时什么都不做。
+    apply_tracing(settings)
     logger.info("⚙ 设置已更新: %s", ", ".join(payload) or "(空)")
     return describe(settings, overrides)
 

@@ -431,7 +431,7 @@ export const enUS = {
   "settings.obs.refresh": "Re-check",
   "settings.obs.copy": "Copy command",
   "settings.obs.error": "Could not read tracing status",
-  "settings.obs.enableHint": "Enabling needs an image rebuild and a restart — these are fixed before the process starts, so the settings page cannot change them:",
+  "settings.obs.capture": "Message content",
   "settings.obs.tracedPaths": "Traced entry points",
   "settings.obs.collector": "Collector endpoint",
   "memories.audit.kicker": "INDEX HEALTH",

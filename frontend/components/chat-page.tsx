@@ -14,6 +14,7 @@ import { LatestRequest } from "@/lib/latest-request";
 import { resetMediaElement } from "@/lib/media-playback";
 import { VoiceInputButton } from "@/components/voice-input-button";
 import { useI18n } from "@/components/i18n-provider";
+import { usePhoenixUrl } from "@/lib/phoenix";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -52,7 +53,7 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
 function TraceControls({ traceId }: { traceId: string }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
-  const phoenixUrl = process.env.NEXT_PUBLIC_PHOENIX_URL?.trim();
+  const phoenixUrl = usePhoenixUrl();
   const shortId = traceId.slice(0, 8);
 
   const copyTraceId = async () => {

@@ -15,10 +15,9 @@ dependencies = [
     "socksio>=1.0.0",
     "sqlalchemy[asyncio]>=2.0",
     "uvicorn[standard]>=0.52.1",
-]
-
-[project.optional-dependencies]
-obs = [
+    # 可观测性不再是可选项。48MB / 27 个包，对 476MB 的镜像来说不值得用一个构建
+    # 参数去省 —— 而「可选」的实际结果是 Phoenix 容器一直在跑、依赖却没装，
+    # 成本全付了、一条 trace 都没发。
     "arize-phoenix-otel>=0.16.0",
     "openinference-instrumentation-anthropic>=0.1.20",
     "openinference-instrumentation-openai>=0.1.30",

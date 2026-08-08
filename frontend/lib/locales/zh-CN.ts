@@ -429,7 +429,7 @@ export const zhCN = {
   "settings.obs.refresh": "重新检查",
   "settings.obs.copy": "复制命令",
   "settings.obs.error": "无法读取观测状态",
-  "settings.obs.enableHint": "启用需要重建镜像并重启 —— 这几项在进程启动前就定死了，改设置页无法生效：",
+  "settings.obs.capture": "记录正文",
   "settings.obs.tracedPaths": "记录的入口",
   "settings.obs.collector": "上报地址",
   "memories.audit.kicker": "INDEX HEALTH",

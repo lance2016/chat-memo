@@ -31,9 +31,19 @@ from app.tts.router import router as tts_router
 from app.tts.tickets import tickets
 from app.logging_setup import setup_logging
 from app.obs.middleware import ObservabilityMiddleware
-from app.obs.tracing import setup_tracing
+from app.obs.tracing import apply_tracing
 from app.security import require_api_key
 from app.settings_store import resolve_settings
+
+
+async def _sync_tracing() -> None:
+    """按生效配置（数据库覆盖叠加在 .env 上）开关 tracing。
+
+    放在 lifespan 而不是 `create_app`：`create_app` 里拿不到数据库，
+    只看 .env 的话，设置页里关掉的 tracing 会在每次重启后自己回来。
+    """
+    async with get_sessionmaker()() as session:
+        apply_tracing(await resolve_settings(session))
 
 
 async def _warm_tts() -> None:
@@ -49,6 +59,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     # 工厂而不是协程对象 —— 没启用的那个如果被创建出来又不 await，
     # Python 会在关闭时甩一条 "coroutine was never awaited"。
+    await _sync_tracing()
     tasks = [
         asyncio.create_task(factory())
         for enabled, factory in (
@@ -82,7 +93,6 @@ def create_app() -> FastAPI:
         False,
         settings.log_format,
     )
-    setup_tracing(settings)
     app = FastAPI(title="Personal AI Assistant", lifespan=lifespan)
 
     # Pure ASGI keeps the HTTP span open until a streaming response has sent

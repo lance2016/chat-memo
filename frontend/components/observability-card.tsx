@@ -5,13 +5,13 @@ import { Activity, Check, Copy, ExternalLink, RefreshCw, TriangleAlert } from "l
 import { errorMessage, getObservabilityStatus } from "@/lib/api";
 import type { ObservabilityStatus } from "@/lib/types";
 import { useI18n } from "@/components/i18n-provider";
+import { usePhoenixUrl } from "@/lib/phoenix";
 
 /** Phoenix 状态卡。
  *
- * **刻意没有开关。** 启用 Phoenix 需要重建镜像（`INSTALL_OBS` 是构建参数）、
- * 重启进程（`setup_tracing` 在 create_app 里跑一次）、外加起 phoenix 容器 ——
- * 三件事都在启动之前。放个点了没反应的开关比没有更糟，所以这里只报告现状 +
- * 给出那一条启用命令。
+ * 开关本身是上面那两个普通设置项（`obs_tracing` / `obs_capture_content`，
+ * 改完立刻生效）。这张卡只回答**「现在到底能不能用」** —— 因为「配置说开着」和
+ * 「真的在发 trace」是两回事，而后者失败时不会有任何报错。
  */
 export function ObservabilityCard() {
   const { t } = useI18n();
@@ -19,10 +19,8 @@ export function ObservabilityCard() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const phoenixUrl = usePhoenixUrl();
 
-  // 浏览器要访问的是宿主机映射端口，后端只知道 compose 网络里的 phoenix:6006 ——
-  // 两个地址不通用，所以链接地址走前端构建期变量。
-  const phoenixUrl = process.env.NEXT_PUBLIC_PHOENIX_URL?.trim();
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -44,8 +42,8 @@ export function ObservabilityCard() {
   }, [refresh]);
 
   const copyCommand = async () => {
-    if (!status) return;
-    await navigator.clipboard.writeText(status.enable_command);
+    if (!status?.remedy_command) return;
+    await navigator.clipboard.writeText(status.remedy_command);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
   };
@@ -74,14 +72,11 @@ export function ObservabilityCard() {
     {error && <div className="obs-detail warn"><TriangleAlert size={13} />{error}</div>}
     {status?.detail && <div className="obs-detail warn"><TriangleAlert size={13} />{status.detail}</div>}
 
-    {status && status.stage !== "ready" && <div className="obs-enable">
-      <p>{t("settings.obs.enableHint")}</p>
-      <div className="obs-command">
-        <code>{status.enable_command}</code>
-        <button className="icon-button" type="button" aria-label={t("settings.obs.copy")} title={t("settings.obs.copy")} onClick={() => void copyCommand()}>
-          {copied ? <Check size={13} /> : <Copy size={13} />}
-        </button>
-      </div>
+    {status?.remedy_command && <div className="obs-command">
+      <code>{status.remedy_command}</code>
+      <button className="icon-button" type="button" aria-label={t("settings.obs.copy")} title={t("settings.obs.copy")} onClick={() => void copyCommand()}>
+        {copied ? <Check size={13} /> : <Copy size={13} />}
+      </button>
     </div>}
 
     {status?.stage === "ready" && <dl className="obs-facts">

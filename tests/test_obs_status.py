@@ -35,8 +35,11 @@ def _settings(**overrides) -> Settings:
     )
 
 
-async def test_off_when_not_enabled(monkeypatch) -> None:
-    """没开的时候不该去探活 —— 白等 2 秒，还会在日志里留下没意义的连接失败。"""
+async def test_off_points_at_the_switch_not_a_command(monkeypatch) -> None:
+    """关掉是设置页上一个开关的事，不该让人去敲命令。
+
+    顺带：没开的时候不该去探活 —— 白等 2 秒，还会在日志里留下没意义的连接失败。
+    """
     probed = False
 
     async def spy(_endpoint):
@@ -50,6 +53,8 @@ async def test_off_when_not_enabled(monkeypatch) -> None:
 
     assert result["stage"] == "off"
     assert probed is False
+    assert result["remedy_command"] == ""
+    assert "开关" in result["detail"] or "打开" in result["detail"]
 
 
 async def test_enabled_but_dependencies_missing(monkeypatch) -> None:
@@ -60,7 +65,7 @@ async def test_enabled_but_dependencies_missing(monkeypatch) -> None:
     result = await obs_status.observability_status(_settings())
 
     assert result["stage"] == "missing_deps"
-    assert "INSTALL_OBS" in result["detail"] or "INSTALL_OBS" in result["enable_command"]
+    assert "依赖" in result["detail"]
 
 
 async def test_dependencies_present_but_tracing_never_initialised(monkeypatch) -> None:
@@ -87,7 +92,9 @@ async def test_tracing_active_but_phoenix_down(monkeypatch) -> None:
     result = await obs_status.observability_status(_settings())
 
     assert result["stage"] == "unreachable"
-    assert "profile obs" in result["detail"]
+    assert "容器没起" in result["detail"]
+    # 需要动手时才给命令
+    assert result["remedy_command"] == obs_status.START_COMMAND
 
 
 async def test_ready_reports_no_problem(monkeypatch) -> None:
@@ -112,11 +119,10 @@ async def test_probe_failure_is_a_state_not_an_error() -> None:
     assert detail
 
 
-async def test_status_endpoint_never_leaks_a_toggle(client: AsyncClient) -> None:
-    """接口是只读的。
+async def test_status_endpoint_is_read_only(client: AsyncClient) -> None:
+    """状态接口只读 —— 开关走 PATCH /api/settings，和其他运行时配置同一条路。
 
-    启用与否在启动前就定死了（INSTALL_OBS 是构建参数、setup_tracing 只跑一次），
-    给出可写接口等于承诺一个做不到的行为。
+    两条写路径会长出两套规则，模型目录那边已经吃过这个亏。
     """
     assert (await client.get("/api/obs/status")).status_code == 200
     assert (await client.post("/api/obs/status")).status_code == 405
@@ -128,3 +134,33 @@ async def _ok():
 
 async def _fail():
     return False, "连不上：ConnectError"
+
+
+async def test_privacy_note_follows_the_capture_switch(monkeypatch) -> None:
+    """关掉正文记录后，提示语不该还在吓唬人说「保存完整对话原文」。"""
+    monkeypatch.setattr(obs_status, "_dependencies_installed", lambda: True)
+    monkeypatch.setattr(obs_status, "_tracing_active", lambda: True)
+    monkeypatch.setattr(obs_status, "probe", lambda _e: _ok())
+
+    on = await obs_status.observability_status(_settings(obs_capture_content=True))
+    off = await obs_status.observability_status(_settings(obs_capture_content=False))
+
+    assert "完整对话原文" in on["retention_warning"]
+    assert "已关闭正文记录" in off["retention_warning"]
+
+
+async def test_tracing_switch_actually_toggles(monkeypatch) -> None:
+    """开关必须真的双向生效。
+
+    原来 `setup_tracing` 有 `_initialized` 挡着，只能从关变开一次 —— 那样的开关
+    放进设置页就是骗人。
+    """
+    from app.obs import tracing
+
+    calls: list[str] = []
+    monkeypatch.setattr(tracing, "_active", None)
+    monkeypatch.setattr(tracing, "_uninstrument", lambda: calls.append("off"))
+
+    # 依赖装不上时也要如实返回 False，而不是假装开了
+    assert tracing.apply_tracing(Settings(obs_tracing=False)) is False
+    assert tracing.is_active() is False

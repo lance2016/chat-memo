@@ -602,7 +602,9 @@ export interface ObservabilityStatus {
   collector_endpoint: string;
   traced_paths: string[];
   trace_reads: boolean;
+  capture_content: boolean;
   detail: string;
-  enable_command: string;
+  /** 只有需要动手时才非空（比如 Phoenix 容器没起）。开关类问题不给命令 */
+  remedy_command: string;
   retention_warning: string;
 }

@@ -51,11 +51,9 @@ docker compose exec api alembic revision --autogenerate -m "描述"
 docker compose exec api alembic upgrade head
 ```
 
-可选的 Phoenix tracing（不要常驻写进 `.env`）：
-
-```bash
-INSTALL_OBS=1 OBS_TRACING=1 docker compose --profile obs up -d --build api phoenix
-```
+Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开关和「是否保存对话正文」
+在设置页（开发者 → 链路观测），改完立刻生效（`apply_tracing` 是幂等的状态调和，
+开→关走 `uninstrument()`）。界面在 <http://localhost:16006>。
 
 ## 配置分层（改配置前必读）
 

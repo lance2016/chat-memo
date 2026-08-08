@@ -48,10 +48,16 @@ class Settings(BaseSettings):
     # pretty = 本地人读；json = 容器日志采集器读
     log_format: str = "pretty"
 
-    # ---- 可选 Phoenix / OpenTelemetry ----
-    # 关闭时不初始化 OTel，也不需要安装 obs 可选依赖。
-    obs_tracing: bool = False
-    phoenix_collector_endpoint: str = ""
+    # ---- Phoenix / OpenTelemetry ----
+    # 默认开。依赖已进主依赖、Phoenix 容器随 compose 常起，没有理由默认关着 ——
+    # 「可选」的实际结果是容器在跑、依赖没装、一条 trace 都没有。
+    # 这一项和下面的 obs_capture_content 都在设置页可改，改完立刻生效
+    # （见 app/obs/tracing.py 的 apply_tracing）。
+    obs_tracing: bool = True
+    # Phoenix 里存不存完整 prompt / 回复正文。关掉只留 token 数、延迟和工具链路。
+    # 这是隐私开关：记忆正文会跟着对话一起进 Phoenix。
+    obs_capture_content: bool = True
+    phoenix_collector_endpoint: str = "http://phoenix:6006"
     obs_project_name: str = "chat-memo"
     # 聊天 POST 和后台任务是主链路；GET 多数只是前端轮询或健康检查，默认不建 span。
     obs_trace_reads: bool = False
