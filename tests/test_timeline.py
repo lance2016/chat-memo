@@ -395,9 +395,18 @@ async def test_update_without_time_change_is_not_blocked(session: AsyncSession) 
 
 
 def test_prompt_tells_model_to_ask_about_vague_times() -> None:
+    """模糊时间要回头问，不许自己挑一个。
+
+    钉的是**行为**不是措辞 —— 原来断言的那句原文已经随提示词改写消失了，
+    而规则本身还在。断言具体句子会让每次润色提示词都误报。
+    """
     from app.memory.prompt import TIMELINE_INSTRUCTIONS
 
-    assert "先问清楚大概几点" in TIMELINE_INSTRUCTIONS
-    assert "不要自己挑一个填进去" in TIMELINE_INSTRUCTIONS
+    assert "才先问大概几点" in TIMELINE_INSTRUCTIONS
+    # 反过来的一半：可计算的相对时长不该被要求确认，否则「五分钟后提醒我」会多一轮往返
+    assert "可以计算" in TIMELINE_INSTRUCTIONS
     assert "一分钟后" in TIMELINE_INSTRUCTIONS
+    # 「不许自己挑一个」不再靠提示词 —— 它已经搬进 `_require_clock` 的硬校验，
+    # 因为提示词版本实测被无视过（见 timeline/tool.py 那段 docstring）。
+    # 对应的保证由 test_vague_time_is_rejected_instead_of_guessed 钉住。
     assert "第一次消息里直接处理" in TIMELINE_INSTRUCTIONS

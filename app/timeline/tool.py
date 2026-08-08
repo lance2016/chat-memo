@@ -89,7 +89,9 @@ _CLOCK = re.compile(
 _RELATIVE_DURATION = re.compile(
     r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十百半]+)\s*"
     r"(?:分钟|分|小时|时|刻钟)\s*(?:后|以后|之后)"
-    r"|(?:in|after)\s+(?:\d+(?:\.\d+)?|an?\s+)?(?:minutes?|mins?|hours?|hrs?)",
+    # 数字和单位之间必须允许空格：英文里「in 5 minutes」才是常态写法，
+    # 少了这个 \s* 就只有「in an hour」这种不带数字的能通过。
+    r"|(?:in|after)\s+(?:\d+(?:\.\d+)?\s*|an?\s+)?(?:minutes?|mins?|hours?|hrs?)",
     re.IGNORECASE,
 )
 
