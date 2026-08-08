@@ -35,6 +35,7 @@ from app.llm.events import (
 )
 from app.llm.provider import ToolExecutor
 from app.llm.target import ModelTarget
+from app.obs import record_llm_input, record_llm_output, trace
 
 logger = logging.getLogger(__name__)
 
@@ -128,8 +129,31 @@ class DeepSeekProvider:
             turn = _Turn()
             try:
                 # 边收边吐 —— 攒完再发等于把上游的流式白白吃掉。
-                async for delta in self._consume(request, turn):
-                    yield delta
+                # The OpenAI instrumentor may omit message content depending
+                # on its version/configuration, so the enclosing application
+                # span stores the exact request and assembled response too.
+                with trace(
+                    "llm",
+                    f"openai/{self.target.model_id}",
+                    provider="openai",
+                    model=self.target.model_id,
+                    iteration=iteration,
+                ):
+                    record_llm_input(request, model=self.target.model_id)
+                    async for delta in self._consume(request, turn):
+                        yield delta
+
+                    assistant_content = to_content_blocks(
+                        "".join(turn.text), "".join(turn.reasoning), turn.tool_calls
+                    )
+                    record_llm_output(
+                        {
+                            "content": assistant_content,
+                            "stop_reason": turn.finish,
+                        },
+                        usage=turn.usage,
+                        stop_reason=turn.finish or "",
+                    )
             except Exception as exc:
                 logger.exception("DeepSeek 调用失败")
                 if snapshot is not None:
@@ -254,7 +278,32 @@ class DeepSeekProvider:
             # 和 run() 同一个形状：不是 OpenAI 标准字段，必须走 extra_body 透传，
             # 而且不传就是默认开着，所以只在要关的时候发。
             request["extra_body"] = {"thinking": {"type": "disabled"}}
-        response = await self.client.chat.completions.create(**request)
+        with trace(
+            "llm",
+            f"openai/{self.target.model_id}",
+            provider="openai",
+            model=self.target.model_id,
+            purpose="complete",
+        ):
+            record_llm_input(request, model=self.target.model_id)
+            response = await self.client.chat.completions.create(**request)
+            response_usage = getattr(response, "usage", None)
+            usage = (
+                response_usage.model_dump(exclude_none=True)
+                if response_usage is not None
+                else {}
+            )
+            record_llm_output(
+                {
+                    "content": response.choices[0].message.content or "",
+                    "reasoning_content": getattr(
+                        response.choices[0].message, "reasoning_content", ""
+                    ),
+                    "finish_reason": response.choices[0].finish_reason,
+                },
+                usage=usage,
+                stop_reason=response.choices[0].finish_reason or "",
+            )
         choice = response.choices[0]
         if choice.finish_reason == "length":
             logger.warning("补全被 max_tokens 截断，产出可能不完整")

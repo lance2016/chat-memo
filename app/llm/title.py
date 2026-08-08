@@ -16,6 +16,7 @@ from __future__ import annotations
 from openai import AsyncOpenAI
 
 from app.config import Settings, get_settings
+from app.obs import record_llm_input, record_llm_output, trace
 
 
 class TitleClient:
@@ -49,19 +50,43 @@ class TitleClient:
         return f"{self.backend}/{self.model}"
 
     async def complete(self, *, system: str, prompt: str, max_tokens: int) -> str:
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
+        request = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            extra_body=(
+            "extra_body": (
                 {"enable_thinking": False}
                 if self.backend == "siliconflow"
                 else {"thinking": {"type": "disabled"}}
             ),
-        )
+        }
+        with trace(
+            "llm",
+            f"openai/{self.model}",
+            provider=self.backend,
+            model=self.model,
+            purpose="title",
+        ):
+            record_llm_input(request, model=self.model)
+            response = await self.client.chat.completions.create(**request)
+            choice = response.choices[0]
+            response_usage = getattr(response, "usage", None)
+            usage = (
+                response_usage.model_dump(exclude_none=True)
+                if response_usage is not None
+                else {}
+            )
+            record_llm_output(
+                {
+                    "content": choice.message.content or "",
+                    "finish_reason": choice.finish_reason,
+                },
+                usage=usage,
+                stop_reason=choice.finish_reason or "",
+            )
         return (response.choices[0].message.content or "").strip()
 
 

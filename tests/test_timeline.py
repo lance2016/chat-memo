@@ -313,6 +313,21 @@ async def test_explicit_clock_passes(session: AsyncSession) -> None:
         assert not is_error, f"{said} 不该被拒绝：{result}"
 
 
+async def test_explicit_relative_duration_passes(session: AsyncSession) -> None:
+    """「一分钟后」是可计算的明确时刻，不应被当成「中午」那类模糊时间。"""
+    executor = await _executor(session)
+
+    for said in ("一分钟后", "10分钟以后", "半小时之后", "in 5 minutes", "after 2 hours"):
+        result, is_error = await executor.execute("timeline_create", {
+            "title": f"测试 {said}",
+            "kind": "reminder",
+            "status": "confirmed",
+            "starts_at": "2026-08-08T09:00:00+08:00",
+            "said": said,
+        })
+        assert not is_error, f"{said} 不该被拒绝：{result}"
+
+
 async def test_all_day_escapes_the_clock_requirement(session: AsyncSession) -> None:
     """整天有效的事项本来就没有钟点，也是「随便你定」时的出口。"""
     executor = await _executor(session)
@@ -384,3 +399,5 @@ def test_prompt_tells_model_to_ask_about_vague_times() -> None:
 
     assert "先问清楚大概几点" in TIMELINE_INSTRUCTIONS
     assert "不要自己挑一个填进去" in TIMELINE_INSTRUCTIONS
+    assert "一分钟后" in TIMELINE_INSTRUCTIONS
+    assert "第一次消息里直接处理" in TIMELINE_INSTRUCTIONS

@@ -76,6 +76,8 @@ services:
       OBS_TRACING: ${OBS_TRACING:-0}
       OBS_PROJECT_NAME: ${OBS_PROJECT_NAME:-chat-memo}
       OBS_TRACE_HTTP_PATHS: ${OBS_TRACE_HTTP_PATHS:-/api/chat,/api/jobs/consolidate}
+      # Phoenix span input/output 默认保留正文；需要隐私模式时显式设为 false。
+      OPENINFERENCE_CAPTURE_MESSAGE_CONTENT: ${OPENINFERENCE_CAPTURE_MESSAGE_CONTENT:-true}
       LOG_FORMAT: ${LOG_FORMAT:-json}
       # 宿主机设置了 VAULT_PATH 才启用知识库；:+ 表示「有值就替换成容器内挂载点」，
       # 否则为空串 —— 同时覆盖掉 env_file 里的宿主机路径，容器内那个路径不存在。

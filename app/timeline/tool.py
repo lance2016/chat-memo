@@ -9,13 +9,17 @@ from app.timeline.store import TimelineError, TimelineStore
 TIMELINE_DESCRIPTION = """管理用户明确提到的、有具体日期或时间的个人事项。
 
 - 明确承诺、会议、出行、生日、截止日期等，用 timeline_create 创建。
+- 用户给出可直接计算的相对时长（如「一分钟后」「十分钟后」「半小时后」）时，
+  这是明确时间：本轮直接创建，不要先反问确认。
 - 用户说「可能、也许、暂定」时 status=pending；明确安排用 confirmed。
 - 不要把愿望、泛泛计划或过去发生的事情创建成未来事项。
 - 创建前如可能重复，先 timeline_list 查询；取消、完成或改期用 timeline_update 修改原事项。
 - 时间必须是带 UTC offset 的 ISO 8601，结合 runtime_context 的当前日期和时区解析“明天”等相对表达。
-- 回答用户时说明创建或修改了什么；有歧义时宁可 pending，并请用户确认。
+- 只有「一会儿、晚点、找时间」这类无法计算的表达才需要追问；不要因为需要做日期加法就追问。
+- 如果用户只回复「是的/对」，这是对上一条时间事项的确认；沿用上一条用户原话，不要把确认词当作新的时间依据。
+- 回答用户时说明创建或修改了什么；事项本身不含关键歧义时不要额外请求确认。
 
-**`said` 必填，写用户原话里表示时间的那几个字，原样复制**（「今天中午」「明早九点」）。
+**`said` 必填，写用户原话里表示时间的那几个字，原样复制**（「今天中午」「明早九点」「一分钟后」）。
 用户没说到时间就留空。这个字段会被校验：**说的是「中午」「晚点」「下午」这类没有钟点的
 话时，工具会拒绝创建，你要先问清楚大概几点，而不是自己挑一个时间填进去。**
 真的不需要具体时间（整天有效的待办、生日）就设 all_day=true。"""
@@ -28,7 +32,7 @@ ITEM_PROPERTIES: dict[str, Any] = {
     "starts_at": {"type": "string", "description": "带时区的 ISO 8601 开始时间"},
     "said": {
         "type": "string",
-        "description": "用户原话里表示时间的那几个字，原样复制，如「今天中午」「明早九点」。用户没提时间就留空",
+        "description": "用户原话里表示时间的那几个字，原样复制，如「今天中午」「明早九点」「一分钟后」。用户没提时间就留空",
     },
     "ends_at": {"type": "string", "description": "可选，带时区的 ISO 8601 结束时间"},
     "all_day": {"type": "boolean"},
@@ -72,14 +76,20 @@ def _datetime(value: Any, field: str) -> dt.datetime | None:
     return parsed
 
 
-# 钟点的写法：阿拉伯数字（9点 / 18:00 / 6pm）、中文数字（九点半）、以及英文 o'clock。
-# 判据是「有没有钟点」而不是「有没有『中午』这类模糊词」—— 模糊词列不全，
-# 而缺钟点是所有模糊表达的共同特征：「中午」「晚点」「回头」「下周三」都缺。
+# 钟点的写法：阿拉伯数字（9点 / 18:00 / 6pm）、中文数字（九点半）、英文 o'clock，
+# 以及可以直接换算的相对时长（「一分钟后」「半小时后」）。
+# 「下周三」「下午」「中午」仍然没有钟点；相对时长则是明确时刻，只是需要做日期加法。
 _CLOCK = re.compile(
     r"\d\s*[:：]\s*\d"           # 18:00
     r"|\d\s*(点|时|am|pm|a\.m|p\.m|o'clock)"  # 9点 / 6pm
     r"|[一二两三四五六七八九十]\s*(点|时)"      # 九点
     r"|正午|midnight|noon",
+    re.IGNORECASE,
+)
+_RELATIVE_DURATION = re.compile(
+    r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九十百半]+)\s*"
+    r"(?:分钟|分|小时|时|刻钟)\s*(?:后|以后|之后)"
+    r"|(?:in|after)\s+(?:\d+(?:\.\d+)?|an?\s+)?(?:minutes?|mins?|hours?|hrs?)",
     re.IGNORECASE,
 )
 
@@ -100,7 +110,7 @@ def _require_clock(tool_input: dict[str, Any]) -> None:
             "缺少 said。把用户原话里表示时间的那几个字填进来；"
             "用户没提到时间就不要凭空定一个，先问他。"
         )
-    if _CLOCK.search(said):
+    if _CLOCK.search(said) or _RELATIVE_DURATION.search(said):
         return
     raise TimelineError(
         f"「{said}」没有具体钟点，不能创建带精确时间的事项 —— 不要自己挑一个。"

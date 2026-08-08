@@ -59,7 +59,7 @@
 
 **模型调用 → Phoenix**（`arizephoenix/phoenix`，一个容器）。一次 agent loop 天然是一棵 span 树：多次 iteration、每次的完整 messages、tool 定义与结果、token、延迟、错误全在里面。这套东西自己写要一张表加一整页界面，而 Phoenix 免费给，且 trace UI 比手写的强。
 
-**关键前提（已核实）**：本项目三条模型链路正好被两个自动埋点包完全覆盖——
+**基础链路**：本项目三条模型链路正好被两个自动埋点包覆盖——
 
 | 链路 | SDK | 埋点包 |
 |---|---|---|
@@ -67,7 +67,12 @@
 | DeepSeek 聊天 (`deepseek_provider.py`) | `AsyncOpenAI` + `base_url` | `openinference-instrumentation-openai` |
 | 硅基流动/智谱标题 (`llm/title.py`) | `AsyncOpenAI` + `base_url` | 同上 |
 
-`consolidate.py` 和 `notify/compose.py` 走的也是这两条 provider，所以 **5 处调用点零手工埋点**。
+`consolidate.py` 和 `notify/compose.py` 走的也是这两条 provider。自动埋点负责协议级的
+token、延迟和错误信息；但流式调用在不同 SDK/instrumentation 版本上不保证把完整消息正文
+写入 Phoenix，所以 provider 发请求的地方还会创建一个应用自己的 `LLM` span，把**实际
+发送的完整 payload** 写入 `input.value`，把完整响应写入 `output.value`。这样 Phoenix
+里不再依赖某个自动埋点版本是否捕获正文，也能直接看到当前请求的 system、history、tools
+和本轮用户消息。
 
 **普通日志 → 日志库或 `docker logs`**。HTTP 访问日志、异常栈、DB 日志、后台任务 stdout。Phoenix 是 trace 后端不是日志后端，这层它不管，得自己解决（第七节）。
 
@@ -224,6 +229,8 @@ opentelemetry-exporter-otlp
 - `OBS_TRACE_READS=false` 时，`GET` 请求和 `/health` 只保留普通访问日志，不创建 Phoenix span；聊天 `POST /api/chat`、模型子 span 和后台任务仍然保留。
 - `OBS_TRACE_HTTP_PATHS` 控制 HTTP 入口白名单，默认只有 `/api/chat` 和手动整理入口；像 `/api/tts/stop`、设置保存、归档等控制请求不建 Phoenix span。需要排查某个入口时再临时追加路径。
 - 手工 span 写入 `openinference.span.kind`，HTTP/任务显示为 `CHAIN`，工具类 span 可显示为 `TOOL`，避免 Phoenix 列表全部变成 `unknown`。
+- LLM span 使用 `openinference.span.kind=LLM`；input/output 以 JSON 写入 `input.value` /
+  `output.value`。trace 中包含完整对话内容，Phoenix retention 和本地端口访问限制必须保持开启。
 - 聊天 SSE 会发送当前完整 `trace_id`。对话顶部显示短码，复制按钮复制完整 ID，打开按钮只打开本机 Phoenix UI；浏览器不直连 Phoenix API，也不接触 collector endpoint。
 - Phoenix 默认绑定 `127.0.0.1`，因为 trace 里包含完整 prompt/response。需要局域网访问时再显式修改 compose 端口绑定。
 - Phoenix compose 已关闭 UI telemetry、外部资源、MCP/MCP code mode 和 Prometheus；本地只保留 UI、OTLP 收集和 SQLite trace 存储。旧 span 不会因新过滤规则消失，需按时间/项目清理，或等待 retention 到期。

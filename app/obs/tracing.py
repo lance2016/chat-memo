@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from urllib.parse import urlsplit, urlunsplit
 
 from app.config import Settings
@@ -44,6 +45,10 @@ def setup_tracing(settings: Settings) -> bool:
         return False
 
     try:
+        # Keep explicit application spans and SDK-instrumented spans consistent:
+        # Phoenix should show message content unless the operator explicitly
+        # opted out through an OPENINFERENCE_* privacy setting.
+        os.environ.setdefault("OPENINFERENCE_CAPTURE_MESSAGE_CONTENT", "true")
         provider = register(
             project_name=settings.obs_project_name,
             endpoint=_otlp_http_endpoint(settings.phoenix_collector_endpoint),

@@ -7,6 +7,8 @@ installed or is temporarily unavailable.
 
 from __future__ import annotations
 
+import json
+import os
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
@@ -22,6 +24,7 @@ _OPENINFERENCE_KINDS = {
     "job": "CHAIN",
     "ticker": "CHAIN",
     "tool": "TOOL",
+    "llm": "LLM",
 }
 
 
@@ -101,6 +104,85 @@ def _set_span_attributes(attributes: dict[str, Any]) -> None:
 def set_current_span_attributes(**attributes: Any) -> None:
     """Set attributes on the active span when tracing is enabled."""
 
+    _set_span_attributes(attributes)
+
+
+def _json_attribute(value: Any) -> str:
+    """Serialize an LLM payload for Phoenix's standard input/output fields."""
+
+    return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def _capture_llm_content(*, output: bool = False) -> bool:
+    """Honor OpenInference's privacy switches for application-owned spans."""
+
+    false_values = {"0", "false", "no", "off"}
+    if (
+        os.environ.get("OPENINFERENCE_CAPTURE_MESSAGE_CONTENT", "true").lower()
+        in false_values
+    ):
+        return False
+    names = (
+        ("OPENINFERENCE_HIDE_OUTPUTS", "OPENINFERENCE_HIDE_OUTPUT_MESSAGES")
+        if output
+        else ("OPENINFERENCE_HIDE_INPUTS", "OPENINFERENCE_HIDE_INPUT_MESSAGES")
+    )
+    return not any(
+        os.environ.get(name, "").lower() not in {"", *false_values}
+        for name in names
+    )
+
+
+def record_llm_input(payload: Any, *, model: str = "") -> None:
+    """Attach the exact request payload to the active LLM span.
+
+    SDK auto-instrumentation is useful for token counts, but its message-content
+    capture varies by SDK/instrumentation version. The application already has
+    the exact payload at the send site, so record it explicitly using the
+    OpenInference fields Phoenix renders in the span input panel.
+    """
+
+    attributes: dict[str, Any] = {
+        "input.mime_type": "application/json",
+    }
+    if _capture_llm_content():
+        attributes["input.value"] = _json_attribute(payload)
+    if model:
+        attributes["llm.model_name"] = model
+    _set_span_attributes(attributes)
+
+
+def record_llm_output(
+    payload: Any,
+    *,
+    usage: dict[str, Any] | None = None,
+    stop_reason: str = "",
+    error: str = "",
+) -> None:
+    """Attach an LLM response/error and normalized token counts to Phoenix."""
+
+    attributes: dict[str, Any] = {
+        "output.mime_type": "application/json",
+    }
+    if _capture_llm_content(output=True):
+        attributes["output.value"] = _json_attribute(payload)
+    if stop_reason:
+        attributes["llm.response.finish_reasons"] = stop_reason
+    if error:
+        attributes["error.type"] = "LLMError"
+        attributes["error.message"] = error
+
+    # Anthropic and OpenAI-compatible providers use different usage keys.
+    usage = usage or {}
+    prompt = usage.get("input_tokens", usage.get("prompt_tokens"))
+    completion = usage.get("output_tokens", usage.get("completion_tokens"))
+    total = usage.get("total_tokens")
+    if isinstance(prompt, int):
+        attributes["llm.token_count.prompt"] = prompt
+    if isinstance(completion, int):
+        attributes["llm.token_count.completion"] = completion
+    if isinstance(total, int):
+        attributes["llm.token_count.total"] = total
     _set_span_attributes(attributes)
 
 

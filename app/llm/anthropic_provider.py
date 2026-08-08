@@ -22,6 +22,7 @@ from app.llm.events import (
 )
 from app.llm.provider import ToolExecutor
 from app.llm.target import ModelTarget
+from app.obs import record_llm_input, record_llm_output, trace
 
 logger = logging.getLogger(__name__)
 
@@ -114,18 +115,45 @@ class AnthropicProvider:
 
             try:
                 final = None
-                async with self.client.messages.stream(**payload) as stream:
-                    async for event in stream:
-                        if event.type != "content_block_delta":
-                            continue
-                        delta = event.delta
-                        if delta.type == "thinking_delta":
-                            yield ThinkingDelta(text=delta.thinking)
-                        elif delta.type == "text_delta":
-                            yield TextDelta(text=delta.text)
-                    final = await stream.get_final_message()
+                # The SDK instrumentor normally creates this span, but it does
+                # not consistently capture message content across SDK versions.
+                # Keep an application-owned LLM span with the exact payload.
+                with trace(
+                    "llm",
+                    f"anthropic/{self.target.model_id}",
+                    provider="anthropic",
+                    model=self.target.model_id,
+                    iteration=iteration,
+                ):
+                    record_llm_input(payload, model=self.target.model_id)
+                    async with self.client.messages.stream(**payload) as stream:
+                        async for event in stream:
+                            if event.type != "content_block_delta":
+                                continue
+                            delta = event.delta
+                            if delta.type == "thinking_delta":
+                                yield ThinkingDelta(text=delta.thinking)
+                            elif delta.type == "text_delta":
+                                yield TextDelta(text=delta.text)
+                        final = await stream.get_final_message()
+
+                    usage = final.usage.model_dump(exclude_none=True)
+                    record_llm_output(
+                        {
+                            "content": [
+                                block.model_dump(exclude_none=True)
+                                for block in final.content
+                            ],
+                            "stop_reason": final.stop_reason,
+                        },
+                        usage=usage,
+                        stop_reason=final.stop_reason,
+                    )
             except Exception as exc:  # 网络/API 错误，转成事件而不是打断 SSE
                 logger.exception("模型调用失败")
+                # The trace context has closed by now on an exception. The
+                # exception itself is recorded by trace(); the error text is
+                # still retained in the debug snapshot below.
                 if snapshot is not None:
                     snapshot.finish(error=str(exc))
                 yield Error(message=f"模型调用失败：{exc}")
@@ -201,14 +229,35 @@ class AnthropicProvider:
         走 stream + get_final_message 而不是裸 create：max_tokens 较大时
         非流式请求会撞上 SDK 的 HTTP 超时。
         """
-        async with self.client.messages.stream(
+        payload = {
+            "model": self.target.model_id,
+            "max_tokens": max_tokens or self.target.max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            "thinking": {"type": "adaptive"} if thinking else {"type": "disabled"},
+        }
+        with trace(
+            "llm",
+            f"anthropic/{self.target.model_id}",
+            provider="anthropic",
             model=self.target.model_id,
-            max_tokens=max_tokens or self.target.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            thinking={"type": "adaptive"} if thinking else {"type": "disabled"},
-        ) as stream:
-            message = await stream.get_final_message()
+            purpose="complete",
+        ):
+            record_llm_input(payload, model=self.target.model_id)
+            async with self.client.messages.stream(**payload) as stream:
+                message = await stream.get_final_message()
+            usage = message.usage.model_dump(exclude_none=True)
+            record_llm_output(
+                {
+                    "content": [
+                        block.model_dump(exclude_none=True)
+                        for block in message.content
+                    ],
+                    "stop_reason": message.stop_reason,
+                },
+                usage=usage,
+                stop_reason=message.stop_reason,
+            )
 
         text = "\n".join(b.text for b in message.content if b.type == "text").strip()
         if message.stop_reason == "max_tokens":
