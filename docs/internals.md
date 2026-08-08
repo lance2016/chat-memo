@@ -371,3 +371,62 @@ schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现�
 
 重新考虑的信号：软删除跑一段时间后，真的出现「想翻回被编辑掉的那一版」的实际需求。
 真要做，数据已经留在库里了，迁移时回填 `parent_id` 即可，不会因为今天没做而付额外代价。
+
+## 后台任务为什么还在 API 进程里
+
+`app/main.py` 的 lifespan 起三个 ticker（整理 600s / 通知 60s / 备份 600s），
+外加一次性的 TTS 预热。它们和 API 共用一个 uvicorn 进程（`entrypoint.sh` 没有
+`--workers`，就一个）。2026-08-08 评估过拆成独立 worker 容器，结论是**不拆**。
+
+### 拆 worker 的常见理由在这里都不成立
+
+- **「进程重启会丢任务」** —— 已经被补跑式调度消解了。`app/jobs/backfill.py` 查的是
+  「哪天该整理但没整理」而不是「现在几点」，备份查「今天备份过没有」，通知查
+  「该发而没发的」。进程随时可以死，睡醒补上就行。`consolidation_runs` 表和
+  `/api/jobs/consolidate/health` 还给了「静默不运转」的眼睛
+- **「后台任务拖慢 API」** —— 整理的几分钟全花在 `await` LLM 的 HTTP 上，
+  不占事件循环，也不是 CPU 密集。实测 `chat-api` 常驻 173MB、CPU 0.35%
+- **「崩溃隔离」** —— 三个 ticker 各自都是 `except Exception: logger.exception(...)`
+  然后继续下一轮，单次失败停不掉循环，更停不掉 API
+
+### 拆了反而会带来一个真风险
+
+拆完之后 API 绝对不能再起 ticker，否则两个进程同时跑。后果不对称：通知那边
+`dedupe_key` 有唯一约束兜着（输的一方顶多报个 IntegrityError，下一分钟重试），
+**但整理没有** —— `backfill.record` 是 SELECT-then-insert，两个进程可以同时挑中
+同一天，跑两次完整 agent loop：双倍 token，而且模型对同一批摘要写两遍记忆，
+去重逻辑不保证幂等。
+
+其余代价：多一个 ~170MB 容器；`backups/` 卷和 `pg_dump` 二进制要跟着搬；
+`app/debug/` 的请求快照是**进程内**环形缓冲，整理搬走之后 `/api/debug/requests`
+就再也看不到整理那几次请求了；日志和 trace 分两处看。
+
+这和 roadmap 里否决 Redis 是同一个理由：**单进程是前提，不是缺陷。**
+
+### 但耦合确实在收一笔税：`JOBS_ENABLED`
+
+代价是真的，只是不在性能上：为了让 ticker 能跑，后端热重载原来是默认关掉的
+（compose 里那行注释写着「编辑 app/ 时会取消 lifespan 里的通知 ticker」）。
+热重载每次改代码都重启进程、把 sleep 从头算起 —— 60s 的通知还有机会，
+600s 的整理基本永远等不到第一次 tick。等于用「不能改代码」换「任务能跑」。
+
+`JOBS_ENABLED` 把这两件事拆开，开发期是 `RELOAD=1 JOBS_ENABLED=0`：
+
+| | `JOBS_ENABLED=1`（默认） | `JOBS_ENABLED=0` |
+|---|---|---|
+| 三个 ticker | 建 | 不建，启动时 WARNING 一行 |
+| TTS 预热 | 建 | **照样建** —— 打的是宿主机 mlx 服务，一次性不烧钱 |
+| 各任务自己的开关 | 仍然生效 | —— |
+
+它是**环境变量不是设置页开关**（在 `settings_store.ENV_ONLY` 里）：启动期读一次
+决定建不建任务，写进数据库不会生效，放白名单只会给出一个「点了没反应」的开关。
+各任务自己的开关（`consolidate_auto` / `backup_auto` / `notify_enabled`）仍然在
+设置页，那些是循环内部每轮重读的。
+
+关掉之后要能手动跑，所以补了 `POST /api/notify/sweep`（整理和备份本来就有）。
+它跑的是和 ticker **完全同一个** `sweep()`，不是简化版 —— 那样测出来的不作数。
+和 `/api/notify/test` 的区别：`test` 无视开关发一条假消息验证通道通不通，
+`sweep` 走真实链路，`notify_enabled` 关着就不发（「关掉了还是收到推送」是最糟的一种 bug）。
+
+顺带它也是将来真要拆 worker 时的那个开关（worker 侧 1、API 侧 0），
+但那是**将来**，重新考虑的信号见 roadmap「明确不做」。

@@ -16,6 +16,17 @@ docker compose logs -f api
 docker compose exec api pytest -q
 ```
 
+后端有两档，**改代码时要一起换**（热重载会把 lifespan 里的 ticker 反复掐掉重来，
+sleep 从头算起，600s 的整理 tick 基本永远等不到第一次触发）：
+
+```bash
+docker compose up -d api                              # 默认：不重载，后台任务正常跑
+RELOAD=1 JOBS_ENABLED=0 docker compose up -d api      # 改代码：热重载，任务手动触发
+```
+
+第二档下手动触发：`POST /api/jobs/consolidate?day=YYYY-MM-DD`、`POST /api/jobs/backup`、
+`POST /api/notify/sweep`（跑的是和 ticker 完全同一个 `sweep()`）。
+
 后端测试用内存 SQLite（`tests/conftest.py`），不需要数据库，也可以直接在宿主机跑：
 
 ```bash

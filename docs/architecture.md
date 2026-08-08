@@ -183,7 +183,7 @@ flowchart LR
 | `/api/eval` | `eval/router` | 11 | 数据集、标注、跑分、噪声、历史 |
 | `/api/tts` `/api/asr` | `tts` `asr` | 9 | 合成 / 句级流水线 / 转写 / 探活 |
 | `/api/jobs` | `jobs/router` | 3 | 手动整理、备份、整理健康度 |
-| `/api/notify` | `notify/router` | 2 | 通道状态、测试推送 |
+| `/api/notify` | `notify/router` | 3 | 通道状态、测试推送、手动扫一轮 |
 | `/api/debug` | `debug/router` | 4 | 请求快照、当前 system prompt |
 | `/api/obs` | `obs/router` | 1 | Phoenix 状态 |
 | `/api/tools` | `tool_catalog` | 1 | 模型可用工具目录 |

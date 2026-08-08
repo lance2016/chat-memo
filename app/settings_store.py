@@ -164,6 +164,10 @@ ENV_ONLY = (
     "tts_base_url",
     "tts_model_cache",
     "asr_max_bytes",
+    # 启动期读一次决定要不要建 ticker 任务，改数据库不会生效 —— 放进白名单
+    # 只会给出一个「点了没反应」的开关。各任务自己的开关（consolidate_auto /
+    # backup_auto / notify_enabled）仍然在设置页，那些是每轮重读的。
+    "jobs_enabled",
 )
 
 

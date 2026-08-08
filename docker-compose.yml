@@ -58,7 +58,16 @@ services:
       # 覆盖 .env 里的宿主机地址 —— 容器内要走 compose 网络的服务名和内部端口。
       # 环境变量优先级高于 .env 文件，所以这行一定生效。
       DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chat
-      RELOAD: "1"
+      # 默认是「能跑任务」的那一档：不重启，ticker 正常工作。
+      #
+      # 改代码时用另一档：`RELOAD=1 JOBS_ENABLED=0 docker compose up -d api`。
+      # 两个必须一起换 —— 热重载会把 lifespan 里的 ticker 反复掐掉重来，sleep 从头
+      # 算起，600s 的整理 tick 基本永远等不到第一次触发，留着只是半死不活地空转。
+      # 那一档下要测任务就手动触发：
+      #   POST /api/jobs/consolidate?day=YYYY-MM-DD   POST /api/jobs/backup
+      #   POST /api/notify/sweep                       （跑的是和 ticker 同一个 sweep）
+      RELOAD: ${RELOAD:-0}
+      JOBS_ENABLED: ${JOBS_ENABLED:-1}
       # TTS_BASE_URL 是宿主机直跑后端时使用的 127.0.0.1 地址，不能直接复用：
       # 容器里的 127.0.0.1 是容器自己。单独提供 Docker 覆盖项，避免 .env 中的
       # TTS_BASE_URL 把 host.docker.internal 默认值意外覆盖掉。

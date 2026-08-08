@@ -12,6 +12,7 @@ from app.db.session import get_session
 from app.notify.channels import KNOWN_CHANNELS, BarkChannel, build_channels
 from app.notify.message import PushMessage
 from app.notify.service import Notifier
+from app.notify.sweep import sweep
 from app.security import require_api_key
 from app.settings_store import resolve_settings
 
@@ -48,6 +49,11 @@ class TestResult(BaseModel):
     delivered: bool
     channels: str
     error: str
+
+
+class SweepResult(BaseModel):
+    sent: int
+    skipped: str = ""
 
 
 @router.get("/status", response_model=NotifyStatus)
@@ -92,6 +98,27 @@ async def notify_status(session: AsyncSession = Depends(get_session)) -> NotifyS
             for row in recent
         ],
     )
+
+
+@router.post("/sweep", response_model=SweepResult)
+async def sweep_now(session: AsyncSession = Depends(get_session)) -> SweepResult:
+    """立刻扫一遍「该提醒而没提醒的」，不等下一次 tick。
+
+    ticker 每 60 秒才跑一次，而开发时（`JOBS_ENABLED=0`）根本不跑 —— 没有这个入口
+    就只能改系统时间或者干等。跑的是和 ticker **完全同一个** `sweep()`，
+    不是简化版：那样测出来的东西不作数。
+
+    和 `/test` 的区别：`/test` 无视开关直接发一条假消息验证通道通不通，
+    这里走真实链路，`notify_enabled` 关着就不发 —— 否则「关掉了还是收到推送」。
+    重复调用是安全的，`dedupe_key` 挡住重发。
+    """
+    settings = await resolve_settings(session)
+    if not settings.notify_enabled:
+        return SweepResult(sent=0, skipped="主动通知未开启")
+    notifier = Notifier(session, settings)
+    if not notifier.ready:
+        return SweepResult(sent=0, skipped="没有配置好的通知通道")
+    return SweepResult(sent=await sweep(session, settings, notifier))
 
 
 @router.post("/test", response_model=TestResult)

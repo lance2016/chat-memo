@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -39,6 +40,8 @@ from app.tts.router import public as tts_public_router
 from app.tts.router import router as tts_router
 from app.tts.tickets import tickets
 
+logger = logging.getLogger(__name__)
+
 
 async def _sync_tracing() -> None:
     """按生效配置（数据库覆盖叠加在 .env 上）开关 tracing。
@@ -64,16 +67,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 工厂而不是协程对象 —— 没启用的那个如果被创建出来又不 await，
     # Python 会在关闭时甩一条 "coroutine was never awaited"。
     await _sync_tracing()
+    # JOBS_ENABLED=0 时一个 ticker 都不建。开发期开着热重载用：每次改代码都会
+    # 重启进程、把 sleep 从头算起，600s 的整理 tick 基本永远等不到 —— 与其让它
+    # 半死不活地空转，不如明确关掉，要测就用 POST /api/jobs/* 和 /api/notify/sweep。
+    # 注意这**不是** worker 拆分开关的实装，只是把那个开关先备好；同时开两个进程
+    # 会让同一天整理两次，见 Settings.jobs_enabled 的注释。
+    if not settings.jobs_enabled:
+        logger.warning("JOBS_ENABLED=0：后台任务（整理/通知/备份）全部未启动")
     tasks = [
         asyncio.create_task(factory())
         for enabled, factory in (
-            (settings.consolidate_auto, run_daily_consolidation),
-            # 循环内部每分钟重新读一次设置，所以这里恒真 —— 在设置页打开通知
-            # 应该下一分钟就生效，而不是要重启进程。空转的代价只是一个 sleep。
-            (True, run_notification_ticker),
-            # 恒真：开关在循环内部每轮重读，在设置页关掉下一轮就生效，
-            # 不用重启进程。空转的代价只是一个 sleep。
-            (True, run_backup_ticker),
+            (settings.jobs_enabled and settings.consolidate_auto, run_daily_consolidation),
+            # 循环内部每分钟重新读一次设置，所以这里只看 jobs_enabled —— 在设置页
+            # 打开通知应该下一分钟就生效，而不是要重启进程。空转的代价只是一个 sleep。
+            (settings.jobs_enabled, run_notification_ticker),
+            # 同上：开关在循环内部每轮重读，在设置页关掉下一轮就生效。
+            (settings.jobs_enabled, run_backup_ticker),
+            # 预热不受 jobs_enabled 管：它打的是宿主机的 mlx 服务，一次性、不烧钱，
+            # 而开发期最不想遇到的就是第一次点朗读干等十几秒。
             (settings.tts_warmup, _warm_tts),
         )
         if enabled

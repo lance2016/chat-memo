@@ -100,6 +100,21 @@ class Settings(BaseSettings):
     # 昨天要过了这个钟点才开始整理。补跑式下它不再是「闹钟」，只是「别太早动手」。
     consolidate_hour: int = 4
 
+    # 这个进程要不要跑后台 ticker（整理 / 通知 / 备份）。
+    #
+    # 存在的理由是开发期：编辑 app/ 会重启进程，lifespan 里的 ticker 跟着从头开始
+    # sleep —— 通知那个 60s 的还有机会，整理那个 600s 的开着热重载基本永远等不到
+    # 第一次 tick。于是原来只能反过来把 RELOAD 关掉，用「不能改代码」换「任务能跑」。
+    # 拆开之后开发期就是 RELOAD=1 + JOBS_ENABLED=0，要测任务用手动接口触发。
+    #
+    # 顺带也是将来真要拆 worker 容器时的那个开关（worker 侧 1、API 侧 0）——
+    # 但**现在不拆**，理由见 docs/roadmap.md「明确不做」。⚠️ 两个进程同时开着它
+    # 会让同一天被整理两次：`backfill.record` 是 SELECT-then-insert，挡不住并发，
+    # 后果是双倍 token + 模型对同一批摘要写两遍记忆。
+    #
+    # 启动期读一次，所以是环境变量而不是设置页里的开关。
+    jobs_enabled: bool = True
+
     # agent loop 单次请求内允许的最大工具轮次，防止失控循环。
     max_tool_iterations: int = 12
 
