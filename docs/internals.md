@@ -275,6 +275,14 @@ schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现�
 以及工具注册了但提示词没提（模型不知道自己有）。现在 system prompt 的分段由
 「实际注册了哪些工具」推导，结构上不可能再对不上。
 
+给人看的工具目录（`GET /api/tools`）也从同一张表推导，schema 直接问 executor 要 ——
+executor 是工具定义的唯一事实来源，也正是聊天时交给模型的那份。这里原来是第二份
+手写清单，漏改的后果是界面上少一个工具**而且不报错**。
+
+所以加一个工具的完整成本是：写一个 `ToolExecutor`（带 `names` 属性），
+在 `TOOLKITS` 加一条。聊天注册、整理排除、提示词分段、界面目录四处自动跟上，
+`tests/test_agent_context.py` 和 `tests/test_api_endpoints.py` 会钉住它们不漂移。
+
 DeepSeek 侧的两个注意点：思考内容不能回传（翻译时丢弃）；没有原生记忆工具，
 schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。
 

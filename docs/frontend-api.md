@@ -859,6 +859,46 @@ GET /api/search?q=依赖&limit=20
 顶部一个搜索框（`Cmd+K` 唤起最好），下拉分两组显示「对话」和「记忆」。
 输入防抖 300ms，少于 2 个字符不发请求。
 
+## 工具目录
+
+```http
+GET /api/tools
+```
+
+模型手上有哪些工具、哪些没启用。**整个响应从后端的工具注册表推导**
+（`app/agent.py` 的 `TOOLKITS` + executor 自己的 schema），不是另写的一份清单 ——
+所以它和聊天时真正交给模型的那批工具一定一致。
+
+```json
+{
+  "total": 8, "enabled": 8,
+  "tools": [{
+    "name": "memory",
+    "description": "读写关于用户的长期记忆……",
+    "input_schema": {"type": "object", "properties": {"command": {...}}, "required": ["command"]},
+    "category": "memory", "category_label": "长期记忆",
+    "enabled": true, "availability": "可用于所有对话",
+    "protocols": ["anthropic", "openai_compatible"],
+    "native_protocol": "anthropic"
+  }]
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `category` / `category_label` | 分类标识与中文名。当前是 `memory` / `timeline` / `kb` |
+| `enabled` | 本次是否可用。**停用的也会返回**，别过滤掉 |
+| `availability` | 停用时说明怎么开启（例：未启用：设置 VAULT_PATH 并重启后端） |
+| `protocols` | 能跑这个工具的协议，从 provider 注册表推导 |
+| `native_protocol` | 该协议下是模型原生能力；其他协议靠手写 schema 顶上，表现有差别 |
+
+⚠️ **停用的工具不要从界面上抹掉**。让知识库在没挂 vault 时凭空消失，
+人会以为这个功能根本不存在 —— 应该显示成灰的并带上 `availability`。
+
+> 🔄 字段更名（随工具注册表重构）：`providers` → `protocols`，
+> `native_provider` → `native_protocol`，知识库的 `category` 由 `knowledge` 改为 `kb`。
+> 旧名不再返回。
+
 ## 评测
 
 记忆整理的质量评测。**起任务 + 轮询**，不是同步请求 —— 跑一轮几分钟。

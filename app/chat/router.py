@@ -540,7 +540,6 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     purpose="chat",
                     conversation_id=conversation.id,
                 )
-                store = context.store
                 service = ChatService(
                     session=session,
                     provider=context.provider,

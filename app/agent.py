@@ -64,22 +64,33 @@ class Toolkit:
     """
 
     name: str
+    # 界面上的分类名。给人看的目录（`GET /api/tools`）从这里取，
+    # 不再另写一份 —— 那份原来会和实际注册的工具悄悄长歪
+    label: str
     build: Callable[[_Deps], ToolExecutor]
     # 哪些用途下启用
     purposes: frozenset[str]
     # 额外的启用条件（比如知识库要挂载了 vault 才算数）
     enabled: Callable[[Settings], bool] = lambda _settings: True
+    # 停用时怎么开启。`enabled` 恒真的工具留空
+    disabled_hint: str = ""
+    # 该工具在某个协议上是模型的原生能力（Anthropic 的 memory 工具），
+    # 其他协议下靠手写 schema 顶上，模型表现会有差别，值得在目录里标出来
+    native_protocol: str | None = None
 
 
 TOOLKITS: tuple[Toolkit, ...] = (
     Toolkit(
         name="memory",
+        label="长期记忆",
         build=lambda deps: MemoryToolExecutor(deps.store),
         # 记忆是主线，两种用途都要
         purposes=frozenset({"chat", "consolidation"}),
+        native_protocol="anthropic",
     ),
     Toolkit(
         name="timeline",
+        label="时间线",
         build=lambda deps: TimelineToolExecutor(
             TimelineStore(
                 deps.session,
@@ -92,12 +103,14 @@ TOOLKITS: tuple[Toolkit, ...] = (
     ),
     Toolkit(
         name="kb",
+        label="知识库",
         build=lambda deps: KbToolExecutor(
             deps.session, deps.settings.vault_path, deps.conversation_id
         ),
         purposes=frozenset({"chat"}),
         # vault 没挂载时整段功能关闭：工具不注册，提示词也不提
         enabled=lambda settings: bool(settings.vault_path),
+        disabled_hint="未启用：设置 VAULT_PATH 并重启后端",
     ),
 )
 
@@ -121,6 +134,33 @@ def active_toolkits(settings: Settings, purpose: Purpose) -> tuple[Toolkit, ...]
         for kit in TOOLKITS
         if purpose in kit.purposes and kit.enabled(settings)
     )
+
+
+def describe_toolkits(
+    session: AsyncSession, settings: Settings, purpose: Purpose = "chat"
+) -> list[tuple[Toolkit, bool, ToolExecutor]]:
+    """列出全部工具集和它们的 executor，给「人看的目录」用。
+
+    和 `active_toolkits` 的差别是**停用的也要列出来** —— 界面要能显示「知识库：
+    未启用，设置 VAULT_PATH」，而不是让它凭空消失。
+
+    返回 executor 而不是定义：schema 从 executor 上取，它是工具定义的唯一事实来源，
+    也正是聊天时真正交给模型的那份。另存一份就等于又造了一张会漂移的手写清单，
+    而那正是这次要消灭的东西。构造 executor 不产生任何 IO，只是把依赖存下来。
+    """
+    deps = _Deps(
+        session=session,
+        settings=settings,
+        # track_reads=False：列目录不是「模型用了这条记忆」，算进去会污染使用率统计
+        store=MemoryStore(session, actor="manual", track_reads=False),
+        actor="manual",
+        conversation_id=None,
+    )
+    return [
+        (kit, kit.enabled(settings), kit.build(deps))
+        for kit in TOOLKITS
+        if purpose in kit.purposes
+    ]
 
 
 async def build_agent_context(

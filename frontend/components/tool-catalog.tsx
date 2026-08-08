@@ -27,12 +27,12 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
   return <details className={`tool-catalog-item ${tool.enabled ? "" : "disabled"}`}>
     <summary>
       <span className="tool-catalog-glyph"><Wrench size={14} /></span>
-      <span className="tool-catalog-summary-copy"><code>{tool.name}</code><small>{t("tools.parameters", { count: properties.length })} · {tool.providers.join(" / ")}</small></span>
+      <span className="tool-catalog-summary-copy"><code>{tool.name}</code><small>{t("tools.parameters", { count: properties.length })} · {tool.protocols.join(" / ")}</small></span>
       <span className={`tool-status-pill ${tool.enabled ? "enabled" : "disabled"}`}>{tool.enabled ? t("tools.enabled") : t("tools.disabled")}</span>
     </summary>
     <div className="tool-catalog-detail">
       <p className="tool-description">{tool.description}</p>
-      <div className="tool-availability"><span className={tool.enabled ? "online" : ""} />{tool.category === "knowledge" ? tool.enabled ? t("tools.availability.kbEnabled") : t("tools.availability.kbDisabled") : t("tools.availability.all")}{tool.native_provider ? ` · ${t("tools.native", { provider: tool.native_provider })}` : ""}</div>
+      <div className="tool-availability"><span className={tool.enabled ? "online" : ""} />{tool.category === "kb" ? tool.enabled ? t("tools.availability.kbEnabled") : t("tools.availability.kbDisabled") : t("tools.availability.all")}{tool.native_protocol ? ` · ${t("tools.native", { provider: tool.native_protocol })}` : ""}</div>
       <div className="tool-schema-heading"><strong>Input schema</strong><span>{properties.length ? t("tools.requiredCount", { count: required.size }) : t("tools.noInput")}</span></div>
       {properties.length > 0 ? <div className="tool-parameter-list">
         {properties.map(([name, property]) => <div className="tool-parameter-row" key={name}>

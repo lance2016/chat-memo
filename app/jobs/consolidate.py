@@ -294,7 +294,7 @@ class Consolidator:
             provider=self.provider,
             purpose="consolidation",
         )
-        store, executor, system = context.store, context.executor, context.system
+        executor, system = context.executor, context.system
         # 上次留下的索引问题在这里进 prompt。模型只看得到索引本身，看不到「实际有哪些
         # 记忆文件」—— `missing` 这类问题它凭自己永远发现不了，必须由代码算出来告诉它。
         issues = (await self._index_audit()).as_prompt()

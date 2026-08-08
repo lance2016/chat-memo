@@ -113,8 +113,10 @@ export interface ToolDefinition {
   category_label: string;
   enabled: boolean;
   availability: string;
-  providers: string[];
-  native_provider: string | null;
+  /** 能跑这个工具的协议，从后端 provider 注册表推导（不再是写死的厂商名） */
+  protocols: string[];
+  /** 该工具在这个协议上是模型的原生能力；其他协议靠手写 schema 顶上 */
+  native_protocol: string | null;
 }
 
 export interface ToolCatalog {

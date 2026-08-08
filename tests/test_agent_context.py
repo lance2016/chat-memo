@@ -160,3 +160,49 @@ async def test_an_explicit_target_wins(session: AsyncSession) -> None:
 async def test_memory_is_always_on(purpose: str) -> None:
     """记忆是这个产品的主线，任何用途下都不该缺。"""
     assert "memory" in {kit.name for kit in active_toolkits(_settings(), purpose)}
+
+
+# ---------- 给人看的目录 ----------
+
+
+async def test_catalog_lists_disabled_toolkits_too(session: AsyncSession) -> None:
+    """停用的工具也要出现在目录里，并说明怎么开启。
+
+    让知识库在没挂 vault 时凭空消失，人会以为这个功能根本不存在。
+    """
+    from app.agent import describe_toolkits
+
+    described = describe_toolkits(session, _settings(), purpose="chat")
+    by_name = {kit.name: enabled for kit, enabled, _ in described}
+
+    assert by_name["kb"] is False
+    assert by_name["memory"] is True
+
+
+async def test_catalog_definitions_come_from_the_executor(session: AsyncSession) -> None:
+    """schema 从 executor 上取 —— 它是工具定义的唯一事实来源，也正是聊天时
+    真正交给模型的那份。另存一份就等于又造了一张会漂移的手写清单。
+    """
+    from app.agent import describe_toolkits
+
+    described = describe_toolkits(session, _settings(), purpose="chat")
+    timeline = next(exe for kit, _, exe in described if kit.name == "timeline")
+    names = {d["function"]["name"] for d in timeline.openai_definitions}
+
+    assert names == {"timeline_list", "timeline_create", "timeline_update"}
+
+
+def test_every_toolkit_has_a_label() -> None:
+    """目录靠 label 分组显示；漏填会让那一类工具挂在一个空标题下。"""
+    for kit in TOOLKITS:
+        assert kit.label, kit.name
+
+
+def test_a_conditionally_enabled_toolkit_explains_how_to_turn_it_on() -> None:
+    """`enabled` 不恒真的工具必须给出开启方法，否则界面上只能显示「未启用」四个字。"""
+    from app.config import Settings as S
+
+    for kit in TOOLKITS:
+        always_on = kit.enabled(S(vault_path="")) and kit.enabled(S(vault_path="/x"))
+        if not always_on:
+            assert kit.disabled_hint, kit.name

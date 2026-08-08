@@ -85,8 +85,9 @@ INSTALL_OBS=1 OBS_TRACING=1 docker compose --profile obs up -d --build api phoen
   的地方；别在别处再判断厂商，要什么就从 target 上取。
 - `app/agent.py` — **一次 agent 运行的统一装配**：provider + 工具 + system prompt。
   聊天、每日整理、评测、`/api/debug/prompt` 都走它。工具在 `TOOLKITS` 表里声明
-  「怎么建 + 什么用途启用 + 什么条件可用」，system prompt 的分段由实际注册的工具推导 ——
-  **加一个新工具只改这张表**，不要回到各处手写 executor 列表。
+  「怎么建 + 什么用途启用 + 什么条件可用 + 界面上叫什么」，system prompt 的分段和
+  `GET /api/tools` 目录都由实际注册的工具推导（schema 直接问 executor 要）——
+  **加一个新工具只改这张表**，不要回到各处手写 executor 列表或工具清单。
 - `app/memory/` — 三层记忆的 L2，逻辑上是 `/memories` 文件树，物理上是 Postgres 行。
   `store.py` 是虚拟文件系统（每次变更写 `memory_versions` 快照，支持回滚），
   `prompt.py` 组装 system prompt，`paths.py` 做路径穿越校验，

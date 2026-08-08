@@ -23,6 +23,11 @@ _BY_PROTOCOL = {
 }
 
 
+def supported_protocols() -> list[str]:
+    """当前能跑的协议。给工具目录用 —— 别在别处写死一份厂商清单。"""
+    return sorted(_BY_PROTOCOL)
+
+
 def get_provider(
     settings: Settings | None = None,
     model_override: str = "",

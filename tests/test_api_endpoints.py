@@ -57,8 +57,42 @@ async def test_tool_catalog_exposes_names_descriptions_and_schemas(
         assert "properties" in tool["input_schema"]
 
     memory = next(tool for tool in body["tools"] if tool["name"] == "memory")
-    assert memory["native_provider"] == "anthropic"
+    assert memory["native_protocol"] == "anthropic"
     assert "command" in memory["input_schema"]["required"]
+    # 协议清单从 provider 注册表推导，不是写死的厂商名
+    assert set(memory["protocols"]) == {"anthropic", "openai_compatible"}
+
+
+async def test_tool_catalog_matches_what_chat_actually_registers(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """目录和聊天注册的工具必须是同一批。
+
+    这两处原本是两份手写清单。漏改第二处的后果是界面上少一个工具，**而且不报错** ——
+    只有某天纳闷「这工具怎么不在列表里」时才会发现。
+    """
+    from app.agent import build_agent_context
+    from app.settings_store import resolve_settings
+
+    settings = await resolve_settings(session)
+    context = await build_agent_context(session, settings=settings, purpose="chat")
+    registered = {d["function"]["name"] for d in context.executor.openai_definitions}
+
+    body = (await client.get("/api/tools")).json()
+    listed = {tool["name"] for tool in body["tools"] if tool["enabled"]}
+
+    assert listed == registered
+
+
+async def test_disabled_tools_are_listed_with_a_reason(client: AsyncClient) -> None:
+    """停用的也要列出来。让知识库凭空消失，人会以为这个功能不存在。"""
+    body = (await client.get("/api/tools")).json()
+    kb = [tool for tool in body["tools"] if tool["category"] == "knowledge"]
+    kb = kb or [tool for tool in body["tools"] if tool["category"] == "kb"]
+
+    assert kb, "知识库工具应当出现在目录里"
+    if not kb[0]["enabled"]:
+        assert "VAULT_PATH" in kb[0]["availability"]
 
 
 # ---------- 可回顾日期 ----------
