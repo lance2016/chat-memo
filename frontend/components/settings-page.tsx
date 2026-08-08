@@ -8,6 +8,7 @@ import { defaultPreferences, preferencesChangeEvent, readPreferences, writePrefe
 import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { ObservabilityCard } from "@/components/observability-card";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
 
@@ -797,6 +798,7 @@ export function SettingsPage() {
             <div className="settings-card-heading"><div><span className="card-kicker">DEVELOPER</span><h2>开发者</h2><p>只在排查模型工具和请求问题时使用。</p></div><Bug size={17} /></div>
             <SettingsVisualGroup icon={Bug} title="开发者选项" description="工具定义与可能包含对话原文的请求调试" tone="warm" className="settings-developer-group">
               <div className="settings-developer-stack">
+                <details className="tts-advanced-settings settings-disclosure" open><summary><span><strong>{t("settings.obs.title")}</strong><small>Phoenix 链路追踪：状态、入口和启用方式</small></span><ChevronRight size={14} /></summary><ObservabilityCard /></details>
                 <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>工具目录</strong><small>查看模型可用能力和参数约定</small></span><ChevronRight size={14} /></summary><div className="tool-catalog-card"><ToolCatalog /></div></details>
                 <details className="tts-advanced-settings settings-disclosure settings-danger-zone">
                   <summary><span><strong>请求调试</strong><small>仅排查问题时开启；快照可能包含完整对话</small></span><ChevronRight size={14} /></summary>

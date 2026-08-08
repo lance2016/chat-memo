@@ -20,6 +20,7 @@ from app.llm.target import ModelTarget
 from app.llm.catalog import resolve_model_target
 from app.llm.router import router as model_router
 from app.memory.router import router as memory_router
+from app.obs.router import router as obs_router
 from app.notify.router import router as notify_router
 from app.review.router import router as review_router
 from app.timeline.router import router as timeline_router
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(tts_public_router)
     app.include_router(debug_router)
     app.include_router(eval_router)
+    app.include_router(obs_router)
     return app
 
 

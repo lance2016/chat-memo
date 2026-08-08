@@ -589,3 +589,20 @@ export interface EvalHistoryEntry {
   judged: boolean;
   summary: EvalSummary | null;
 }
+
+/** Phoenix 可观测性的状态。**没有写接口** —— 启用与否是启动期决定的。 */
+export interface ObservabilityStatus {
+  /** off | missing_deps | failed | unreachable | ready —— 离能用还差哪一步 */
+  stage: "off" | "missing_deps" | "failed" | "unreachable" | "ready";
+  enabled: boolean;
+  installed: boolean;
+  active: boolean;
+  reachable: boolean;
+  project: string;
+  collector_endpoint: string;
+  traced_paths: string[];
+  trace_reads: boolean;
+  detail: string;
+  enable_command: string;
+  retention_warning: string;
+}

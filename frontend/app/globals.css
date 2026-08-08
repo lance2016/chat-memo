@@ -3809,3 +3809,27 @@ html[data-theme="dark"] .workspace-sidebar-conversation.selected > a { color: va
 .eval-meta { color: var(--text-tertiary); font-size: 11px; }
 
 @media (prefers-reduced-motion: reduce) { .eval-progress-bar i { transition: none; } }
+
+/* 链路观测状态卡。追加在末尾，理由同上面几段。 */
+.obs-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 15px; }
+.obs-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.obs-headline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.obs-project { color: var(--text-tertiary); font-size: 11.5px; }
+.obs-actions { display: flex; align-items: center; gap: 8px; }
+.tts-status-badge.warn { color: var(--amber); background: rgba(230, 188, 113, .12); }
+
+.obs-detail { display: flex; align-items: flex-start; gap: 7px; padding: 9px 11px; border-radius: 8px; font-size: 11.5px; line-height: 1.6; }
+.obs-detail.warn { color: var(--amber); background: rgba(177, 130, 53, .1); border: 1px solid rgba(230, 188, 113, .24); }
+.obs-detail svg { flex-shrink: 0; margin-top: 2px; }
+
+.obs-enable { display: flex; flex-direction: column; gap: 7px; }
+.obs-enable p { margin: 0; color: var(--text-secondary); font-size: 11.5px; line-height: 1.65; }
+.obs-command { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-secondary); }
+.obs-command code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 11px; color: var(--text-primary); }
+
+.obs-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0; }
+.obs-facts > div { display: flex; flex-direction: column; gap: 3px; }
+.obs-facts dt { color: var(--text-tertiary); font-size: 10.5px; }
+.obs-facts dd { margin: 0; font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
+
+.obs-privacy { display: flex; align-items: center; gap: 6px; margin: 0; padding-top: 10px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: 10.5px; }

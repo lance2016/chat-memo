@@ -23,6 +23,7 @@ import type {
   MemoryVersion,
   ModelCatalog,
   NotifyStatus,
+  ObservabilityStatus,
   NotifyTestResult,
   OpenLoop,
   PrepareResult,
@@ -381,6 +382,10 @@ export function listMemoryNodes() {
 
 export function getMemoryStats(days = 30, top = 10) {
   return request<MemoryStats>(`/api/memories/stats?days=${days}&top=${top}`);
+}
+
+export function getObservabilityStatus(signal?: AbortSignal) {
+  return request<ObservabilityStatus>("/api/obs/status", { signal });
 }
 
 export function getEvalDataset() {
