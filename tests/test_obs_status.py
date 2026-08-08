@@ -111,12 +111,38 @@ async def test_ready_reports_no_problem(monkeypatch) -> None:
     assert result["traced_paths"] == ["/api/chat", "/api/jobs/consolidate"]
 
 
-async def test_probe_failure_is_a_state_not_an_error() -> None:
-    """探活失败是正常状态，不该抛异常让整页设置报错。"""
-    ok, detail = await obs_status.probe("http://127.0.0.1:1")
+async def test_probe_failure_is_a_state_not_an_error(monkeypatch) -> None:
+    """探活失败是正常状态，不该抛异常让整页设置报错。
+
+    用假的 client 而不是真去连一个关着的端口：那样在有 HTTP 代理的机器上会
+    走进代理、拿到一个响应而不是异常，测试就随环境飘。单元测试不做网络 I/O。
+    """
+    import httpx
+
+    class _Boom:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, _url):
+            raise httpx.ConnectError("拒绝连接")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: _Boom())
+
+    ok, detail = await obs_status.probe("http://phoenix:6006")
 
     assert ok is False
-    assert detail
+    assert "连不上" in detail
+
+
+async def test_probe_without_an_endpoint_says_so() -> None:
+    """地址为空是配置问题，不是网络问题 —— 说法要能区分开。"""
+    ok, detail = await obs_status.probe("")
+
+    assert ok is False
+    assert "未配置" in detail
 
 
 async def test_status_endpoint_is_read_only(client: AsyncClient) -> None:

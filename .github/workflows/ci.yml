@@ -1,0 +1,52 @@
+# 最小 CI：挡住整类回归，不追求覆盖所有场景。
+#
+# 为什么是这四步：这个仓库上一次交接靠一条「前端构建当前是坏的」的手写注记，
+# 在文档里躺了一天才在提交前被撞上。四步里 `next build` 最不能省 ——
+# 类型检查和单测都发现不了共享组件里 `useSearchParams()` 缺 Suspense 边界
+# 这类问题（见 docs/fixes.md 第一条），只有真构建一次会红。
+#
+# **不跑评测**：它要花模型 token、耗时以分钟计、结论要人读。见 docs/evaluation.md。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # 同一分支上新的推送直接取消旧的跑，不排队浪费额度
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+      # 后端测试跑在内存 SQLite 上，不需要数据库容器，也不需要任何密钥。
+      # 这一点是有意维持的：一旦某个用例依赖 .env 里的真实 key，CI 就再也跑不起来。
+      - run: uv run pytest -q
+      - run: uv run ruff check app/
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+      # 放最后：它最慢，而且前面三步能覆盖的问题不必等它
+      - run: npm run build

@@ -25,6 +25,16 @@ uv run pytest tests/test_tts.py::test_name -q        # 单个用例
 uv sync --group dev                                  # 安装含 dev 依赖
 ```
 
+推之前跑一次和 CI 完全一样的检查：
+
+```bash
+make check     # 后端 pytest + ruff，前端 typecheck + lint + vitest + build
+make fix       # 能自动修的先修掉
+```
+
+⚠️ **测试不能依赖 `.env` 或真实密钥**。CI 里两者都没有，一旦有用例依赖就再也跑不起来。
+写用例时显式给出 `Settings(...)` 的相关字段（`Settings()` 会读开发机的 `.env`）。
+
 前端（在 `frontend/` 目录下）：
 
 ```bash

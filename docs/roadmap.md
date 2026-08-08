@@ -99,15 +99,18 @@ P3 里索引分层和写记忆时缓存失效那几条。
 两个已知让步：Phoenix 界面在 `localhost:6006` **不在 workspace 里**；它默认全存完整
 对话原文，`PHOENIX_DEFAULT_RETENTION_POLICY_DAYS` 必须配。
 
-### 4. 最小 CI
+### 4. ~~最小 CI~~ ✅ 已实现
 
-**现状**：没有 `.github/workflows`、没有 pre-commit。两台机器开发，而这份文档的上一个
-版本就靠一条"前端构建当前是坏的"手写注记做交接 —— 在文档里躺了一天才在提交前被撞上。
+`.github/workflows/ci.yml`（后端 pytest + ruff，前端 typecheck + lint + vitest + build）
+和本地同款的 `make check`。
 
-一个 workflow 挡住整类问题：`pytest` + `tsc --noEmit` + `vitest` + `next build`。
-约 30 行 yaml。本地对应加一个 `make check`（或 justfile），推之前手动跑同一套。
+**已验证**：在共享组件里注入 `useSearchParams()`，`next build` 如期报
+「should be wrapped in a suspense boundary」并非零退出 —— 正是 fixes.md 第一条那个错。
+类型检查和单测都发现不了它，所以 `next build` 这步不能省。
 
-**验证**：故意在共享组件里引入 `useSearchParams()`（见 fixes.md 第一条），CI 必须红。
+顺带确认了一件更要紧的事：**整套测试在没有 `.env`、没有任何密钥的环境里能过**
+（593 passed）。这是 CI 能存在的前提，也是一条要守住的纪律 —— 一旦某个用例依赖
+真实 key，CI 就再也跑不起来了。
 
 ---
 
