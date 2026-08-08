@@ -18,6 +18,28 @@ services:
       timeout: 3s
       retries: 10
 
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: chat-phoenix
+    restart: unless-stopped
+    profiles: [obs]
+    environment:
+      # Phoenix stores complete prompts and responses; keep retention explicit.
+      PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: ${PHOENIX_RETENTION_DAYS:-14}
+      PHOENIX_WORKING_DIR: /mnt/data
+      # 本地只看自己的 trace，不需要 Phoenix 的遥测、外部字体或 MCP 能力。
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_ALLOW_EXTERNAL_RESOURCES: "false"
+      PHOENIX_ENABLE_MCP_SERVER: "false"
+      PHOENIX_ENABLE_MCP_CODE_MODE: "false"
+      PHOENIX_ENABLE_PROMETHEUS: "false"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # Phoenix contains完整 prompt/response，只在本机开放；需要局域网访问时再显式改端口绑定。
+      - "127.0.0.1:${PHOENIX_PORT:-16006}:6006"
+    volumes:
+      - phoenix_data:/mnt/data
+
   api:
     build:
       context: .
@@ -25,6 +47,8 @@ services:
         # Docker 内直连 files.pythonhosted.org 经常 DNS 失败。只影响镜像构建，
         # 不改变宿主机 uv 配置；需要官方源时在 .env 覆盖。
         UV_DEFAULT_INDEX: ${UV_DEFAULT_INDEX:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/}
+        # OBS_TRACING=1 时同时设 INSTALL_OBS=1，让 API 镜像装上可选 tracing 依赖。
+        INSTALL_OBS: ${INSTALL_OBS:-0}
     container_name: chat-api
     restart: unless-stopped
     depends_on:
@@ -47,6 +71,12 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       # 浏览器默认经 frontend 的同源代理访问 API；仍保留 CORS，方便直接调试宿主机端口。
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-13000}"]}
+      # Phoenix is optional. Start the obs profile before enabling tracing.
+      PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
+      OBS_TRACING: ${OBS_TRACING:-0}
+      OBS_PROJECT_NAME: ${OBS_PROJECT_NAME:-chat-memo}
+      OBS_TRACE_HTTP_PATHS: ${OBS_TRACE_HTTP_PATHS:-/api/chat,/api/jobs/consolidate}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       # 宿主机设置了 VAULT_PATH 才启用知识库；:+ 表示「有值就替换成容器内挂载点」，
       # 否则为空串 —— 同时覆盖掉 env_file 里的宿主机路径，容器内那个路径不存在。
       VAULT_PATH: ${VAULT_PATH:+/vault}
@@ -82,6 +112,8 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       target: development
+      args:
+        NEXT_PUBLIC_PHOENIX_URL: ${NEXT_PUBLIC_PHOENIX_URL:-http://localhost:16006}
     container_name: chat-frontend
     restart: unless-stopped
     depends_on:
@@ -93,6 +125,7 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/backend}
       INTERNAL_API_BASE_URL: ${INTERNAL_API_BASE_URL:-http://api:8000}
       NEXT_PUBLIC_API_KEY: ${API_KEY:-}
+      NEXT_PUBLIC_PHOENIX_URL: ${NEXT_PUBLIC_PHOENIX_URL:-http://localhost:16006}
       # Docker Desktop 的 bind mount 偶尔收不到文件事件，轮询可保证 HMR 稳定。
       WATCHPACK_POLLING: "true"
     ports:
@@ -117,3 +150,4 @@ services:
 
 volumes:
   pgdata:
+  phoenix_data:

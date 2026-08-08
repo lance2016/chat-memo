@@ -60,7 +60,7 @@
 
 ## P1 — 放大器：眼睛与守门
 
-### 3. 可观测性：接 Phoenix（方案已定，未开工）
+### 3. 可观测性：接 Phoenix（应用侧阶段 0/1/2 已落地，已补降噪与 trace 联动）
 
 现在的日志只有 stdout 一个出口：不留存、不可查询、一轮对话的十几行没有共同标识；
 请求快照是内存 20 条 + 默认关（`app/debug/recorder.py`）；token 存了没算过钱；
@@ -76,6 +76,7 @@
 | 0 | **先验证流式埋点** | 半小时。两条链路都是流式，自动埋点对流式 + tool_use 的覆盖度**不能假设**。确认三件事：span 里有没有完整 messages/tools、`llm.token_count.*` 有没有值、agent loop 多次 iteration 是否同一 trace。**结果决定后面做多少** |
 | 1 | trace + 双 formatter | `app/obs/`，trace id 取 OTel 当前 span（日志短码能直接去 Phoenix 搜）。`LOG_FORMAT=json` 时不能插 ANSI —— 现在 `colorize()` 只看 `NO_COLOR` 就无条件上色 |
 | 2 | session 与 purpose | `using_session(conversation.id)` + `using_metadata({"purpose": ...})`。Phoenix UI 手动加 DeepSeek / Qwen 价格（内置表只有 OpenAI / Anthropic，**只能在 UI 点**） |
+| 2.5 | 降噪与联动 | 默认跳过 GET/health span；手工 span 标注 OpenInference kind；对话顶部显示、复制 trace_id，并可打开本机 Phoenix |
 | 3 | 删旧代码 | `app/debug/` 及前端 `DebugDialog`，**前提是阶段 0 确认 payload 完整**。`/api/debug/prompt` 挪走保留 |
 | 4 | 按需 | 应用内费用卡片（retention 到期 trace 就清，年度费用会丢）、Dozzle 或 VictoriaLogs、复用 Bark 做告警 |
 
@@ -147,7 +148,7 @@
 
 - [ ] `api_key` 非空 —— `app/security.py` 里空值 = 完全不校验。配 `notify_public_base_url`
       让手机能点开通知**就属于这一步**，这两个设定目前是独立的，没人把它们放在一起看
-- [ ] Phoenix 端口（默认 16006）只绑 localhost —— 里面是完整对话原文和记忆正文
+- [x] Phoenix 端口（默认 16006）只绑 localhost —— 里面是完整对话原文和记忆正文
 - [ ] vault 保持挂载层只读（compose `:ro`），写保护不依赖 prompt 约束
 
 ## 环境与配置坑

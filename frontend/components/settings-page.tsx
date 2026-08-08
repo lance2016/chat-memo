@@ -47,6 +47,8 @@ const fieldHelp: Record<string, string> = {
   consolidate_auto: "按固定时间自动整理当天对话",
   consolidate_hour: "使用后端所在时区的整点时间",
   tts_mode: "关闭、手动播放或回答完成后自动播放",
+  history_max_chars: "限制每轮发给模型的历史长度，避免长会话撞到上下文窗口",
+  notify_timeout: "推送通道和提醒文案模型调用的最长等待时间",
   tts_model: "选择本地语音服务已加载或当前配置的模型",
   tts_voice: "可选音色会随语音模型自动更新",
   tts_lang_code: "语音合成的主要语言",
@@ -60,6 +62,7 @@ const fieldHelp: Record<string, string> = {
   asr_model: "选择本地缓存的语音识别模型；0.6B 更快，1.7B 通常更准确",
   asr_language: "固定语言可省去自动判断；中英混说时选择自动检测",
   asr_max_tokens: "短语音建议保持 512，降低静音或噪声导致的异常长识别",
+  asr_timeout: "语音识别服务单次请求最长等待时间",
   debug_prompts: "临时保存最近请求，可能包含完整对话原文",
 };
 
@@ -115,7 +118,7 @@ function SettingsVisualGroup({ icon: Icon, title, description, tone = "neutral",
   </section>;
 }
 
-function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
+function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env" | "default"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
   const stringValue = value === null || value === undefined ? "" : String(value);
   const providerChoices = field.key === "provider" ? providers : [];
   const isTtsModel = field.key === "tts_model";
@@ -141,8 +144,8 @@ function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, t
       {field.kind === "str" && field.key !== "tts_instruct" && !isTtsModel && !isTtsVoice && !isAsrModel && <input className="runtime-input runtime-input-wide" type="text" value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} />}
       {field.kind === "str" && (isTtsModel || isTtsVoice || isAsrModel) && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{isTtsVoice && !stringValue && <option value="">默认音色</option>}{choices.map((choice) => { const cached = isAsrModel ? asrStatus?.cached_models?.find((item) => item.id === choice) : ttsStatus?.cached_models?.find((item) => item.id === choice); const loaded = isAsrModel ? asrStatus?.models.includes(choice) : ttsStatus?.models.includes(choice); const modelSuffix = isTtsModel || isAsrModel ? [cached ? `已缓存 ${formatModelSize(cached.size_bytes)}` : "", loaded ? "已加载" : ""].filter(Boolean).join(" · ") : ""; return <option key={choice} value={choice}>{isTtsVoice && voiceLabels[choice] ? `${choice} · ${voiceLabels[choice]}` : `${choice}${modelSuffix ? ` · ${modelSuffix}` : ""}`}</option>; })}</select>}
       {isTtsVoice && ttsVoicesLoading && <span className="runtime-inline-status"><RefreshCw size={11} className="spin" />读取音色</span>}
-      <span className={`runtime-source ${source === "db" ? "modified" : ""} ${pendingReset ? "pending" : ""}`}>{pendingReset ? "待恢复默认" : source === "db" ? "已覆盖默认" : "环境默认"}</span>
-      {source === "db" && <button className="icon-button runtime-restore" type="button" aria-label={pendingReset ? `取消恢复${field.label}` : `恢复${field.label}默认值`} title={pendingReset ? "取消恢复" : "恢复环境默认"} disabled={disabled} onClick={onRestore}><RotateCcw size={12} /></button>}
+      <span className={`runtime-source ${source === "db" ? "modified" : ""} ${pendingReset ? "pending" : ""}`}>{pendingReset ? "待恢复默认" : source === "db" ? "已覆盖默认" : source === "env" ? "环境覆盖" : "代码默认"}</span>
+      {source === "db" && <button className="icon-button runtime-restore" type="button" aria-label={pendingReset ? `取消恢复${field.label}` : `恢复${field.label}默认值`} title={pendingReset ? "取消恢复" : "恢复默认"} disabled={disabled} onClick={onRestore}><RotateCcw size={12} /></button>}
     </div>
     {multiline && <span className="runtime-setting-hint runtime-character-count">已用 {stringValue.length}{field.maximum ? ` / ${field.maximum}` : ""} 字</span>}
     {providerReason && <span className="runtime-setting-hint">{providerReason}</span>}

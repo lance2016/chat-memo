@@ -39,6 +39,7 @@ from app.settings_store import (
 )
 from app.security import require_api_key
 from app.timeutils import local_day_bounds
+from app.obs import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ async def get_runtime_settings(
 ) -> dict[str, Any]:
     """设置页要的全部信息：当前值、每项来自哪层、可选项。
 
-    ``values`` 是**合并后的生效值**（数据库覆盖叠加在 .env 之上）。
+    ``values`` 是**合并后的生效值**（数据库覆盖叠加在代码默认和基础环境配置之上）。
     """
     settings = await resolve_settings(session)
     overrides = await load_overrides(session)
@@ -93,7 +94,7 @@ async def update_runtime_settings(
     payload: dict[str, Any],
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """部分更新。传 ``null`` 表示删掉该覆盖、恢复 .env 默认。
+    """部分更新。传 ``null`` 表示删掉该覆盖、恢复代码/环境基础默认。
 
     改完立刻生效，不需要重启 —— 每个请求都会重新解析一次配置。
     """
@@ -525,6 +526,12 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     title_client=get_title_client(settings),
                 )
                 system = await build_system_prompt(store, settings)
+
+                # The browser gets the ID only as an SSE metadata event. It
+                # never needs Phoenix's API or collector endpoint.
+                trace_id = current_trace_id()
+                if trace_id:
+                    yield _sse({"type": "trace", "trace_id": trace_id})
 
                 async for event in service.stream_reply(
                     conversation=conversation, system=system, user_text=payload.content

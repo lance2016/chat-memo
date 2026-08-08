@@ -23,15 +23,17 @@
 **症状**：第一轮对话正文已经说完，还要再等约 3 秒流才结束 —— 这段时间输入框是禁用的、
 停止按钮还挂着，后端那把会话锁也还占着。
 
-**根因**：标题生成开着扩展思考。`run()` 是显式关思考的
-（`app/llm/deepseek_provider.py:93`，`want_thinking` 为假时发
-`extra_body={"thinking": {"type": "disabled"}}`，注释也写明「不传就是默认开着」），
-但标题走的是 `complete()`，**它从来不发这个字段**。Anthropic 那边更直接，
-`app/llm/anthropic_provider.py:186` 写死了 `thinking={"type": "adaptive"}`。
+**根因**：修复前的标题生成开着扩展思考。DeepSeek 的 `run()` 已能在
+`want_thinking` 为假时发
+`extra_body={"thinking": {"type": "disabled"}}`（不传就是默认开着），
+但标题走的 `complete()` 当时**从来不发这个字段**。Anthropic 那边更直接，
+`complete()` 当时写死了 `thinking={"type": "adaptive"}`。
 两条 provider 路径都在为一个 16 字的标题做扩展思考。
 
-而 `stream_reply` 在 yield `done` **之前** await 标题（`app/chat/service.py`），
+当时的 `stream_reply` 在 yield `done` **之前** await 标题（`app/chat/service.py`），
 所以流不关闭 → 前端的 `await streamChat(...)` 不返回 → `sending` 一直是 true。
+现在标题仍与正文并行，但正文结束时只接收已经完成的结果；没完成的任务转到后台，
+不会再挡住 `done` 和输入框。
 
 **实测证据**
 
@@ -44,7 +46,7 @@
 
 标题调用本身，容器内直连同一模型同一 prompt：
 
-| 输入 | 思考开（现状） | 思考关 |
+| 输入 | 思考开（修复前） | 思考关 |
 |---|---|---|
 | `你好` ×3 | 3.27s / 2.36s / **8.25s**，输出 208 / 127 / 542 token | 0.69s / 0.67s / 0.67s，输出 2 / 1 / 1 token |
 | `记住：我用 uv 管理 Python 依赖…` | **13.50s** → `记住用uv不用pip` | 0.60s → `使用uv管理Python依赖` |
@@ -70,8 +72,10 @@
 - `app/jobs/consolidate.py` **没动** —— 每日整理是质量最敏感、频率最低的活，
   `.env` 还专门留了 `CONSOLIDATE_MODEL` 给它，思考该留着。
   `tests/test_title_generation.py::test_consolidation_keeps_thinking` 守着这条线
-- `TITLE_TIMEOUT` 作为兜底保留。标题降到约 0.7s 后它和正文（约 1s）并行，
-  正常会**先于正文完成**，死等趋近于 0，兜底基本不触发
+- 标题和正文并行。正文结束时标题若已完成，就在 `done` 前把标题事件发给前端；
+  若尚未完成，则立即结束回答流，并用独立数据库 session 在后台补写标题
+- `TITLE_TIMEOUT` 只限制转入后台后的剩余等待，不再是回答流的等待上限。
+  超时会取消标题任务并保留「新对话」，下一轮仍会重试
 
 > 首发时走智谱 `glm-4.7-flash`；后来改为**优先硅基流动的免费 Qwen3-8B**
 > （`SILICONFLOW_API_KEY`），智谱配置保留作兼容回退，见 `app/llm/title.py` 开头的注释。
@@ -79,8 +83,9 @@
 `tests/test_title_generation.py` 覆盖两条路，两个「关推理」断言都做过 RED 检查
 （去掉开关就红）。
 
-**已验证**：配好 key 后实测，死等从 **2.86s 降到 0.05s**。
-日志里能直接看到标题比正文早 3 秒就完成了，所以它已经完全不占用户的时间：
+**已验证**：配好 key 后实测，标题先于正文完成时，死等从 **2.86s 降到 0.05s**。
+现在即使标题偶发变慢，未完成的任务也会转到后台，不再延长回答流。日志里能直接看到
+标题比正文早 3 秒就完成了：
 
 ```
 21:13:00  🏷 解决 Docker Compose 前后端连接问题 [zhipu/glm-4.7-flash · 1.3s]
@@ -105,8 +110,8 @@ curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/js
 ```
 
 > 免费档的模型有速率限制，偶尔会慢或失败。标题本来就是锦上添花 ——
-> 失败会被 `_complete_title` 吞掉、超时有 `TITLE_TIMEOUT` 兜着，
-> 两种情况都只是保留「新对话」并在下一轮重试，不影响这次回答。
+> 慢请求会转到后台，失败会被 `_complete_title` 吞掉；后台等待超过
+> `TITLE_TIMEOUT` 才会取消并保留「新对话」，下一轮重试。三种情况都不影响这次回答。
 
 ---
 
@@ -157,8 +162,11 @@ curl -sN --noproxy '*' -H "X-API-Key: $API_KEY" -H 'Content-Type: application/js
 什么都没有，看着像卡死。现在只要 `sending` 就给出气泡，配合那个一直没人用的
 `.streaming-cursor` 显示闪烁光标。顺带解决了偏好里关掉 thinking/tools 时渲染出空白卡片的问题。
 
-### 5. 标题超时兜底（止血，非治因）
+### 5. 慢标题转后台
 
-`app/chat/service.py` 的 `TITLE_TIMEOUT = 5.0` 把最坏等待挡住了，但这只是止血：
-标题超时后会被丢掉，会话停在「新对话」，留到下一轮重试。
-真正的治因是上面那条**生成标题优化** —— 标题降到约 0.7s 后这个兜底基本不再触发。
+正文结束时，已经完成的标题会在 `done` 前发给前端；尚未完成的标题任务会转到后台，
+回答流立即收尾。因此标题的尾延迟不会继续占用会话锁或禁用输入框。
+
+`app/chat/service.py` 的 `TITLE_TIMEOUT = 5.0` 限制后台任务还可以等待多久。若仍超时，
+任务会被取消、会话保留「新对话」，留到下一轮重试。真正减少模型开销和大多数后台任务的
+仍是上面那条**生成标题优化**；转后台则保证免费模型偶发抖动时也不影响聊天交互。

@@ -1,6 +1,6 @@
 """可写运行时设置。
 
-三层解析：会话覆盖 > 数据库设置 > .env 默认。重点验证白名单拦截和「改完立刻生效」。
+三层解析：会话覆盖 > 数据库设置 > 代码/环境基础默认。重点验证白名单拦截和「改完立刻生效」。
 """
 
 from collections.abc import AsyncIterator
@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.session import get_session
 from app.main import create_app
-from app.settings_store import SettingError, apply, describe, load_overrides
+from app.settings_store import ENV_ONLY, SettingError, apply, describe, load_overrides
 from app.settings_store import resolve_settings
 
 
@@ -32,7 +32,7 @@ def base_settings(**kw) -> Settings:
 # ---------- 解析 ----------
 
 
-async def test_no_override_returns_env_defaults(session: AsyncSession) -> None:
+async def test_no_override_returns_code_defaults(session: AsyncSession) -> None:
     base = base_settings(owner_name="默认名")
     assert (await resolve_settings(session, base)).owner_name == "默认名"
 
@@ -55,7 +55,7 @@ async def test_resolve_does_not_mutate_base(session: AsyncSession) -> None:
     assert base.owner_name == "默认名"
 
 
-async def test_null_restores_env_default(session: AsyncSession) -> None:
+async def test_null_restores_code_default(session: AsyncSession) -> None:
     base = base_settings(owner_name="默认名")
     await apply(session, {"owner_name": "阿明"}, base)
     await session.commit()
@@ -115,6 +115,22 @@ async def test_empty_allowed_for_consolidate_model(session: AsyncSession) -> Non
     assert (await load_overrides(session))["consolidate_model"] == ""
 
 
+async def test_runtime_tuning_fields_are_database_settings(session: AsyncSession) -> None:
+    base = base_settings()
+    await apply(
+        session,
+        {"history_max_chars": 80_000, "notify_timeout": 20, "asr_timeout": 90},
+        base,
+    )
+    await session.commit()
+
+    resolved = await resolve_settings(session, base)
+    assert resolved.history_max_chars == 80_000
+    assert resolved.notify_timeout == 20
+    assert resolved.asr_timeout == 90
+    assert "history_max_chars" not in ENV_ONLY
+
+
 # ---------- provider 切换的安全阀 ----------
 
 
@@ -132,7 +148,7 @@ async def test_can_switch_when_key_present(session: AsyncSession) -> None:
 
 
 def test_placeholder_key_does_not_count() -> None:
-    """.env.example 里的 sk-ant-... 是占位符，不能当成已配置。"""
+    """示例配置里的 sk-ant-... 是占位符，不能当成已配置。"""
     payload = describe(Settings(anthropic_api_key="sk-ant-..."), {})
     anthropic = next(p for p in payload["providers"] if p["value"] == "anthropic")
     assert anthropic["available"] is False
@@ -144,7 +160,7 @@ def test_placeholder_key_does_not_count() -> None:
 def test_describe_reports_source_per_field() -> None:
     payload = describe(base_settings(owner_name="阿明"), {"owner_name": "阿明"})
     assert payload["sources"]["owner_name"] == "db"
-    assert payload["sources"]["consolidate_hour"] == "env"
+    assert payload["sources"]["consolidate_hour"] == "default"
 
 
 def test_describe_never_leaks_secrets() -> None:
@@ -193,7 +209,7 @@ async def test_health_reports_the_merged_model_not_the_env_snapshot(
 ) -> None:
     """/health 必须走 resolve_settings。
 
-    闭包里的 settings 是启动时的 .env 快照，聊天用的却是「数据库覆盖叠加在 .env 之上」
+    闭包里的 settings 是启动时的基础配置快照，聊天用的却是「数据库覆盖叠加在基础配置之上」
     的合并值。用快照的话，在设置页换掉模型之后 /health 会一直报旧的 ——
     健康检查报错模型比不报还糟。
     """

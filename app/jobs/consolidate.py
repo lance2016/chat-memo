@@ -39,6 +39,7 @@ from app.llm.provider import LLMProvider
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
+from app.obs import bind
 from app.timeutils import local_day_bounds
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,12 @@ class Consolidator:
         self.provider = provider
 
     async def run(self, day: dt.date | None = None) -> ConsolidationResult:
+        """Run the job with all model calls tagged as ``consolidate``."""
+
+        with bind(purpose="consolidate"):
+            return await self._run(day)
+
+    async def _run(self, day: dt.date | None = None) -> ConsolidationResult:
         day = day or dt.date.today()
         started = time.monotonic()
         conversations = await self._conversations_on(day)

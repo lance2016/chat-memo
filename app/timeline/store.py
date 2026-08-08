@@ -78,7 +78,7 @@ class TimelineStore:
         self.session = session
         self.actor = actor
         self.conversation_id = conversation_id
-        # 提醒时刻要用到 notify_* 那几个配置。不传就退回 .env 默认 ——
+        # 提醒时刻要用到 notify_* 那几个配置。不传就退回运行时默认 ——
         # 调用方拿得到合并后的 settings 时应该传进来。
         self.settings = settings or get_settings()
 

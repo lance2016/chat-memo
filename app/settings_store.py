@@ -6,7 +6,7 @@
         ↓ 为空落到
     数据库设置 app_settings 表          ← 设置页可改，改完立刻生效
         ↓ 为空落到
-    .env 默认  Settings
+    代码默认  Settings                  ← .env 只负责密钥和基础设施
 
 **不做缓存。** 单人使用，每次请求多一条小查询可以忽略，
 换来的是「改了立刻生效」这个确定性 —— 缓存失效的排查成本远高于那点查询开销。
@@ -75,6 +75,8 @@ WRITABLE: tuple[Field, ...] = (
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
     Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
+    Field("history_max_chars", "历史上下文上限", "int", minimum=8_000,
+          maximum=500_000),
     Field("notify_enabled", "主动通知", "bool", group="notify"),
     Field("notify_channels", "启用的通道", "str", allow_empty=True, maximum=120,
           group="notify"),
@@ -88,6 +90,8 @@ WRITABLE: tuple[Field, ...] = (
     Field("notify_catchup_hours", "补发窗口（小时）", "int", minimum=1, maximum=168,
           group="notify"),
     Field("notify_smart_copy", "让模型写提醒文案", "bool", group="notify"),
+    Field("notify_timeout", "通知请求超时（秒）", "int", minimum=1, maximum=120,
+          group="notify"),
     Field("notify_public_base_url", "通知跳转地址", "str", allow_empty=True,
           maximum=200, group="notify"),
     Field("bark_server", "Bark 服务器", "str", allow_empty=True, maximum=200,
@@ -119,12 +123,15 @@ WRITABLE: tuple[Field, ...] = (
           choices=("Chinese", "English", "Auto"), group="asr"),
     Field("asr_max_tokens", "识别长度上限", "int", minimum=64, maximum=2048,
           group="asr"),
+    Field("asr_timeout", "识别超时（秒）", "int", minimum=5, maximum=600,
+          group="asr"),
     Field("debug_prompts", "记录发给模型的请求", "bool", group="debug"),
 )
 
 WRITABLE_BY_KEY = {f.key: f for f in WRITABLE}
 
-# 明确告诉前端这些只能改 .env，别在界面上给入口
+# 明确告诉前端这些只能改环境变量，别在界面上给入口。
+# 这里仅保留密钥、连接地址、挂载路径和安全边界；用户运行时参数应进入上面的 WRITABLE。
 ENV_ONLY = (
     "database_url",
     "anthropic_api_key",
@@ -140,14 +147,11 @@ ENV_ONLY = (
     "log_level",
     "log_color",
     "log_access",
+    "log_format",
     # 地址算基础设施：容器内外写法不同，改错了设置页只会看到「连不上」
     "tts_base_url",
     "tts_model_cache",
     "asr_max_bytes",
-    "asr_timeout",
-    # 上下文预算要跟着模型窗口走，属于「换模型时才动」的配置，不适合放在设置页
-    # 随手改 —— 调大了不会立刻报错，而是等某次长会话直接 400。
-    "history_max_chars",
 )
 
 
@@ -160,7 +164,7 @@ async def load_overrides(session: AsyncSession) -> dict[str, Any]:
 async def resolve_settings(
     session: AsyncSession, base: Settings | None = None
 ) -> Settings:
-    """把数据库覆盖叠加到 .env 默认之上，返回一个新的 Settings。
+    """把数据库覆盖叠加到代码/环境基础配置之上，返回一个新的 Settings。
 
     ``model_copy`` 而不是就地改 —— base 是 lru_cache 出来的全局单例，
     改它会污染所有请求。
@@ -229,7 +233,7 @@ def validate(key: str, value: Any, settings: Settings) -> Any:
 async def apply(
     session: AsyncSession, updates: dict[str, Any], settings: Settings
 ) -> None:
-    """写入覆盖值。``None`` 表示删掉该覆盖，恢复 .env 默认。"""
+    """写入覆盖值。``None`` 表示删掉该覆盖，恢复代码/环境基础默认。"""
     for key, value in updates.items():
         if key not in WRITABLE_BY_KEY:
             raise SettingError(f"{key} 不可通过接口修改")
@@ -254,8 +258,16 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
     """
     return {
         "values": {f.key: getattr(settings, f.key) for f in WRITABLE},
+        # .env 不再是运行时配置的主要入口；兼容旧部署的显式环境值仍准确标记为环境覆盖。
         "sources": {
-            f.key: ("db" if f.key in overrides else "env") for f in WRITABLE
+            f.key: (
+                "db"
+                if f.key in overrides
+                else "env"
+                if f.key in settings.model_fields_set
+                else "default"
+            )
+            for f in WRITABLE
         },
         "fields": [
             {

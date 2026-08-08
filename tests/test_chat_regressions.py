@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.chat.router import (
     ChatRequest,
@@ -15,7 +15,7 @@ from app.chat.router import (
     _release_lock,
     chat,
 )
-from app.chat.service import DEFAULT_TITLE, ChatService
+from app.chat.service import DEFAULT_TITLE, ChatService, _background_title_tasks
 from app.config import Settings
 from app.db.models import Conversation, Message
 from app.llm.anthropic_provider import AnthropicProvider
@@ -106,7 +106,7 @@ async def test_slow_title_does_not_hold_the_stream_open(
 
     正文说完后流还开着，会话锁就还占着、前端的输入框也还是禁用的（要等流关闭）。
     裸 await 会把标题的尾延迟原样转嫁给用户，实测见过多等 7.7s。
-    超时后标题保持 DEFAULT_TITLE，下一轮会自动再试。
+    当前流应立即结束，后台等待超时后标题保持 DEFAULT_TITLE，下一轮自动再试。
     """
     monkeypatch.setattr("app.chat.service.TITLE_TIMEOUT", 0.05)
     conversation = await make_conversation(session)
@@ -124,7 +124,35 @@ async def test_slow_title_does_not_hold_the_stream_open(
     assert "title" not in kinds  # 没等到，就不推给前端
     assert isinstance(events[-2], Done)  # 但这一轮照常收尾
     assert events[-1][0] == "message_id"
+    await asyncio.gather(*tuple(_background_title_tasks))
     assert conversation.title == DEFAULT_TITLE  # 留给下一轮重试
+
+
+async def test_late_title_is_saved_in_background(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正文结束后才完成的标题不进旧流，但仍会由独立 session 补写。"""
+    assert session.bind is not None
+    maker = async_sessionmaker(session.bind, expire_on_commit=False)
+    monkeypatch.setattr("app.chat.service.get_sessionmaker", lambda: maker)
+    conversation = await make_conversation(session)
+    service = ChatService(session, provider_with([text_turn("答")]))
+    release_title = asyncio.Event()
+
+    async def completes_later(_first_text: str) -> str:
+        await release_title.wait()
+        return "后台补上的标题"
+
+    monkeypatch.setattr(service, "_complete_title", completes_later)
+
+    events = await drain(service, conversation, "问")
+    assert not any(isinstance(event, tuple) and event[0] == "title" for event in events)
+    assert conversation.title == DEFAULT_TITLE
+
+    release_title.set()
+    await asyncio.gather(*tuple(_background_title_tasks))
+    await session.refresh(conversation)
+    assert conversation.title == "后台补上的标题"
 
 
 async def test_interrupted_turn_keeps_streamed_text(session: AsyncSession) -> None:

@@ -153,7 +153,7 @@ GET /api/settings
 {
   "values":  {"owner_name": "用户", "provider": "deepseek",
               "deepseek_model": "deepseek-v4-flash", "consolidate_hour": 4, "...": "..."},
-  "sources": {"owner_name": "db", "consolidate_hour": "env"},
+  "sources": {"owner_name": "db", "consolidate_hour": "default"},
   "fields": [
     {"key": "owner_name", "label": "助手怎么称呼你", "kind": "str",
      "choices": [], "minimum": 1, "maximum": 32, "provider": "", "group": "prompt"},
@@ -185,8 +185,8 @@ GET /api/settings
 
 | 字段 | 用途 |
 |---|---|
-| `values` | 当前**生效值**（数据库覆盖已叠加在 .env 之上） |
-| `sources` | `db` = 你在界面上改过，`env` = 来自 .env 默认。据此显示「已修改」标记和「恢复默认」按钮 |
+| `values` | 当前**生效值**（数据库覆盖已叠加在代码默认和基础环境配置之上） |
+| `sources` | `db` = 你在界面上改过，`default` = 代码默认，`env` = 兼容旧部署的环境覆盖 |
 | `fields[].kind` | `str` / `text` / `int` / `bool` / `enum`，决定用输入框、多行文本框、数字框、开关还是下拉。🆕 `text` 的校验规则和 `str` 完全一样，只是提示前端用 `<textarea>` |
 | `fields[].minimum/maximum` | 数字是范围，字符串是长度。前端先校验一次，后端仍会再验 |
 | `fields[].provider` | 非空表示只在该 provider 下有意义（如 `effort` 只对 anthropic），可按当前 provider 过滤或折叠 |
@@ -203,7 +203,7 @@ GET /api/settings
 ```http
 PATCH /api/settings
 {"owner_name": "阿明"}        # 改一项
-{"owner_name": null}          # 恢复 .env 默认
+{"owner_name": null}          # 恢复代码/环境基础默认
 {"consolidate_hour": 6, "deepseek_thinking": false}   # 一次改多项
 ```
 
@@ -1556,10 +1556,10 @@ export interface Conversation {
 
 /** 🆕 第 4 批：GET /api/settings 的完整响应（第 3 批那四个平铺字段仍然保留） */
 export interface RuntimeSettings {
-  /** 当前生效值（数据库覆盖已叠加在 .env 之上） */
+  /** 当前生效值（数据库覆盖已叠加在代码默认和基础环境配置之上） */
   values: Record<string, string | number | boolean>;
-  /** 每项来自哪层：db = 你改过，env = .env 默认 */
-  sources: Record<string, "db" | "env">;
+  /** 每项来自哪层：db = 你改过，default = 代码默认，env = 兼容旧部署的环境覆盖 */
+  sources: Record<string, "db" | "env" | "default">;
   /** 照着它渲染表单，别硬编码字段清单 */
   fields: SettingField[];
   providers: { value: string; available: boolean; reason: string }[];

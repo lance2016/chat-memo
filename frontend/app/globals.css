@@ -2094,6 +2094,11 @@ html[data-theme="dark"] .home-chat-tools { border-color: var(--border); backgrou
 .chat-conversation-toolbar-right,
 .chat-conversation-utilities { flex: none; display: flex; align-items: center; gap: 4px; }
 .chat-conversation-toolbar-right { gap: 9px; }
+.trace-controls { min-width: 0; display: inline-flex; align-items: center; gap: 5px; color: #8995a8; font-size: 10px; }
+.trace-controls-label { color: #a1aaba; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.trace-controls code { max-width: 72px; overflow: hidden; color: #697a99; font: 10px "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; }
+.trace-controls button, .trace-controls a { width: 24px; height: 24px; display: inline-grid; place-items: center; border: 0; border-radius: 7px; color: #7d8da5; background: transparent; }
+.trace-controls button:hover, .trace-controls a:hover { color: var(--accent); background: #eef2ff; }
 .chat-conversation-utilities .topbar-search-trigger,
 .chat-conversation-utilities .theme-control-trigger {
   width: 32px;
@@ -2127,6 +2132,9 @@ html[data-theme="dark"] .chat-conversation-utilities .theme-control-trigger:hove
 html[data-theme="dark"] .chat-conversation-utilities .theme-control-trigger[aria-expanded="true"] { color: var(--accent); background: var(--panel-3); }
 html[data-theme="dark"] .chat-conversation-title span { color: var(--text-tertiary); }
 html[data-theme="dark"] .chat-conversation-title strong { color: var(--text-secondary); }
+html[data-theme="dark"] .trace-controls-label { color: var(--text-tertiary); }
+html[data-theme="dark"] .trace-controls code { color: #aab8ce; }
+html[data-theme="dark"] .trace-controls button:hover, html[data-theme="dark"] .trace-controls a:hover { background: var(--panel-3); }
 
 @media (max-width: 980px) {
   .workspace-frame { grid-template-columns: 82px minmax(0, 1fr); }

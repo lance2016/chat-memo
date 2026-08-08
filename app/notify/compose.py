@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.models import ConversationSummary, TimelineItem
 from app.llm.title import get_title_client
+from app.obs import bind
 from app.timeutils import aware
 
 logger = logging.getLogger(__name__)
@@ -135,10 +136,14 @@ async def compose_body(
         # 而 ticker 是单条循环 —— 一次卡住的文案调用会把之后所有提醒一起拖死，
         # 表现为「到点了什么都没响，日志里也没有报错」。实测这条免费链路
         # 偶尔要 45 秒以上，慢比抛异常更危险，因为它不留痕迹。
-        text = await asyncio.wait_for(
-            client.complete(system=COPY_SYSTEM, prompt=prompt, max_tokens=120),
-            timeout=settings.notify_timeout,
-        )
+        with bind(
+            session_id=item.source_conversation_id,
+            purpose="notify_copy",
+        ):
+            text = await asyncio.wait_for(
+                client.complete(system=COPY_SYSTEM, prompt=prompt, max_tokens=120),
+                timeout=settings.notify_timeout,
+            )
     except Exception:  # noqa: BLE001 - 外部服务，什么都可能抛；文案不值得让提醒失败
         logger.warning("提醒文案生成失败或超时，退回模板", exc_info=True)
         return fallback_body(item, now)

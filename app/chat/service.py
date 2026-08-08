@@ -30,12 +30,13 @@ from app.llm.events import (
 from app.logging_setup import dim, ok_mark
 from app.llm.provider import LLMProvider, ToolExecutor
 from app.llm.title import TitleClient
+from app.obs import bind
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TITLE = "新对话"
 
-# 标题最多让用户多等这么久。它和正文并行跑，正常不会触顶。
+# 正文结束时仍未完成的标题会转到后台；后台最多再等这么久，不阻塞回答流。
 TITLE_TIMEOUT = 5.0
 _background_title_tasks: set[asyncio.Task[None]] = set()
 
@@ -368,6 +369,23 @@ class ChatService:
     async def stream_reply(
         self, *, conversation: Conversation, system: str, user_text: str
     ) -> AsyncIterator[AgentEvent | tuple[str, dict[str, Any]]]:
+        """Run a chat turn under one Phoenix session and chat purpose."""
+
+        with bind(session_id=conversation.id, purpose="chat"):
+            inner = self._stream_reply(
+                conversation=conversation, system=system, user_text=user_text
+            )
+            try:
+                async for event in inner:
+                    yield event
+            finally:
+                # Closing the public generator must also close the inner one;
+                # otherwise its DB cleanup runs later during fixture teardown.
+                await inner.aclose()
+
+    async def _stream_reply(
+        self, *, conversation: Conversation, system: str, user_text: str
+    ) -> AsyncIterator[AgentEvent | tuple[str, dict[str, Any]]]:
         """跑一轮对话，边流式产出事件边落库。
 
         额外会产出 ``("title", {...})`` 这种元组，用于把生成的标题推给前端。
@@ -441,7 +459,8 @@ class ChatService:
                     logger.error("✗ conv#%s %s", conversation.id, event.message)
 
                 if isinstance(event, Done):
-                    # 先压住：done 是前端的终止信号，标题必须赶在它前面发出去。
+                    # 先压住：若标题已经完成，它的事件必须赶在 done 前面发出去。
+                    # 尚未完成的标题不会在这里等待，而是在正文结束后转到后台。
                     done = event
                     continue
 
@@ -531,37 +550,38 @@ class ChatService:
     async def _complete_title(self, first_text: str) -> str:
         """只管问模型要标题，不碰 session —— 它和正文并行跑。
 
-        两条路都**关掉思考**：标题是一句话概括，推理在这里只会让用户白等
-        （这段耗时在 done 之前被 await，会原样变成禁用输入框的时间）。
+        两条路都**关掉思考**：标题是一句话概括，推理只会浪费 token、降低标题
+        赶在正文前完成的概率，并让转入后台的任务占用资源更久。
         配了硅基流动或智谱标题 key 就走专用小模型，否则退回聊天 provider。
         """
-        prompt = f"用户的第一条消息：\n\n{first_text}"
-        client = self.title_client
-        # 走哪条路、花了多久，都要能从日志里直接看出来 —— 否则「标题到底有没有
-        # 用那个小模型」只能靠猜，配错了 key 也只表现为「又变慢了」。
-        route = client.route if client is not None else f"{self.settings.provider} 不思考"
-        started = time.monotonic()
-        try:
-            if client is not None:
-                raw = await client.complete(
-                    system=TITLE_SYSTEM, prompt=prompt, max_tokens=TITLE_MAX_TOKENS
-                )
-            else:
-                raw = await self.provider.complete(
-                    system=TITLE_SYSTEM,
-                    prompt=prompt,
-                    max_tokens=TITLE_MAX_TOKENS,
-                    thinking=False,
-                )
-        except Exception:
-            # 标题只是锦上添花，失败不该影响这次对话。
-            logger.exception("生成标题失败 [%s]", route)
-            return ""
+        with bind(purpose="title"):
+            prompt = f"用户的第一条消息：\n\n{first_text}"
+            client = self.title_client
+            # 走哪条路、花了多久，都要能从日志里直接看出来 —— 否则「标题到底有没有
+            # 用那个小模型」只能靠猜，配错了 key 也只表现为「又变慢了」。
+            route = client.route if client is not None else f"{self.settings.provider} 不思考"
+            started = time.monotonic()
+            try:
+                if client is not None:
+                    raw = await client.complete(
+                        system=TITLE_SYSTEM, prompt=prompt, max_tokens=TITLE_MAX_TOKENS
+                    )
+                else:
+                    raw = await self.provider.complete(
+                        system=TITLE_SYSTEM,
+                        prompt=prompt,
+                        max_tokens=TITLE_MAX_TOKENS,
+                        thinking=False,
+                    )
+            except Exception:
+                # 标题只是锦上添花，失败不该影响这次对话。
+                logger.exception("生成标题失败 [%s]", route)
+                return ""
 
-        title = _clean_title(raw)
-        logger.info(
-            "  🏷 %s %s",
-            title or "（空，保留默认标题）",
-            dim(f"[{route} · {time.monotonic() - started:.1f}s]"),
-        )
-        return title
+            title = _clean_title(raw)
+            logger.info(
+                "  🏷 %s %s",
+                title or "（空，保留默认标题）",
+                dim(f"[{route} · {time.monotonic() - started:.1f}s]"),
+            )
+            return title

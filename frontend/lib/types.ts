@@ -15,7 +15,7 @@ export interface RuntimeSettings {
   /** 是否已挂载只读知识库（由后端 VAULT_PATH 决定）。 */
   kb_enabled?: boolean;
   values: Record<string, unknown>;
-  sources: Record<string, "db" | "env">;
+  sources: Record<string, "db" | "env" | "default">;
   fields: RuntimeSettingField[];
   providers: RuntimeProvider[];
   env_only: string[];
@@ -212,6 +212,7 @@ export interface MessageUsage {
 
 export type ChatEvent =
   | { type: "conversation"; conversation: Conversation }
+  | { type: "trace"; trace_id: string }
   | { type: "thinking_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_use"; name: string; input: Record<string, unknown> }

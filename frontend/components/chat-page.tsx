@@ -3,7 +3,7 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
+import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
 import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
@@ -47,6 +47,30 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
     <summary><span className="tool-group-icon"><ListChecks size={13} /></span><span className="tool-group-label">{label}</span><span className="tool-group-state">{state}</span><ChevronDown size={13} className="tool-group-chevron" /></summary>
     <div className="tool-group-list">{tools.map((tool) => displayTool(tool, t))}</div>
   </details>;
+}
+
+function TraceControls({ traceId }: { traceId: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const phoenixUrl = process.env.NEXT_PUBLIC_PHOENIX_URL?.trim();
+  const shortId = traceId.slice(0, 8);
+
+  const copyTraceId = async () => {
+    await navigator.clipboard.writeText(traceId);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  return <div className="trace-controls" title={traceId}>
+    <span className="trace-controls-label">{t("chat.trace")}</span>
+    <code>{shortId}</code>
+    <button type="button" onClick={() => void copyTraceId()} aria-label={t("chat.trace.copy")} title={t("chat.trace.copy")}>
+      {copied ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+    {phoenixUrl && <a href={phoenixUrl} target="_blank" rel="noreferrer" aria-label={t("chat.trace.open")} title={t("chat.trace.open")}>
+      <ExternalLink size={12} />
+    </a>}
+  </div>;
 }
 
 function usageLabel(usage: NonNullable<Extract<Turn, { kind: "assistant" }>["usage"]>) {
@@ -224,6 +248,7 @@ export function ChatPage() {
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
+  const [traceIds, setTraceIds] = useState<Record<number, string>>({});
   const selectedIdRef = useRef<number | null>(selectedId);
   const streamConversationIdRef = useRef<number | null>(null);
   const streamBaseTurnsRef = useRef<Turn[]>([]);
@@ -643,6 +668,10 @@ export function ChatPage() {
       notifyWorkspaceConversationsChanged();
       return;
     }
+    if (event.type === "trace" && conversationId !== null) {
+      setTraceIds((current) => ({ ...current, [conversationId]: event.trace_id }));
+      return;
+    }
     if (event.type === "thinking_delta") queueDraftDelta("thinking", event.text);
     if (event.type === "text_delta") {
       draftTextRef.current += event.text;
@@ -838,6 +867,7 @@ export function ChatPage() {
   const selected = useMemo(() => visibleConversations.find((item) => item.id === selectedId), [selectedId, visibleConversations]);
   const streamConversation = useMemo(() => conversations.find((item) => item.id === streamConversationId), [conversations, streamConversationId]);
   const streamBelongsToSelection = streamConversationId !== null && streamConversationId === selectedId;
+  const activeTraceId = streamConversationId === null ? undefined : traceIds[streamConversationId];
   const displayTurns = useMemo(() => {
     const result = [...turns] as Turn[];
     if (streamBelongsToSelection && pendingUser) result.push({ kind: "user", text: pendingUser });
@@ -861,6 +891,7 @@ export function ChatPage() {
             <div className="chat-conversation-toolbar-inner">
               <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong>{sending && streamBelongsToSelection && <em className="chat-live-status"><i />{t("chat.responding")}</em>}</div>
               <div className="chat-conversation-toolbar-right">
+                {streamBelongsToSelection && activeTraceId && <TraceControls traceId={activeTraceId} />}
                 {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
               </div>
             </div>

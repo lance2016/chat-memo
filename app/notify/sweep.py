@@ -21,6 +21,7 @@ from app.db.models import TimelineItem
 from app.notify.compose import compose_body, format_clock, kind_emoji, subtitle_for
 from app.notify.message import PushMessage
 from app.notify.service import Notifier
+from app.obs import trace
 from app.timeutils import aware, local_day_bounds
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,16 @@ async def sweep(
     now: dt.datetime | None = None,
 ) -> int:
     """跑一轮，返回实际推出去的条数。"""
+    with trace("job", "notify.sweep", purpose="notify"):
+        return await _sweep(session, settings, notifier, now)
+
+
+async def _sweep(
+    session: AsyncSession,
+    settings: Settings,
+    notifier: Notifier,
+    now: dt.datetime | None = None,
+) -> int:
     now = now or dt.datetime.now(dt.UTC)
     return await sweep_briefing(session, settings, notifier, now) + await sweep_due(
         session, settings, notifier, now

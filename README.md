@@ -167,15 +167,17 @@ GET  /api/memories[/{path}]        记忆树读写 + 版本历史
 
 ## 配置在哪改
 
-分三层，后面覆盖前面：
+运行时配置分三层，后面覆盖前面：
 
 ```
-会话覆盖   conversations.thinking          PATCH /api/conversations/{id}
+代码默认   Settings                        稳定的安全默认值
+.env       密钥、数据库、外部服务地址        启动时读取
 数据库设置 app_settings 表                  PATCH /api/settings（设置页，立刻生效）
-.env 默认  Settings                        改完要重启容器
+会话覆盖   conversations.thinking            PATCH /api/conversations/{id}
 ```
 
-**密钥和基础设施只能改 `.env`**（`*_API_KEY`、`DATABASE_URL`、`CORS_ORIGINS` 等），
+`.env` 只放密钥和基础设施**（`*_API_KEY`、`DATABASE_URL`、外部服务地址、挂载路径等）**；
+模型、助手规则、记忆整理、通知、TTS/ASR 偏好和调试开关都应在设置页修改，
 接口一律拒绝写这些。所有防护都压在 `API_KEY` 和 `CORS_ORIGINS` 上，
 放公网前必须先配好这两项。
 

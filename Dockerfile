@@ -26,8 +26,13 @@ COPY pyproject.toml uv.lock ./
 # 请求 files.pythonhosted.org。先按构建参数刷新下载来源（保留锁定版本），再安装。
 # 默认仍是官方 PyPI；Compose 针对国内网络提供 TUNA 默认值，也可在 .env 覆盖。
 ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+ARG INSTALL_OBS=0
 RUN uv lock --refresh --default-index "$UV_DEFAULT_INDEX" \
-    && uv sync --frozen --default-index "$UV_DEFAULT_INDEX"
+    && if [ "$INSTALL_OBS" = "1" ]; then \
+         uv sync --frozen --extra obs --default-index "$UV_DEFAULT_INDEX"; \
+       else \
+         uv sync --frozen --default-index "$UV_DEFAULT_INDEX"; \
+       fi
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

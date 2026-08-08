@@ -25,6 +25,8 @@ from app.tts.router import public as tts_public_router
 from app.tts.router import router as tts_router
 from app.tts.tickets import tickets
 from app.logging_setup import setup_logging
+from app.obs.middleware import ObservabilityMiddleware
+from app.obs.tracing import setup_tracing
 from app.security import require_api_key
 from app.settings_store import resolve_settings
 
@@ -66,8 +68,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    setup_logging(settings.log_level, settings.log_color, settings.log_access)
+    setup_logging(
+        settings.log_level,
+        settings.log_color,
+        # ObservabilityMiddleware owns access logging so it can keep the
+        # request trace ID and duration on the same record. Avoid duplicate
+        # uvicorn access lines.
+        False,
+        settings.log_format,
+    )
+    setup_tracing(settings)
     app = FastAPI(title="Personal AI Assistant", lifespan=lifespan)
+
+    # Pure ASGI keeps the HTTP span open until a streaming response has sent
+    # its final body chunk.
+    app.add_middleware(
+        ObservabilityMiddleware,
+        access=settings.log_access,
+        trace_reads=settings.obs_trace_reads,
+        trace_http_paths=settings.obs_trace_http_paths,
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -80,8 +100,8 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health(session: AsyncSession = Depends(get_session)) -> dict[str, str]:
         await session.execute(text("SELECT 1"))
-        # 必须走 resolve_settings：闭包里那个 settings 是启动时的 .env 快照，
-        # 而聊天走的是「数据库覆盖叠加在 .env 之上」的合并值。在设置页把 provider
+        # 必须走 resolve_settings：闭包里那个 settings 是启动时的基础配置快照，
+        # 而聊天走的是「数据库覆盖叠加在基础配置之上」的合并值。在设置页把 provider
         # 换掉之后，用快照会一直报旧的 —— 健康检查报错模型比不报还糟。
         active = await resolve_settings(session)
         # 报当前生效的那个模型 —— 之前无论 PROVIDER 是什么都报 Anthropic 的，会误导。

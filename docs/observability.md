@@ -161,7 +161,7 @@ json 出口每行一个对象，字段名对齐 OTel 语义约定：
       PHOENIX_WORKING_DIR: /mnt/data
       TZ: ${TZ:-Asia/Shanghai}
     ports:
-      - "${PHOENIX_PORT:-16006}:6006"   # UI + OTLP HTTP
+      - "127.0.0.1:${PHOENIX_PORT:-16006}:6006"   # UI + OTLP HTTP，只给本机访问
     volumes:
       - phoenix_data:/mnt/data
 ```
@@ -173,6 +173,8 @@ api 服务加两个环境变量：
 ```yaml
       PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
       OBS_TRACING: ${OBS_TRACING:-0}    # 0 时完全不初始化 OTel，零开销
+      OBS_TRACE_READS: ${OBS_TRACE_READS:-0}  # 默认只追踪 POST/后台任务，避免 GET 轮询刷屏
+      OBS_TRACE_HTTP_PATHS: ${OBS_TRACE_HTTP_PATHS:-/api/chat,/api/jobs/consolidate}  # HTTP trace 白名单
 ```
 
 ### 应用侧初始化
@@ -216,6 +218,15 @@ opentelemetry-exporter-otlp
 3. agent loop 的多次 iteration 是不是同一个 trace 下的多个 span（决定 trace 视图有不有用）
 
 验证方式：开着 Phoenix 跑一轮带工具调用的对话，去 UI 里逐条对。**如果 1 缺失**，`debug/recorder` 就不能删，保留它作为 payload 的补充。**如果 2 缺失**，成本这块要么放弃要么退回自建表。先花二十分钟验证，再决定后面做多少。
+
+### 降噪与前端联动
+
+- `OBS_TRACE_READS=false` 时，`GET` 请求和 `/health` 只保留普通访问日志，不创建 Phoenix span；聊天 `POST /api/chat`、模型子 span 和后台任务仍然保留。
+- `OBS_TRACE_HTTP_PATHS` 控制 HTTP 入口白名单，默认只有 `/api/chat` 和手动整理入口；像 `/api/tts/stop`、设置保存、归档等控制请求不建 Phoenix span。需要排查某个入口时再临时追加路径。
+- 手工 span 写入 `openinference.span.kind`，HTTP/任务显示为 `CHAIN`，工具类 span 可显示为 `TOOL`，避免 Phoenix 列表全部变成 `unknown`。
+- 聊天 SSE 会发送当前完整 `trace_id`。对话顶部显示短码，复制按钮复制完整 ID，打开按钮只打开本机 Phoenix UI；浏览器不直连 Phoenix API，也不接触 collector endpoint。
+- Phoenix 默认绑定 `127.0.0.1`，因为 trace 里包含完整 prompt/response。需要局域网访问时再显式修改 compose 端口绑定。
+- Phoenix compose 已关闭 UI telemetry、外部资源、MCP/MCP code mode 和 Prometheus；本地只保留 UI、OTLP 收集和 SQLite trace 存储。旧 span 不会因新过滤规则消失，需按时间/项目清理，或等待 retention 到期。
 
 ### 成本核算的一个手工步骤
 
@@ -364,6 +375,31 @@ VictoriaLogs 也支持 syslog 入口，给 api 配 `logging: {driver: syslog, ..
 ## 七、落地阶段
 
 每阶段独立可用可验证。
+
+### 当前实现进度（2026-08-08）
+
+阶段 0/1/2 的应用侧骨架已落地：
+
+- `app/obs/` 提供可选的 Phoenix 注册、HTTP 流式 trace、session/purpose context，以及
+  pretty/JSON 双 formatter；`app/logging_setup.py` 保留为兼容转发。
+- chat / title / consolidate / notify_copy 和后台 consolidation / notification ticker
+  已接入 context；未安装 obs 依赖或 `OBS_TRACING=0` 时继续走无 trace 分支。
+- compose 已加入 `obs` profile 的 Phoenix + SQLite volume，默认 retention 14 天。
+- 默认跳过 GET/health span，手工 span 标注 OpenInference kind；对话 SSE 会把 trace_id
+  传给前端，顶部可复制完整 ID 并打开本机 Phoenix。
+
+真实的阶段 0 覆盖验证仍需在有模型 key 的环境中完成。安装可选依赖并启动 Phoenix：
+
+```bash
+uv sync --extra obs
+INSTALL_OBS=1 OBS_TRACING=1 docker compose --profile obs up -d --build api phoenix
+```
+
+然后跑一轮带 `view` 工具调用的对话，在
+`http://localhost:16006` 核对完整 messages/tools、`llm.token_count.*` 和多次 agent
+iteration 是否在同一 trace 下。确认 payload 完整前保留 `app/debug/`；确认后再做阶段 3
+清理。直接在宿主机运行 API 时，`PHOENIX_COLLECTOR_ENDPOINT` 应填
+`http://localhost:16006`；应用会补齐 OTLP HTTP 的 `/v1/traces` 路径。
 
 **阶段 0 — 验证流式埋点**（半小时，决定后面做多少）
 - `pyproject.toml` 加 `obs` 可选依赖组，compose 加 phoenix 服务，`app/obs/tracing.py` 十几行初始化

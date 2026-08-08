@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # 环境变量只承载启动所需的密钥和基础设施配置。
+    # 可由用户调整的运行时配置仍保留代码默认值，并由 settings_store 的数据库覆盖层管理。
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://chat:chat@localhost:5433/chat"
@@ -26,10 +28,11 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-v4-flash"
-    deepseek_max_tokens: int = 8000
+    # 保留现有本地部署的默认行为；需要调整时请在设置页修改，而不是继续扩充 .env。
+    deepseek_max_tokens: int = 12_800
     # 全局默认是否思考。单次请求可以覆盖，会话级覆盖见 conversations.thinking。
     # 实测 DeepSeek 关掉思考后工具调用仍正常，不像 Claude 有故障模式。
-    deepseek_thinking: bool = True
+    deepseek_thinking: bool = False
 
     # 单人使用，仅防止端口意外暴露；空值表示不校验。
     api_key: str = ""
@@ -38,6 +41,18 @@ class Settings(BaseSettings):
     log_color: bool = True
     # HTTP 访问日志。聊天已有独立叙事日志，嫌吵可以关掉
     log_access: bool = True
+    # pretty = 本地人读；json = 容器日志采集器读
+    log_format: str = "pretty"
+
+    # ---- 可选 Phoenix / OpenTelemetry ----
+    # 关闭时不初始化 OTel，也不需要安装 obs 可选依赖。
+    obs_tracing: bool = False
+    phoenix_collector_endpoint: str = ""
+    obs_project_name: str = "chat-memo"
+    # 聊天 POST 和后台任务是主链路；GET 多数只是前端轮询或健康检查，默认不建 span。
+    obs_trace_reads: bool = False
+    # 只有这些 HTTP 入口会创建请求级 span；模型子 span 和后台任务不受影响。
+    obs_trace_http_paths: str = "/api/chat,/api/jobs/consolidate"
 
     cors_origins: list[str] = ["http://localhost:3000"]
 
