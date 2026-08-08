@@ -99,7 +99,7 @@ describe("ChatPage streaming lifecycle", () => {
     cleanup();
   });
 
-  it("applies a title event to the conversation that owns the stream", async () => {
+  it("keeps the redundant conversation title out of the toolbar", async () => {
     let finishStream!: () => void;
     mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, onEvent) => {
       onEvent({ type: "conversation", conversation });
@@ -109,7 +109,8 @@ describe("ChatPage streaming lifecycle", () => {
 
     await startConversation();
 
-    expect(await screen.findByText("服务端标题")).toBeInTheDocument();
+    expect(screen.queryByText("服务端标题")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "选择聊天模型" })).toBeInTheDocument();
     finishStream();
   });
 

@@ -14,6 +14,7 @@ from app.llm.factory import get_provider
 from app.notify.service import Notifier
 from app.notify.sweep import sweep
 from app.obs import trace
+from app.obs.context import set_current_span_attributes
 from app.settings_store import resolve_settings
 
 logger = logging.getLogger(__name__)
@@ -102,14 +103,29 @@ async def run_notification_ticker() -> None:
             raise
 
         try:
-            async with get_sessionmaker()() as session:
-                settings = await resolve_settings(session)
-                if not settings.notify_enabled:
-                    continue
-                notifier = Notifier(session, settings)
-                if not notifier.ready:
-                    continue
-                count = await sweep(session, settings, notifier)
+            count = 0
+            with trace("job", "notify.tick", purpose="notify"):
+                async with get_sessionmaker()() as session:
+                    settings = await resolve_settings(session)
+                    set_current_span_attributes(
+                        **{
+                            "notify.enabled": settings.notify_enabled,
+                            "notify.channels_configured": settings.notify_channels,
+                        }
+                    )
+                    if not settings.notify_enabled:
+                        set_current_span_attributes(
+                            **{"notify.skipped": True, "notify.reason": "disabled"}
+                        )
+                        continue
+                    notifier = Notifier(session, settings)
+                    if not notifier.ready:
+                        set_current_span_attributes(
+                            **{"notify.skipped": True, "notify.reason": "no_channel"}
+                        )
+                        continue
+                    count = await sweep(session, settings, notifier)
+                    set_current_span_attributes(**{"notify.sent_count": count})
             if count:
                 logger.info("主动通知已推送 %d 条", count)
         except asyncio.CancelledError:

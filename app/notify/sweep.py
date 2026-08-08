@@ -22,6 +22,7 @@ from app.notify.compose import compose_body, format_clock, kind_emoji, subtitle_
 from app.notify.message import PushMessage
 from app.notify.service import Notifier
 from app.obs import trace
+from app.obs.context import set_current_span_attributes
 from app.timeutils import aware, local_day_bounds
 
 logger = logging.getLogger(__name__)
@@ -226,7 +227,9 @@ async def sweep(
 ) -> int:
     """跑一轮，返回实际推出去的条数。"""
     with trace("job", "notify.sweep", purpose="notify"):
-        return await _sweep(session, settings, notifier, now)
+        count = await _sweep(session, settings, notifier, now)
+        set_current_span_attributes(**{"notify.sent_count": count})
+        return count
 
 
 async def _sweep(

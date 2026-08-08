@@ -12,9 +12,16 @@ function ShikiCode({ code, language }: { code: string; language: string }) {
   const [html, setHtml] = useState("");
   const [copied, setCopied] = useState(false);
   const [wrapped, setWrapped] = useState(false);
-  // Fenced blocks intentionally stay dark in both app themes. Inline code is
-  // styled separately as a quiet light blue-gray token.
-  const [theme] = useState("github-dark-default");
+  const [theme, setTheme] = useState<"github-dark-default" | "github-light-default">(() => typeof document !== "undefined" && document.documentElement.dataset.theme === "dark" ? "github-dark-default" : "github-light-default");
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const syncTheme = () => setTheme(root.dataset.theme === "dark" ? "github-dark-default" : "github-light-default");
+    const observer = new MutationObserver(syncTheme);
+    syncTheme();
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -32,7 +39,7 @@ function ShikiCode({ code, language }: { code: string; language: string }) {
   };
 
   return <div className={`code-wrap ${wrapped ? "code-wrap-lines" : ""}`}>
-    <div className="code-toolbar"><span>{language || "text"}</span><div><button type="button" title={t("chat.code.wrap")} aria-pressed={wrapped} onClick={() => setWrapped((value) => !value)}><WrapText size={13} /></button><button type="button" onClick={() => void copy()}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? t("chat.copied") : t("chat.copy")}</button></div></div>
+    <div className="code-toolbar"><span className="code-language">{language || "text"}</span><div className="code-toolbar-actions"><button type="button" title={t("chat.code.wrap")} aria-label={t("chat.code.wrap")} aria-pressed={wrapped} onClick={() => setWrapped((value) => !value)}><WrapText size={13} /><span>{t("chat.code.wrap")}</span></button><button type="button" onClick={() => void copy()} aria-label={copied ? t("chat.copied") : t("chat.copy")}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? t("chat.copied") : t("chat.copy")}</button></div></div>
     {html ? <div className="code-highlight" dangerouslySetInnerHTML={{ __html: html }} /> : <pre><code>{code}</code></pre>}
   </div>;
 }

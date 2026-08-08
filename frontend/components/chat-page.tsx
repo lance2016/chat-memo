@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
@@ -97,8 +97,63 @@ function greeting(t: ReturnType<typeof useI18n>["t"]) {
 }
 
 function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCatalog | null; value: number | null; disabled: boolean; onChange: (value: number | null) => void }) {
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && pickerRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
   if (!catalog) return null;
-  return <label className="chat-model-picker"><span>模型</span><select value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)} aria-label="选择聊天模型"><option value="">跟随默认模型</option>{catalog.services.map((service) => <optgroup label={service.name} key={service.id}>{catalog.profiles.filter((profile) => profile.service_id === service.id).map((profile) => <option value={profile.id} disabled={!profile.available && profile.id !== value} key={profile.id}>{profile.display_name}{profile.is_default ? " · 默认" : profile.available ? "" : " · 不可用"}</option>)}</optgroup>)}</select></label>;
+  const defaultProfile = catalog.profiles.find((profile) => profile.id === catalog.default_profile_id || profile.is_default);
+  const selectedProfile = catalog.profiles.find((profile) => profile.id === value);
+  const selectedLabel = selectedProfile?.model_id ?? defaultProfile?.model_id ?? "跟随默认模型";
+
+  const choose = (next: number | null) => {
+    onChange(next);
+    setOpen(false);
+  };
+
+  return <div className="chat-model-picker" ref={pickerRef}>
+    <span>模型</span>
+    <button className="chat-model-trigger" type="button" role="combobox" aria-label="选择聊天模型" aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}>
+      <span>{selectedLabel}</span><ChevronDown size={14} aria-hidden="true" />
+    </button>
+    {open && <div className="chat-model-menu" id={menuId} role="listbox" aria-label="聊天模型列表">
+      <button className={`chat-model-option ${value === null ? "is-selected" : ""}`} type="button" role="option" aria-selected={value === null} onClick={() => choose(null)}>
+        <span className="chat-model-option-copy"><strong>默认</strong><small>{defaultProfile?.model_id ?? "跟随默认模型"}</small></span>
+        {value === null && <Check size={14} aria-hidden="true" />}
+      </button>
+      {catalog.services.map((service) => <div className="chat-model-group" key={service.id}>
+        <div className="chat-model-group-label">{service.name}</div>
+        {catalog.profiles.filter((profile) => profile.service_id === service.id).map((profile) => {
+          const unavailable = !profile.available && profile.id !== value;
+          return <button className={`chat-model-option ${profile.id === value ? "is-selected" : ""}`} type="button" role="option" aria-selected={profile.id === value} disabled={unavailable} key={profile.id} onClick={() => choose(profile.id)}>
+            <span className="chat-model-option-copy"><strong>{profile.model_id}</strong>{profile.is_default && <small>默认</small>}{unavailable && <small>不可用</small>}</span>
+            {profile.id === value && <Check size={14} aria-hidden="true" />}
+          </button>;
+        })}
+      </div>)}
+    </div>}
+  </div>;
 }
 
 function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange }: {
@@ -195,7 +250,7 @@ function InlineMessageEditor({ value, enterToSend, onChange, onSubmit, onCancel 
   </div>;
 }
 
-function TurnView({ turn, editing = false, editText = "", enterToSend = true, onEditChange, onEditSubmit, onEditCancel, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; editing?: boolean; editText?: string; enterToSend?: boolean; onEditChange?: (value: string) => void; onEditSubmit?: () => void; onEditCancel?: () => void; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
+function TurnView({ turn, traceId, editing = false, editText = "", enterToSend = true, onEditChange, onEditSubmit, onEditCancel, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; traceId?: string; editing?: boolean; editText?: string; enterToSend?: boolean; onEditChange?: (value: string) => void; onEditSubmit?: () => void; onEditCancel?: () => void; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const unavailableReason = ttsDisabledReason ?? t("chat.tts.unknown");
@@ -219,7 +274,10 @@ function TurnView({ turn, editing = false, editText = "", enterToSend = true, on
       {streaming && !turn.text && !turn.thinking && turn.tools.length === 0 && <div className="chat-response-phase"><span /><span>{t("chat.phase.connecting")}</span></div>}
       {(turn.text || streaming) && <div className="assistant-content"><Markdown highlightCode={!streaming}>{turn.text}</Markdown>{streaming && <span className="streaming-cursor" />}</div>}
       {turn.usage?.interrupted && <div className="interrupted-answer"><TriangleAlert size={13} /><span>{t("chat.interrupted")}</span></div>}
-      {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
+      {(traceId || (showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage))) && <div className="assistant-response-meta">
+        {traceId && <TraceControls traceId={traceId} />}
+        {showUsage && !turn.usage?.interrupted && turn.usage && usageLabel(turn.usage) && <div className="message-usage">{usageLabel(turn.usage)}</div>}
+      </div>}
       {(turn.text || onSpeak || onRegenerate) && <div className="turn-actions assistant-actions">
         {turn.text && <button onClick={() => void copyTurn()} title={t("chat.copyAnswer")}><span>{copied ? <Check size={12} /> : <Copy size={12} />}</span>{copied ? t("chat.copied") : t("chat.copy")}</button>}
         {onSpeak && <button className={`tts-button ${ttsPlaying ? "playing" : ""} ${ttsLoading ? "loading" : ""}`} onClick={onSpeak} disabled={ttsLoading || (!ttsAvailable && !ttsPlaying)} title={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason} aria-label={ttsAvailable || ttsPlaying ? (ttsPlaying ? t("chat.tts.stop") : t("chat.tts.playAnswer")) : unavailableReason}>
@@ -256,7 +314,7 @@ export function ChatPage() {
   const messageFromUrl = Number(searchParams.get("message"));
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [apiMessages, setApiMessages] = useState<import("@/lib/types").ApiMessage[]>([]);
-  const [archivedConversations, setArchivedConversations] = useState<Conversation[]>([]);
+  const [, setArchivedConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(Number.isFinite(selectedFromUrl) && selectedFromUrl > 0 ? selectedFromUrl : null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [pendingUser, setPendingUser] = useState("");
@@ -266,7 +324,7 @@ export function ChatPage() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const [, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
@@ -839,6 +897,14 @@ export function ChatPage() {
     streamBaseTurnsRef.current = baseTurns;
     streamConversationIdRef.current = conversationId;
     setStreamConversationId(conversationId);
+    if (conversationId !== null) {
+      setTraceIds((current) => {
+        if (!(conversationId in current)) return current;
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+    }
     sendingRef.current = true;
     setSending(true);
     setError("");
@@ -937,11 +1003,9 @@ export function ChatPage() {
     void send(editDraft, editingTarget);
   };
 
-  const visibleConversations = showArchived ? archivedConversations : conversations;
-  const selected = useMemo(() => visibleConversations.find((item) => item.id === selectedId), [selectedId, visibleConversations]);
   const streamConversation = useMemo(() => conversations.find((item) => item.id === streamConversationId), [conversations, streamConversationId]);
   const streamBelongsToSelection = streamConversationId !== null && streamConversationId === selectedId;
-  const activeTraceId = streamConversationId === null ? undefined : traceIds[streamConversationId];
+  const selectedTraceId = selectedId === null ? undefined : traceIds[selectedId];
   const displayTurns = useMemo(() => {
     const result = [...turns] as Turn[];
     if (streamBelongsToSelection && pendingUser) result.push({ kind: "user", text: pendingUser });
@@ -963,16 +1027,14 @@ export function ChatPage() {
         {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
-              <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong>{sending && streamBelongsToSelection && <em className="chat-live-status"><i />{t("chat.responding")}</em>}</div>
+              <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
               <div className="chat-conversation-toolbar-right">
-                <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
-                {streamBelongsToSelection && activeTraceId && <TraceControls traceId={activeTraceId} />}
                 {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
               </div>
             </div>
           </div>
           <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
-            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${turn.messageId ?? index}`} />; })}
+            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${turn.messageId ?? index}`} />; })}
           </div>
           {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
           <div className="composer-wrap">

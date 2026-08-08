@@ -21,6 +21,8 @@ from app.config import Settings
 from app.db.models import Notification
 from app.notify.channels import Channel, ChannelError, build_channels
 from app.notify.message import PushMessage
+from app.obs import trace
+from app.obs.context import set_current_span_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,17 @@ class Notifier:
         return bool(self.channels)
 
     async def deliver(self, message: PushMessage) -> Notification | None:
+        with trace(
+            "job",
+            "notify.deliver",
+            purpose="notify",
+            notification_kind=message.kind,
+            timeline_item_id=message.timeline_item_id,
+            dedupe_key=message.dedupe_key,
+        ):
+            return await self._deliver(message)
+
+    async def _deliver(self, message: PushMessage) -> Notification | None:
         """送出并落记录。已经发过、或已经放弃重试的返回 None。
 
         一个通道都没配好时直接不做事 —— 否则会把 dedupe_key 占掉，
@@ -52,10 +65,16 @@ class Notifier:
         """
         if not self.channels:
             logger.debug("没有可用的通知通道，跳过 %s", message.dedupe_key)
+            set_current_span_attributes(
+                **{"notify.skipped": True, "notify.reason": "no_channel"}
+            )
             return None
 
         record = await self._claim(message)
         if record is None:
+            set_current_span_attributes(
+                **{"notify.skipped": True, "notify.reason": "deduplicated"}
+            )
             return None
 
         delivered: list[str] = []
@@ -86,6 +105,19 @@ class Notifier:
                 MAX_ATTEMPTS,
                 record.error,
             )
+        set_current_span_attributes(
+            **{
+                "notify.delivered": bool(delivered),
+                "notify.channels": record.channels,
+                "notify.attempts": record.attempts,
+                "notify.error": record.error,
+                **(
+                    {"notify.title": message.title}
+                    if self.settings.obs_capture_content
+                    else {}
+                ),
+            }
+        )
         return record
 
     async def _claim(self, message: PushMessage) -> Notification | None:
