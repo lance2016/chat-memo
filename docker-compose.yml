@@ -93,8 +93,11 @@ services:
       - ./alembic.ini:/app/alembic.ini:ro
       - ./tests:/app/tests
       - ./pyproject.toml:/app/pyproject.toml:ro
-      # 备份落到宿主机，容器重建也不会丢
-      - ./backups:/backups
+      # 备份落到宿主机，容器重建也不会丢。
+      # ⚠️ 默认的 ./backups 和数据在**同一块盘**，磁盘坏了两者一起走。
+      # 在 .env 里设 BACKUP_HOST_DIR 指到 iCloud / 外置盘 / 网络盘，
+      # 这是这套备份唯一还需要人做的决定。见 docs/backup.md。
+      - ${BACKUP_HOST_DIR:-./backups}:/backups
       # 评测结果同理，而且**必须挂**：界面在容器里跑、命令行在宿主机跑，不挂的话
       # 两边各写各的 eval-runs，同一个功能长出两份互相看不见的历史 ——
       # baseline 对比会拿错参照，而且容器一重建，界面上跑出来的结果就全没了。

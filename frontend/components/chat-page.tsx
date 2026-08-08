@@ -148,7 +148,50 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   </div>;
 }
 
-function TurnView({ turn, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
+function InlineMessageEditor({ value, enterToSend, onChange, onSubmit, onCancel }: { value: string; enterToSend: boolean; onChange: (value: string) => void; onSubmit: () => void; onCancel: () => void }) {
+  const { t } = useI18n();
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+  }, []);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.style.height = "auto";
+    editor.style.height = `${editor.scrollHeight}px`;
+  }, [value]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && enterToSend) {
+      event.preventDefault();
+      if (value.trim()) onSubmit();
+    }
+  };
+
+  return <div className="user-message-editor">
+    <textarea ref={editorRef} value={value} onChange={(event) => onChange(event.target.value)} onKeyDown={handleKeyDown} aria-label={t("chat.composer.editPlaceholder")} />
+    <div className="user-message-editor-footer">
+      <span>{t("chat.editHint")}</span>
+      <div>
+        <button type="button" className="user-message-editor-cancel" onClick={onCancel}>{t("chat.cancelEdit")}</button>
+        <button type="button" className="user-message-editor-submit" disabled={!value.trim()} onClick={onSubmit}><Send size={13} />{t("chat.resend")}</button>
+      </div>
+    </div>
+  </div>;
+}
+
+function TurnView({ turn, editing = false, editText = "", enterToSend = true, onEditChange, onEditSubmit, onEditCancel, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; editing?: boolean; editText?: string; enterToSend?: boolean; onEditChange?: (value: string) => void; onEditSubmit?: () => void; onEditCancel?: () => void; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const unavailableReason = ttsDisabledReason ?? t("chat.tts.unknown");
@@ -158,7 +201,7 @@ function TurnView({ turn, streaming = false, highlighted = false, showThinking =
     window.setTimeout(() => setCopied(false), 1600);
   };
   if (turn.kind === "user") {
-    return <div className={`turn user-turn ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group"><div className="user-bubble">{turn.text}</div><div className="turn-actions"><button onClick={() => void copyTurn()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("chat.copied") : t("chat.copy")}</button>{onEdit && <button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button>}</div></div></div>;
+    return <div className={`turn user-turn ${editing ? "is-editing" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group">{editing && onEditChange && onEditSubmit && onEditCancel ? <InlineMessageEditor value={editText} enterToSend={enterToSend} onChange={onEditChange} onSubmit={onEditSubmit} onCancel={onEditCancel} /> : <><div className="user-bubble">{turn.text}</div><div className="turn-actions"><button onClick={() => void copyTurn()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("chat.copied") : t("chat.copy")}</button>{onEdit && <button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button>}</div></>}</div></div>;
   }
   return (
     <div className={`turn assistant-turn ${streaming ? "is-streaming" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
@@ -221,6 +264,7 @@ export function ChatPage() {
   const [error, setError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
@@ -515,6 +559,7 @@ export function ChatPage() {
     stopTtsPlayback();
     updateSelectedId(id);
     setEditingTarget(null);
+    setEditDraft("");
     setInput("");
     setConversationContext(null);
     notifyWorkspaceSelectedConversationChanged(id);
@@ -833,6 +878,7 @@ export function ChatPage() {
       sendingRef.current = false;
       setSending(false);
       setEditingTarget(null);
+      setEditDraft("");
       // 临时态由 loadMessages 在换上权威历史的同一帧里清掉，这里不要提前清 ——
       // 提前清会让刚说完的回答先消失，等 fetch 回来再出现。
       await Promise.all([
@@ -867,20 +913,24 @@ export function ChatPage() {
       if (selectedId === null) event.currentTarget.form?.requestSubmit();
       else void send();
     }
-    if (event.key === "Escape" && editingTarget !== null) { setEditingTarget(null); setInput(""); }
+    if (event.key === "Escape" && editingTarget !== null) { setEditingTarget(null); setEditDraft(""); }
   };
 
   const editMessage = (turn: Extract<Turn, { kind: "user" }>) => {
     if (turn.messageId === undefined) return;
     setEditingTarget(turn.messageId);
-    setInput(turn.text);
-    window.requestAnimationFrame(() => composerRef.current?.focus());
+    setEditDraft(turn.text);
   };
 
   const cancelEditing = () => {
     setEditingTarget(null);
-    setInput("");
+    setEditDraft("");
     window.requestAnimationFrame(() => composerRef.current?.focus());
+  };
+
+  const submitEditing = () => {
+    if (editingTarget === null || !editDraft.trim() || sending) return;
+    void send(editDraft, editingTarget);
   };
 
   const visibleConversations = showArchived ? archivedConversations : conversations;
@@ -918,24 +968,23 @@ export function ChatPage() {
             </div>
           </div>
           <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
-            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${turn.messageId ?? index}`} />; })}
+            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; return <TurnView turn={turn} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${turn.messageId ?? index}`} />; })}
           </div>
           {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
           <div className="composer-wrap">
             {error && <div className="error-banner">{error}</div>}
             <form className="composer" onSubmit={onSubmit}>
-              <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : editingTarget !== null ? t("chat.composer.editPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
+              <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
               <div className="composer-bottom">
                 <div className="composer-meta">
                   <ContextIndicator context={conversationContext} />
-                  {editingTarget !== null && <button type="button" className="composer-cancel-edit" onClick={cancelEditing}>{t("chat.cancelEdit")}</button>}
-                  <span className="composer-hint">{sending && !streamBelongsToSelection ? t("chat.backgroundHint") : editingTarget !== null ? t("chat.editHint") : t("chat.sendHint")}</span>
+                  <span className="composer-hint">{sending && !streamBelongsToSelection ? t("chat.backgroundHint") : t("chat.sendHint")}</span>
                 </div>
                 <div className="composer-actions">
                   <VoiceInputButton disabled={sending} onTranscript={appendTranscription} />
                   {sending
                     ? streamBelongsToSelection ? <button type="button" className="ghost-button stop-button composer-submit" onClick={stop} aria-label={t("chat.stop")} title={t("chat.stop")}><Square size={14} /></button> : <button type="button" className="ghost-button composer-submit" onClick={() => streamConversationId !== null && selectConversation(streamConversationId)} aria-label={t("chat.returnToResponse")} title={t("chat.returnToResponse")}><ArrowRight size={15} /></button>
-                    : <button type="submit" className="primary-button composer-submit" disabled={!input.trim()} aria-label={editingTarget !== null ? t("chat.resend") : t("chat.send")} title={editingTarget !== null ? t("chat.resend") : t("chat.send")}><Send size={17} /></button>}
+                    : <button type="submit" className="primary-button composer-submit" disabled={!input.trim()} aria-label={t("chat.send")} title={t("chat.send")}><Send size={17} /></button>}
                 </div>
               </div>
             </form>

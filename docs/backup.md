@@ -18,6 +18,7 @@
 ## 自动备份
 
 默认开，每天一份，留最近 14 份。开关和份数在**设置页**改（`backup_auto` / `backup_keep`）。
+`POST /api/jobs/backup` 的响应里 `pruned` 会列出本次轮换掉的旧备份。
 
 **补跑式，不是定时触发式。** 判据是「今天有没有备份过」而不是「到点了没有」——
 和通知扫描同一条教训（`app/notify/sweep.py`）：进程一重启计时器就从头开始，
@@ -31,18 +32,30 @@
 ⚠️ **dump 失败时不轮换**。否则会在「今天没备份成功」的情况下顺手删掉旧的好备份 ——
 那是备份系统最不该犯的错。
 
-## ⚠️ 备份和数据在同一块盘
+## 备份存到哪
 
-`backups/` 挂在同一台机器上（compose 的 `./backups:/backups`）。**磁盘坏了，
-数据和备份一起走。** 这不是代码能解决的问题，是个挂载决策，三选一：
+容器内的路径固定是 `/backups`，宿主机侧由 `.env` 的 `BACKUP_HOST_DIR` 决定：
 
-```yaml
-# docker-compose.yml，api 服务的 volumes
-- ~/Library/Mobile Documents/com~apple~CloudDocs/chat-backups:/backups   # iCloud
-- /Volumes/外置盘/chat-backups:/backups                                   # 外置盘
+```bash
+# .env
+BACKUP_HOST_DIR=~/Library/Mobile Documents/com~apple~CloudDocs/chat-memo-backups
 ```
 
-或者留在本地，另配一条 `rsync` 到别处的定时任务。**只要不是同一块盘，哪种都行。**
+不设的话默认是仓库里的 `./backups` —— **那和数据在同一块盘，磁盘坏了两者一起走**。
+这是这套备份唯一还需要人做的决定，选项：iCloud、外置盘、网络盘，或者留本地
+另配一条 `rsync`。只要不是同一块盘，哪种都行。
+
+⚠️ **用 iCloud 时注意「优化 Mac 储存空间」**。开着的话久未访问的文件会被逐出本地、
+只留一个 `.icloud` 占位符 —— 这个仓库已经为 Obsidian vault 踩过一次（见
+`docs/internals.md`：容器读不到没下载到本地的文件）。对备份的影响：
+
+- **写入不受影响**，新 dump 照常落盘并上传
+- **`is_due` 会误判**：被逐出的文件在目录里的名字变成 `.chat-xxx.dump.icloud`，
+  glob 匹配不到，于是当天可能多备份一份。浪费但无害
+- **恢复前先确认文件在本地**：`ls -la` 看到实际大小（而不是几百字节的占位符）
+  再 `docker cp`。在 Finder 里点一下文件也会触发下载
+
+要彻底避开，就用外置盘或网络盘 —— 它们没有「按需逐出」这套机制。
 
 ## 恢复演练
 

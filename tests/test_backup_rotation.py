@@ -79,3 +79,14 @@ def test_prune_leaves_foreign_files_alone(tmp_path: Path) -> None:
 
     assert (tmp_path / "memories").exists()
     assert (tmp_path / "手工归档.tar.gz").exists()
+
+
+async def test_backup_response_exposes_rotation(session) -> None:
+    """轮换结果要能在界面上看到。
+
+    `BackupResult` 上有字段但响应模型没声明的话，pydantic 会**静默丢掉**它 ——
+    于是「留最近 N 份」这个设置改了也看不出任何效果。
+    """
+    from app.jobs.router import BackupOut
+
+    assert "pruned" in BackupOut.model_fields

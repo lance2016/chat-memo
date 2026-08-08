@@ -115,6 +115,8 @@ class BackupOut(BaseModel):
     memory_dir: str
     created_at: str
     detail: str
+    # 本次轮换掉的旧备份。不回显的话「留最近 N 份」这个设置是完全不可见的
+    pruned: list[str] = []
 
 
 @router.post("/backup", response_model=BackupOut)
