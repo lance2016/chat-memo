@@ -302,14 +302,93 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
             for name in ("deepseek", "anthropic")
         ],
         "env_only": list(ENV_ONLY),
+        "env_status": env_status(settings),
     }
 
 
+@dataclass(frozen=True)
+class EnvField:
+    """一个只能改 `.env` 的配置项，以及它能不能给人看。
+
+    分类的唯一判据是**值本身敏不敏感**：
+    密钥和数据库连接串只报「配没配」，其余直接显示当前值。
+    原来这块只把变量名平铺出来，看不出哪些配了 —— 而「标题模型为什么没走硅基流动」
+    这类问题，答案十有八九就是某个 key 没配。
+    """
+
+    key: str
+    label: str
+    # secret = 只报配没配；plain = 可以显示值
+    kind: str = "plain"
+    # 没配置时的后果。只在真有后果时写
+    absent_note: str = ""
+
+
+ENV_FIELDS: tuple[EnvField, ...] = (
+    EnvField("anthropic_api_key", "Anthropic 密钥", "secret",
+             "未配置：Anthropic 的模型不可用"),
+    EnvField("deepseek_api_key", "DeepSeek 密钥", "secret",
+             "未配置：DeepSeek 的模型不可用"),
+    EnvField("siliconflow_api_key", "硅基流动密钥", "secret",
+             "未配置：标题生成退回聊天模型，更慢更贵"),
+    EnvField("zhipu_api_key", "智谱密钥", "secret",
+             "未配置：仅在没有硅基流动时才会用到"),
+    # ⚠️ 空值 = 所有 /api 请求完全不校验（见 security.require_api_key）。
+    # 单机 localhost 无所谓，暴露到局域网之前必须配 —— roadmap 的暴露面 checklist 第一条。
+    EnvField("api_key", "接口访问 Key", "secret",
+             "未配置：所有 /api 请求不做校验，暴露到局域网前必须设置"),
+    # 连接串里带密码，不能显示值
+    EnvField("database_url", "数据库连接", "secret"),
+    EnvField("deepseek_base_url", "DeepSeek 地址"),
+    EnvField("siliconflow_base_url", "硅基流动地址"),
+    EnvField("siliconflow_title_model", "标题模型"),
+    EnvField("zhipu_base_url", "智谱地址"),
+    EnvField("tts_base_url", "语音服务地址"),
+    EnvField("tts_model_cache", "语音模型缓存"),
+    EnvField("asr_max_bytes", "录音大小上限"),
+    EnvField("cors_origins", "允许的来源"),
+    EnvField("log_level", "日志级别"),
+    EnvField("log_format", "日志格式"),
+    EnvField("log_color", "日志上色"),
+    EnvField("log_access", "访问日志"),
+)
+
+
+def is_configured(value: object) -> bool:
+    """算不算配了。
+
+    `.env.example` 里的占位符（`sk-...`）不算 —— 照抄模板却没填的人最多，
+    把它判成「已配置」会让人对着一个 401 找半天。
+    """
+    text = str(value or "").strip()
+    return bool(text) and not text.endswith("...")
+
+
+def env_status(settings: Settings) -> list[dict[str, Any]]:
+    """只能改 `.env` 的那些项，现在是什么状态。
+
+    **密钥只报布尔值，值绝不出现在响应里。**
+    """
+    rows: list[dict[str, Any]] = []
+    for field in ENV_FIELDS:
+        value = getattr(settings, field.key, "")
+        configured = is_configured(value)
+        rows.append({
+            "key": field.key,
+            "env": field.key.upper(),
+            "label": field.label,
+            "kind": field.kind,
+            "configured": configured,
+            # secret 一律给空串；plain 才回显值
+            "value": "" if field.kind == "secret" else str(value),
+            "note": "" if configured else field.absent_note,
+        })
+    return rows
+
+
 def _has_key(provider: str, settings: Settings) -> bool:
-    key = (
+    return is_configured(
         settings.anthropic_api_key
         if provider == "anthropic"
         else settings.deepseek_api_key
     )
-    # .env.example 里的占位符不算真 key，否则会误判成可用
-    return bool(key) and not key.endswith("...")

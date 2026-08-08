@@ -859,6 +859,33 @@ GET /api/search?q=依赖&limit=20
 顶部一个搜索框（`Cmd+K` 唤起最好），下拉分两组显示「对话」和「记忆」。
 输入防抖 300ms，少于 2 个字符不发请求。
 
+## 环境配置状态
+
+`GET /api/settings` 的响应新增 `env_status`：只能改 `.env` 的那些项**现在是什么状态**。
+原来只有 `env_only`（一串变量名），看不出哪些配了 —— 而「标题生成为什么没走硅基流动」
+这类问题，答案十有八九就是某个 key 没配。
+
+```json
+{
+  "env_status": [
+    {"key": "anthropic_api_key", "env": "ANTHROPIC_API_KEY", "label": "Anthropic 密钥",
+     "kind": "secret", "configured": false, "value": "",
+     "note": "未配置：Anthropic 的模型不可用"},
+    {"key": "log_level", "env": "LOG_LEVEL", "label": "日志级别",
+     "kind": "plain", "configured": true, "value": "INFO", "note": ""}
+  ]
+}
+```
+
+⚠️ **`kind: "secret"` 的 `value` 恒为空串**，后端保证不下发。密钥、以及带密码的
+`database_url` 都属于这一类 —— 分类判据是**值敏不敏感**，不是名字像不像密钥。
+前端不要试图显示 secret 的值，也不要把 `configured` 之外的东西当真。
+
+`note` 只在「没配且真有后果」时非空，直接显示即可。其中 `API_KEY` 那条要显眼：
+空值等于所有 `/api` 请求不做校验。
+
+`env_only` 保留，作为后端未升级时的降级来源。
+
 ## 工具目录
 
 ```http

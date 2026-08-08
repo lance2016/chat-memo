@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import ModelProfile, ModelService
-from app.settings_store import resolve_settings
+from app.settings_store import is_configured, resolve_settings
 from app.llm.target import (
     DEFAULT_CAPABILITIES,
     ModelTarget,
@@ -73,12 +73,21 @@ def _secret(ref: str, settings: Settings) -> str:
     """
     if not is_credential_ref(ref):
         return ""
-    value = getattr(settings, ref.lower(), "")
-    if value:
-        return str(value)
-    value = os.environ.get(ref, "")
-    if value:
-        return value
+    for value in (
+        getattr(settings, ref.lower(), ""),
+        os.environ.get(ref, ""),
+        _from_dotenv(ref),
+    ):
+        # `.env.example` 的占位符（`sk-ant-...`）不算配置好 —— 判据和设置页那边
+        # 共用 `is_configured`。两处各写一套的后果实测过：模型目录说「凭据已配置」、
+        # 界面把 Claude 列成可用，选中之后发送时才 401。
+        if is_configured(value):
+            return str(value)
+    return ""
+
+
+def _from_dotenv(ref: str) -> str:
+    """宿主机直接跑后端时补读本地 `.env`（容器里走环境变量）。"""
     try:
         return str(dotenv_values(".env").get(ref) or "")
     except OSError:

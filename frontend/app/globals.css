@@ -3833,3 +3833,17 @@ html[data-theme="dark"] .workspace-sidebar-conversation.selected > a { color: va
 .obs-facts dd { margin: 0; font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
 
 .obs-privacy { display: flex; align-items: center; gap: 6px; margin: 0; padding-top: 10px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: 10.5px; }
+
+/* 环境变量状态。密钥只显示配没配，值由后端保证不下发。 */
+.env-status-grid { display: flex; flex-direction: column; gap: 6px; }
+.env-status-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--border-subtle); }
+.env-status-row:last-child { border-bottom: 0; }
+.env-status-label { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex: 1; }
+.env-status-label strong { font-weight: 500; font-size: 12px; }
+.env-status-label code { font-size: 10.5px; color: var(--text-tertiary); }
+.env-status-pill { flex-shrink: 0; padding: 2px 8px; border-radius: 99px; font-size: 10.5px; color: var(--text-tertiary); background: var(--surface-muted); }
+.env-status-pill.ok { color: var(--accent); background: rgba(112, 145, 235, .14); }
+.env-status-value { flex-shrink: 0; max-width: 55%; font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; text-align: right; }
+.env-status-note { flex-basis: 100%; color: var(--amber); font-size: 10.5px; }
+.env-status-warn .env-status-pill { color: var(--amber); background: rgba(230, 188, 113, .14); }
+.env-status-plain { margin-top: 10px; }

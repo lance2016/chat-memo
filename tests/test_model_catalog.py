@@ -29,7 +29,9 @@ async def test_catalog_exposes_builtin_services_and_profiles(
         "anthropic",
         "deepseek",
     }
-    assert all("api_key" not in str(profile).lower() for profile in body["profiles"])
+    # 断言的是**值**没泄露，不是变量名 —— reason 里会写「未配置 ANTHROPIC_API_KEY」，
+    # 那正是要告诉人的信息。原来匹配 "api_key" 子串会把它一起判成泄露。
+    assert all("sk-" not in str(profile) for profile in body["profiles"])
 
 
 async def test_can_add_service_and_model_profile(client: AsyncClient) -> None:
@@ -97,26 +99,97 @@ async def test_credential_value_never_appears_in_catalog(
 # ---------- 三个回归 ----------
 
 
-async def test_default_model_survives_a_reload(client: AsyncClient) -> None:
+async def test_default_model_survives_a_reload(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """在界面上换默认模型 → 保存成功 → 刷新又变回去了。
 
     写入走 `resolve_settings`（对的），读取却落到 `get_settings()` 的 .env 启动快照，
     而 `chat_model_profile_id` 就存在数据库里 —— 写进去了，但读的是另一个地方。
+
+    自己造一个凭据可控的模型，不去挑数据集里「另一个」profile —— 那取决于开发机
+    `.env` 里恰好配了哪些 key，换台机器就可能挑中一个没配凭据的。
     """
-    catalog = (await client.get("/api/models")).json()
-    other = next(
-        item
-        for item in catalog["profiles"]
-        if item["id"] != catalog["default_profile_id"]
+    monkeypatch.setenv("RELOAD_TEST_API_KEY", "sk-configured")
+    service = await client.post(
+        "/api/models/services",
+        json={
+            "name": "重载测试",
+            "slug": "reload-test",
+            "protocol": "openai_compatible",
+            "base_url": "https://example.invalid/v1",
+            "credential_ref": "RELOAD_TEST_API_KEY",
+        },
+    )
+    assert service.status_code == 201
+    created = await client.post(
+        "/api/models/profiles",
+        json={"service_id": next(
+            item["id"] for item in service.json()["services"] if item["slug"] == "reload-test"
+        ), "model_id": "reload-model"},
+    )
+    profile_id = next(
+        item["id"] for item in created.json()["profiles"] if item["model_id"] == "reload-model"
     )
 
     saved = await client.post(
-        "/api/models/default", json={"purpose": "chat", "profile_id": other["id"]}
+        "/api/models/default", json={"purpose": "chat", "profile_id": profile_id}
     )
-    assert saved.json()["default_profile_id"] == other["id"]
+    assert saved.json()["default_profile_id"] == profile_id
 
     # 关键：重新 GET 一次，必须还是刚才选的那个
-    assert (await client.get("/api/models")).json()["default_profile_id"] == other["id"]
+    assert (await client.get("/api/models")).json()["default_profile_id"] == profile_id
+
+
+async def test_choosing_a_model_without_credentials_is_a_400(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """选一个没配凭据的模型要给出能照着做的 400，不是 500。
+
+    `resolve_model_target` 抛的是 ValueError，不翻译就直接冒成服务端错误 ——
+    而这件事完全是用户可修的：去配那个环境变量。
+    """
+    monkeypatch.delenv("NOCRED_API_KEY", raising=False)
+    service = await client.post(
+        "/api/models/services",
+        json={
+            "name": "没配凭据",
+            "slug": "no-cred",
+            "protocol": "openai_compatible",
+            "credential_ref": "NOCRED_API_KEY",
+        },
+    )
+    created = await client.post(
+        "/api/models/profiles",
+        json={"service_id": next(
+            item["id"] for item in service.json()["services"] if item["slug"] == "no-cred"
+        ), "model_id": "nope"},
+    )
+    profile_id = next(
+        item["id"] for item in created.json()["profiles"] if item["model_id"] == "nope"
+    )
+
+    response = await client.post(
+        "/api/models/default", json={"purpose": "chat", "profile_id": profile_id}
+    )
+
+    assert response.status_code == 400
+    assert "NOCRED_API_KEY" in response.json()["detail"]
+
+
+async def test_a_placeholder_key_is_not_treated_as_configured(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`.env.example` 的 `sk-ant-...` 抄过去没填，是最常见的一种「配了但没配」。
+
+    判据必须和设置页那边共用 —— 各写一套的后果实测过：模型目录说「凭据已配置」、
+    界面把 Claude 列成可用，选中之后发送时才 401。
+    """
+    from app.config import Settings
+    from app.llm.catalog import _secret
+
+    assert _secret("ANTHROPIC_API_KEY", Settings(anthropic_api_key="sk-ant-...")) == ""
+    assert _secret("ANTHROPIC_API_KEY", Settings(anthropic_api_key="sk-real")) == "sk-real"
 
 
 async def test_credential_ref_cannot_read_non_credential_settings() -> None:

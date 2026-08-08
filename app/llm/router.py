@@ -238,9 +238,14 @@ async def set_default_model(
 ) -> dict[str, Any]:
     settings = await resolve_settings(session)
     if payload.profile_id is not None:
-        target = await resolve_model_target(
-            session, settings, profile_id=payload.profile_id, purpose=payload.purpose
-        )
+        try:
+            target = await resolve_model_target(
+                session, settings, profile_id=payload.profile_id, purpose=payload.purpose
+            )
+        except ValueError as exc:
+            # 选一个没配凭据/已停用的模型，要给出能照着做的 400，
+            # 而不是让 resolve 的 ValueError 冒成 500
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         if payload.purpose == "chat" and not target.capabilities.get("tool_calling", False):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "聊天默认模型必须支持工具调用")
     key = (

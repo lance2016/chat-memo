@@ -162,7 +162,7 @@ P3 里索引分层和写记忆时缓存失效那几条。
 
 单机 localhost 时都不是问题；**任何一步把服务暴露到局域网之前过一遍**：
 
-- [ ] `api_key` 非空 —— `app/security.py` 里空值 = 完全不校验。配 `notify_public_base_url`
+- [ ] `api_key` 非空 —— `app/security.py` 里空值 = 完全不校验。**设置页现在会显示这条**（运行与环境 → 仅环境变量）。配 `notify_public_base_url`
       让手机能点开通知**就属于这一步**，这两个设定目前是独立的，没人把它们放在一起看
 - [x] Phoenix 端口（默认 16006）只绑 localhost —— 里面是完整对话原文和记忆正文
 - [ ] vault 保持挂载层只读（compose `:ro`），写保护不依赖 prompt 约束

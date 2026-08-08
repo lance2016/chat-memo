@@ -63,10 +63,25 @@ export interface RuntimeSettings {
   fields: RuntimeSettingField[];
   providers: RuntimeProvider[];
   env_only: string[];
+  /** 只能改 .env 的项的状态。**secret 类的 value 永远是空串** */
+  env_status?: EnvFieldStatus[];
   consolidate_auto?: boolean;
   consolidate_hour?: number;
   consolidate_model?: string | null;
   timezone?: string;
+}
+
+export interface EnvFieldStatus {
+  key: string;
+  /** 环境变量名，例如 ANTHROPIC_API_KEY */
+  env: string;
+  label: string;
+  /** secret = 只报配没配，value 恒为空串；plain = value 可显示 */
+  kind: "secret" | "plain";
+  configured: boolean;
+  value: string;
+  /** 没配置时的后果。只在真有后果时非空 */
+  note: string;
 }
 
 export interface RuntimeSettingField {

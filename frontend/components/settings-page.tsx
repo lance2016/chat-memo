@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
 import { apiBaseLabel, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
-import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
+import type { AsrStatus, EnvFieldStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ObservabilityCard } from "@/components/observability-card";
@@ -288,6 +288,41 @@ function ModelServicesPanel() {
     </>}
     {error && <div className="settings-card-callout"><TriangleAlert size={14} /><span>{error}</span></div>}
   </SettingsVisualGroup>;
+}
+
+/** 只能改 `.env` 的那些项。
+ *
+ * 原来只把变量名平铺出来，看不出哪些配了 —— 而「标题生成为什么没走硅基流动」
+ * 这类问题，答案十有八九就是某个 key 没配。
+ *
+ * **密钥只显示配没配，值由后端保证不下发**（`kind: "secret"` 时 `value` 恒为空串）。
+ */
+function EnvStatusList({ rows, fallback }: { rows: EnvFieldStatus[]; fallback: string[] }) {
+  if (!rows.length) {
+    // 后端还没升级时退回旧的平铺列表，别让这一块整个消失
+    return fallback.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{fallback.map((key) => <code key={key}>{key}</code>)}</div></div> : null;
+  }
+  const secrets = rows.filter((row) => row.kind === "secret");
+  const plain = rows.filter((row) => row.kind !== "secret");
+  return <div className="settings-env-only">
+    <div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>改这些要重启后端</strong></div>
+    <div className="env-status-grid">
+      {secrets.map((row) => <div className={`env-status-row ${row.configured ? "" : row.note ? "env-status-warn" : ""}`} key={row.key}>
+        <span className="env-status-label"><strong>{row.label}</strong><code>{row.env}</code></span>
+        <span className={`env-status-pill ${row.configured ? "ok" : ""}`}>{row.configured ? "已配置" : "未配置"}</span>
+        {row.note && <span className="env-status-note">{row.note}</span>}
+      </div>)}
+    </div>
+    <details className="settings-disclosure env-status-plain">
+      <summary><span><strong>其余环境配置</strong><small>地址、日志和上限，共 {plain.length} 项</small></span><ChevronRight size={13} /></summary>
+      <div className="env-status-grid">
+        {plain.map((row) => <div className="env-status-row" key={row.key}>
+          <span className="env-status-label"><strong>{row.label}</strong><code>{row.env}</code></span>
+          <span className="env-status-value">{row.value || "—"}</span>
+        </div>)}
+      </div>
+    </details>
+  </div>;
 }
 
 export function SettingsPage() {
@@ -790,7 +825,7 @@ export function SettingsPage() {
             </SettingsVisualGroup>
             <SettingsVisualGroup icon={ServerCog} title="运行与环境" description="服务地址、Provider 和需要重启的环境变量" tone="neutral" className="settings-runtime-group">
               <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div>
-              {runtime?.env_only?.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{runtime.env_only.map((key) => <code key={key}>{key}</code>)}</div></div> : null}
+              <EnvStatusList rows={runtime?.env_status ?? []} fallback={runtime?.env_only ?? []} />
             </SettingsVisualGroup>
           </section>}
 
