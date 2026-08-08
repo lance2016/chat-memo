@@ -9,9 +9,14 @@
 name: CI
 
 on:
+  # 所有分支的推送都跑。原来写的是 `branches: [main]` + `pull_request` ——
+  # 那是「什么都往 main 提 PR」的团队惯例，而这里的实际用法是推特性分支、
+  # 有时候才开 PR，结果就是推上去什么都不触发，CI 形同虚设。
+  #
+  # 不再单列 `pull_request`：单人仓库里 PR 的 head 就是这些分支之一，
+  # 检查结果按 commit SHA 关联，PR 页面照样看得到，不必跑两遍。
   push:
-    branches: [main]
-  pull_request:
+    branches: ["**"]
 
 concurrency:
   # 同一分支上新的推送直接取消旧的跑，不排队浪费额度
