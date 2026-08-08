@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.models import ConsolidationRun, Message
+from app.db.models import ConsolidationRun, Message, live_message
 from app.timeutils import local_day_bounds
 
 logger = logging.getLogger(__name__)
@@ -87,9 +87,10 @@ async def pending_days(
 
 async def _has_messages(session: AsyncSession, day: dt.date) -> bool:
     start, end = local_day_bounds(day)
+    # 整条都被撤下的日子不算「有内容」，否则会白跑一次 agent loop。
     found = await session.scalar(
         select(Message.id)
-        .where(Message.created_at >= start, Message.created_at < end)
+        .where(Message.created_at >= start, Message.created_at < end, live_message())
         .limit(1)
     )
     return found is not None

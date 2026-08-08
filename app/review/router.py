@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import DailyDigest, Message, OpenLoop
+from app.db.models import DailyDigest, Message, OpenLoop, live_message
 from app.db.session import get_session
 from app.security import require_api_key
 
@@ -88,7 +88,9 @@ async def list_review_days(
     message_times = list(
         (
             await session.execute(
-                select(Message.created_at).where(Message.role == "user")
+                select(Message.created_at).where(
+                    Message.role == "user", live_message()
+                )
             )
         ).scalars()
     )

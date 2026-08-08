@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.sql.elements import ColumnElement
 
 
 class Base(DeclarativeBase):
@@ -124,6 +125,10 @@ class Message(Base):
 
     ``content`` 存 content block 数组原文（含 thinking / tool_use / tool_result），
     多轮回传时必须原样送回 —— 只抽 text 会破坏 thinking 签名并触发 400。
+
+    编辑重发和重新生成走**软删除**（``deleted_at``），不真的删行：那一轮里模型
+    可能已经写了记忆、提了时间线事项（会推送到手机），消息行删掉之后就再也查不到
+    「那条记忆当初是从哪句话来的」。留着行，事后还能追。
     """
 
     __tablename__ = "messages"
@@ -150,8 +155,23 @@ class Message(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # 非空 = 已被编辑/重新生成撤下。所有「对话历史」的读取都必须过滤掉它，
+    # 唯一的例外是 token 用量统计 —— 那些 token 是真花掉了的。
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
+
+
+def live_message() -> ColumnElement[bool]:
+    """筛掉被编辑/重新生成撤下的消息。
+
+    做成一个具名函数而不是到处写 ``Message.deleted_at.is_(None)``，是为了能 grep：
+    「对话历史」有七八个读取点（聊天、摘要、导出、搜索……），漏掉任何一个都是
+    把撤回的内容又喂回给模型，而且完全静默。加新的读取点时照抄这个调用即可。
+    """
+    return Message.deleted_at.is_(None)
 
 
 class ConversationSummary(Base):
@@ -452,6 +472,8 @@ class Notification(Base):
     )
 
 
+# 读对话历史每次都是「这个会话里没被撤下的消息」，是最热的那条查询。
+Index("ix_messages_conversation_live", Message.conversation_id, Message.deleted_at)
 Index("ix_memory_versions_path_created", MemoryVersion.path, MemoryVersion.created_at)
 Index("ix_memory_reads_path_created", MemoryRead.path, MemoryRead.created_at)
 Index("ix_kb_reads_target_created", KbRead.target, KbRead.created_at)

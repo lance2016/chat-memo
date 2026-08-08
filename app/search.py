@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Memory, Message
+from app.db.models import Conversation, Memory, Message, live_message
 
 SNIPPET_RADIUS = 40
 MIN_QUERY_LENGTH = 2
@@ -68,7 +68,7 @@ async def _search_conversations(
     stmt = (
         select(Message, Conversation.title)
         .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Message.search_text.ilike(pattern, escape="\\"))
+        .where(Message.search_text.ilike(pattern, escape="\\"), live_message())
         .order_by(Message.created_at.desc())
         # 多取一些，聚合后才够 limit 个会话
         .limit(min(limit, 50) * 5)

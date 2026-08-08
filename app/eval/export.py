@@ -20,7 +20,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, Memory, MemoryVersion, Message
+from app.db.models import Conversation, Memory, MemoryVersion, Message, live_message
 from app.eval.dataset import (
     EvalCase,
     EvalConversation,
@@ -102,7 +102,7 @@ async def _conversations_on(
     stmt = (
         select(Conversation)
         .join(Message, Message.conversation_id == Conversation.id)
-        .where(Message.created_at >= start, Message.created_at < end)
+        .where(Message.created_at >= start, Message.created_at < end, live_message())
         .distinct()
         .order_by(Conversation.id)
     )
@@ -118,6 +118,7 @@ async def _conversations_on(
                         Message.conversation_id == conversation.id,
                         Message.created_at >= start,
                         Message.created_at < end,
+                        live_message(),
                     )
                     .order_by(Message.id)
                 )

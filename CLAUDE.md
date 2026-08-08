@@ -129,6 +129,9 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
 - **消息必须整块存、整块回传**：thinking 块带签名，只抽 text 回传下一轮会 400。
   无签名 thinking（DeepSeek 产生的、中断兜底存的）必须经 `strip_unsigned_thinking` 滤掉。
 - **中断的对话要先修复**：孤立的 tool_use 会让之后每条消息 400，`sanitize_history` 负责补齐。
+- **编辑重发是软删除**：读对话历史的查询一律加 `live_message()`（`app/db/models.py`），
+  漏一个就是把用户撤回的话又喂回给模型，静默无感。唯一例外是 `/api/usage` 的 token 统计
+  （那些 token 真花掉了）。**不做 ChatGPT 那种多分支**，理由记在 `docs/roadmap.md`「明确不做」。
 - **SSE 生成器自己管数据库会话**，不能用 `Depends(get_session)` —— 依赖在请求函数返回时就清理了。
 - **同一会话不能并发生成**，已有按会话的锁；去掉会让历史错乱成 `user,user,assistant,assistant`。
 - **`max_tokens` 大时必须流式**，否则撞 SDK 的 HTTP 超时。

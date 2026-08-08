@@ -11,14 +11,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import build_agent_context
 from app.chat.service import ChatService, history_window_stats
 from app.config import get_settings
-from app.db.models import Conversation, ConversationSummary, Message
+from app.db.models import Conversation, ConversationSummary, Message, live_message
 from app.db.session import get_session, get_sessionmaker
 from app.llm.catalog import resolve_model_target
 from app.llm.target import ModelTarget
@@ -148,7 +148,7 @@ async def get_conversation_context(
     rows = list(
         (await session.execute(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(Message.conversation_id == conversation_id, live_message())
             .order_by(Message.id)
         )).scalars()
     )
@@ -292,20 +292,29 @@ async def truncate_messages(
     after: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> TruncateOut:
-    """删掉 id 大于 ``after`` 的所有消息，用于「重新生成」和「编辑重发」。
+    """撤下 id 大于 ``after`` 的所有消息，用于「重新生成」和「编辑重发」。
 
     ``after=0`` 清空整个会话。截断后可能留下没有配对结果的 tool_use，
     但 ``sanitize_history`` 在加载历史时会补齐，不用担心把会话截坏。
+
+    **是软删除，不是 DELETE**。那一轮里模型可能已经写了长期记忆、提了会推送到
+    手机的时间线事项 —— 这些都撤不回来，消息行再删掉就彻底断了溯源的线索。
+    行留着，读历史的地方靠 ``live_message()`` 过滤。已经撤下的重复调用不再计数，
+    所以 ``deleted`` 是「这次撤下了几条」。
     """
     await _require_conversation(session, conversation_id)
     result = await session.execute(
-        sa_delete(Message).where(
-            Message.conversation_id == conversation_id, Message.id > after
+        sa_update(Message)
+        .where(
+            Message.conversation_id == conversation_id,
+            Message.id > after,
+            live_message(),
         )
+        .values(deleted_at=dt.datetime.now(dt.UTC))
     )
     deleted = result.rowcount or 0
     if deleted:
-        logger.info("✁ conv#%s 截断 %d 条消息 (after=%s)", conversation_id, deleted, after)
+        logger.info("✁ conv#%s 撤下 %d 条消息 (after=%s)", conversation_id, deleted, after)
     return TruncateOut(deleted=deleted)
 
 
@@ -378,6 +387,8 @@ async def daily_usage(
         for offset in range(span)
     }
 
+    # 这里**故意不加** `live_message()`：被编辑撤下的那轮 token 是真花掉了的，
+    # 从用量统计里抹掉只会让账单对不上。这是唯一一个该看全量消息的地方。
     stmt = select(Message.created_at, Message.usage).where(
         Message.usage.is_not(None),
         Message.created_at >= start,
@@ -435,7 +446,7 @@ async def list_messages(
 ) -> list[Message]:
     stmt = (
         select(Message)
-        .where(Message.conversation_id == conversation_id)
+        .where(Message.conversation_id == conversation_id, live_message())
         .order_by(Message.id)
     )
     return list((await session.execute(stmt)).scalars())

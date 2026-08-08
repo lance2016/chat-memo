@@ -30,6 +30,7 @@ from app.db.models import (
     MemoryVersion,
     Message,
     OpenLoop,
+    live_message,
 )
 from app.jobs import backfill
 from app.jobs.prompts import (
@@ -288,7 +289,7 @@ class Consolidator:
         stmt = (
             select(Conversation)
             .join(Message, Message.conversation_id == Conversation.id)
-            .where(Message.created_at >= start, Message.created_at < end)
+            .where(Message.created_at >= start, Message.created_at < end, live_message())
             .distinct()
             .order_by(Conversation.id)
         )
@@ -303,7 +304,11 @@ class Consolidator:
             .limit(1)
         )
 
-        stmt = select(Message).where(Message.conversation_id == conversation.id)
+        # 被编辑撤下的不摘要。注意这只挡住「还没被摘要过」的那些 —— 撤下发生在
+        # 整理之后的话，那段内容早就进了上一份摘要和 L2，这里无能为力。
+        stmt = select(Message).where(
+            Message.conversation_id == conversation.id, live_message()
+        )
         if watermark is not None:
             stmt = stmt.where(Message.id > watermark)
         messages = list((await self.session.execute(stmt.order_by(Message.id))).scalars())

@@ -305,6 +305,8 @@ schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现�
 - **「一天」按本地时区切，不是 UTC**。时间戳存 UTC，但「今天的对话」是本地概念；
   UTC+8 下直接按 UTC 切天会漏掉本地 00:00–08:00 的对话。见 `local_day_bounds`。
   **容器默认 UTC 会让这个修复失效**，compose 里必须设 `TZ`。
+- **编辑重发是软删除，读历史必须过滤**。见下面「编辑消息为什么不删行」。新写一个读消息的
+  查询时忘记加 `live_message()`，等于把用户撤回的话又喂回给模型，而且完全静默。
 - **中断的对话要修复再用**。tool_use 没有配对的 tool_result 会让会话之后每条消息都 400，
   `sanitize_history` 在加载历史时补齐。点停止/关标签页/热重载都会触发。
 - **容器里连不上宿主机的 TTS 服务**。容器内的 `127.0.0.1` 是容器自己，要走
@@ -315,3 +317,57 @@ schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现�
   显存峰值。`app/tts/client.py` 里用一把进程内的锁排队。
 - **当前时间不能进 system prompt**（破坏缓存），走 `build_runtime_context` 注入到 user 侧。
   不注入的话模型不知道今天几号，也会把自己的身份瞎猜成 Claude。
+
+## 编辑消息为什么不删行
+
+「编辑重发」和「重新生成」原来是硬删除：`DELETE FROM messages WHERE id > after`。
+2026-08-08 改成软删除（`messages.deleted_at`），起因是发现它在悄悄污染记忆。
+
+### 问题不是「历史断了」，是「已经写出去的撤不回来」
+
+`app/agent.py` 的 `TOOLKITS` 里，`memory` 和 `timeline` 在 `purpose="chat"` 下都启用。
+也就是说被编辑掉的那一轮里，模型可能已经：
+
+- 往 L2 记忆写了一条（`memory_versions` 留了快照，但没人知道该回滚哪一条）
+- 提取了一个时间线事项，**而且它会到点推送到手机**
+
+消息行一删，「那条记忆当初是从哪句话来的」这条线索就断了，事后连查都没法查。
+
+第二条路径是每日整理。`ConversationSummary.up_to_message_id` 是水位线，
+会话在凌晨整理过（watermark=10）之后你编辑 msg 5，新分支从 id 11 起 ——
+下次整理只看 `id > 10`，新分支能正常摘要，但**基于 5–10 写进摘要和 L2 的内容永久留着**。
+整理任务只看得到摘要、看不到原文，它这辈子都发现不了那段已经被撤回。
+软删除挡不住这一条（撤下发生在整理之后就晚了），但挡住了「撤下后还没整理」的那些，
+并且把追查的可能性留了下来。
+
+### 约定：读历史一律过滤，用量统计不过滤
+
+`app/db/models.py` 的 `live_message()` 是那个 `WHERE` 片段。做成具名函数是为了能 grep ——
+「对话历史」有七八个读取点，漏一个就是静默地把撤回内容喂回模型：
+
+| 位置 | 说明 |
+|---|---|
+| `chat/service.py` `load_history` | 最要紧的一个，漏了编辑等于没编辑 |
+| `chat/router.py` `list_messages` / `get_conversation_context` | 界面显示与上下文估算 |
+| `jobs/consolidate.py` `_summarize` / `_conversations_on` | 记忆链路的入口 |
+| `jobs/backfill.py` `_has_messages` | 整条撤下的日子不值得跑一次 agent loop |
+| `eval/export.py` | 导出的样本要和真实整理看到的输入一致 |
+| `search.py` | 搜到点进去看不到，等于坏链接 |
+| `review/router.py` | 有内容可回看的日期 |
+
+**唯一的例外是 `GET /api/usage` 的 token 统计**，那里故意不过滤：被撤下的那轮 token
+是真花掉了的，从用量里抹掉只会让账单对不上。代码里那处有注释写明。
+
+跨模块的约定由 `tests/test_message_soft_delete.py` 整组钉住，刻意不拆进各自的测试文件 ——
+摆在一起才看得出漏了哪个读取点。
+
+### 明确不做：ChatGPT 那种编辑后的多分支
+
+评估过完整方案（`messages.parent_id` 自引用 + `conversations.head_message_id` 激活叶子，
+读历史从 head 沿 parent 回溯），后端约 200 行加一个迁移，前端分支导航 UI 是大头。
+**否决理由**：它解决的是「想对比两个回答」这个体验问题，而真正的伤害（数据不可逆丢失、
+记忆被污染）软删除已经解掉了。单人使用场景下翻旧分支的需求没有证据支撑，
+不值得让「对话历史」从一条链变成一棵树 —— 那会让上面那张表里的每一个读取点都复杂一档。
+
+重新考虑的信号：软删除跑一段时间后，真的出现「想翻回被编辑掉的那一版」的实际需求。
+真要做，数据已经留在库里了，迁移时回填 `parent_id` 即可，不会因为今天没做而付额外代价。

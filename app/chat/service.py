@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import debug
 from app.config import Settings, get_settings
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, live_message
 from app.db.session import get_sessionmaker
 from app.llm.events import (
     AgentEvent,
@@ -312,10 +312,13 @@ class ChatService:
         先按预算裁剪、再补配对：裁剪只动旧的一端（可能留下孤立的 tool_result，
         ``trim_history`` 自己处理），``sanitize_history`` 管的是新的一端
         （中断留下的、没有结果的 tool_use）。两者互不干扰。
+
+        被编辑撤下的消息不参与 —— 这是最要紧的一个 ``live_message()`` 调用点，
+        漏了它编辑就等于没编辑。
         """
         stmt = (
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(Message.conversation_id == conversation_id, live_message())
             .order_by(Message.id)
         )
         rows = (await self.session.execute(stmt)).scalars()
