@@ -3896,3 +3896,159 @@ html[data-theme="dark"] .workspace-sidebar-conversation.selected > a { color: va
 .annot-conversation p { margin: 0 0 5px; font-size: 11.5px; line-height: 1.65; color: var(--text-secondary); }
 .annot-conversation em { font-style: normal; color: var(--text-tertiary); margin-right: 7px; }
 .annot-memory pre { margin: 0; font-size: 10.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Chat reading layout -----------------------------------------------------
+ * Keep every turn, the header, composer and error state on the same reading
+ * axis. The assistant is plain content; only the user's message gets a
+ * surface so the conversation reads as one continuous document.
+ */
+.workspace-route-content > .app-shell {
+  background: var(--surface-canvas);
+}
+
+.chat-conversation-toolbar {
+  height: 56px;
+  min-height: 56px;
+  padding: 0;
+  border-bottom-color: color-mix(in srgb, var(--border) 72%, transparent);
+  background: var(--surface-canvas);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.chat-conversation-toolbar-inner,
+.message-scroll > .turn,
+.message-scroll > .centered-empty,
+.composer,
+.error-banner {
+  width: min(920px, calc(100% - 48px));
+  max-width: 920px;
+}
+
+.chat-conversation-toolbar-inner {
+  margin: 0 auto;
+}
+
+.message-scroll {
+  padding: 28px 0 152px;
+  background: var(--surface-canvas);
+}
+
+.turn {
+  max-width: 920px;
+  margin-bottom: 48px;
+}
+
+.turn:last-child {
+  margin-bottom: 0;
+}
+
+.user-message-group {
+  width: fit-content;
+  max-width: 72%;
+}
+
+.user-bubble {
+  padding: 18px 22px;
+  border: 1px solid color-mix(in srgb, #b9c7d9 52%, transparent);
+  border-radius: 20px;
+  color: #344256;
+  background: #edf2f7;
+  box-shadow: none;
+  line-height: 1.7;
+}
+
+.assistant-turn {
+  width: 100%;
+  padding: 0 0 1px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.assistant-content {
+  color: #465365;
+  font-size: 16px;
+  line-height: 1.78;
+  letter-spacing: 0;
+}
+
+.assistant-content p {
+  margin: 0 0 14px;
+}
+
+.assistant-content h1,
+.assistant-content h2,
+.assistant-content h3 {
+  margin: 24px 0 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.assistant-content h1 { font-size: 1.45em; }
+.assistant-content h2 { font-size: 1.25em; }
+.assistant-content h3 { font-size: 1.08em; }
+
+.assistant-content .inline-code {
+  padding: 2px 6px;
+  border: 1px solid #d7e0eb;
+  border-radius: 5px;
+  color: #334155;
+  background: #e8eef5;
+  font-size: .88em;
+}
+
+.assistant-content .code-wrap {
+  background: #0d1118;
+}
+
+@media (max-width: 720px) {
+  .chat-conversation-toolbar {
+    height: 56px;
+    min-height: 56px;
+    padding: 0;
+  }
+
+  .chat-conversation-toolbar-inner,
+  .message-scroll > .turn,
+  .message-scroll > .centered-empty,
+  .composer,
+  .error-banner {
+    width: calc(100% - 32px);
+  }
+
+  .message-scroll {
+    padding-top: 22px;
+  }
+
+  .user-message-group {
+    max-width: 88%;
+  }
+
+  .assistant-content {
+    font-size: 15px;
+  }
+}
+
+html[data-theme="dark"] .workspace-route-content > .app-shell,
+html[data-theme="dark"] .message-scroll,
+html[data-theme="dark"] .chat-conversation-toolbar {
+  background: var(--surface-canvas);
+}
+
+html[data-theme="dark"] .user-bubble {
+  border-color: color-mix(in srgb, var(--accent) 18%, var(--border));
+  color: #dce5f1;
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-secondary));
+}
+
+html[data-theme="dark"] .assistant-content {
+  color: #d5dce7;
+}
+
+html[data-theme="dark"] .assistant-content .inline-code {
+  border-color: #3a4961;
+  color: #dbe5f4;
+  background: #293449;
+}

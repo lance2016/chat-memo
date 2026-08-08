@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -376,6 +377,38 @@ class TimelineItem(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ConsolidationRun(Base):
+    """每日整理跑过一次的记录，一天一行。
+
+    **它的作用是让「没跑」被看见。** 整理是这个产品的核心循环，而它失败时唯一的
+    痕迹是日志里一行 warning —— 过好几天才会隐约觉得「它怎么不记得了」。
+    有了这张表，补跑逻辑才有判据（查「昨天该整理但没记录」），失败也能在界面上显示。
+
+    备份那边用文件名当记录、不建表；这里不行：整理可能合法地「什么都没做」
+    （那天没有值得沉淀的内容），那种情况下没有任何产物，只能显式记一笔，
+    否则每次 tick 都会重跑同一天。
+    """
+
+    __tablename__ = "consolidation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 整理的是哪一天（本地日期）。一天一行，重跑是覆盖
+    day: Mapped[dt.date] = mapped_column(Date, unique=True, index=True)
+    # ok | skipped | failed
+    status: Mapped[str] = mapped_column(String(16))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    summarized_conversations: Mapped[int] = mapped_column(Integer, default=0)
+    memory_writes: Mapped[int] = mapped_column(Integer, default=0)
+    index_issues: Mapped[int] = mapped_column(Integer, default=0)
+    seconds: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -6,8 +6,8 @@ import logging
 
 from app import backup
 from app.backup import run_backup
-from app.config import get_settings
 from app.db.session import get_sessionmaker
+from app.jobs import backfill
 from app.jobs.consolidate import Consolidator
 from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
@@ -22,55 +22,66 @@ logger = logging.getLogger(__name__)
 # 而每分钟去 stat 一次目录纯属浪费。
 BACKUP_TICK_SECONDS = 600
 
+# 整理的检查间隔。补跑式判定很便宜（一次索引查询），但真跑一次要几十秒到几分钟，
+# 所以查得比通知稀疏。晚十分钟开始整理昨天没有任何代价。
+CONSOLIDATE_TICK_SECONDS = 600
+
 # 提醒的时间精度。一分钟对「提前 15 分钟叫我」够用，也不值得更密 ——
 # 每次 tick 都是一条带索引的查询，但空转一整天也是 1440 次。
 TICK_SECONDS = 60
 
 
 async def run_daily_consolidation() -> None:
-    """每天在 settings.consolidate_hour 整理前一天的记忆。
+    """定期检查「哪天该整理但没整理」，从旧到新补上。
 
-    单人使用，asyncio 循环足够了 —— 不值得为此引入 Celery。代价是进程重启会错过当次，
-    可以用 POST /api/jobs/consolidate?day=... 手动补。
+    **不是定时到点跑**。原来是 `sleep 到 consolidate_hour` 然后整理昨天 ——
+    进程一重启计时器就从头开始，笔记本凌晨多半在睡眠，于是这个开关默认只能关着，
+    整理靠人记得手动触发。一个帮人记事的助手，自己的记忆整理却依赖人记得。
+
+    改成补跑式之后（判据见 `app/jobs/backfill.py`），睡醒就补，默认可以开着。
+
+    **一次 tick 只补一天**：一次完整的 agent loop 要跑几十秒到几分钟，
+    串着补七天会把这个循环卡死很久，也会一口气烧掉一大笔 token。
+    补完一天就返回，下一轮再补下一天 —— 反正没有人在等。
     """
-    settings = get_settings()
     while True:
         try:
-            await asyncio.sleep(_seconds_until(settings.consolidate_hour))
+            await asyncio.sleep(CONSOLIDATE_TICK_SECONDS)
         except asyncio.CancelledError:
             raise
 
-        yesterday = dt.date.today() - dt.timedelta(days=1)
         try:
-            with trace(
-                "job",
-                "daily-consolidation",
-                purpose="consolidate",
-                day=yesterday.isoformat(),
-            ):
-                async with get_sessionmaker()() as session:
-                    settings = await resolve_settings(session)
+            async with get_sessionmaker()() as session:
+                settings = await resolve_settings(session)
+                if not settings.consolidate_auto:
+                    continue
+                days = await backfill.pending_days(session, settings)
+                if not days:
+                    continue
+                day = days[0]
+
+                with trace(
+                    "job", "daily-consolidation",
+                    purpose="consolidate", day=day.isoformat(),
+                ):
                     target = await resolve_model_target(
-                        session,
-                        settings,
+                        session, settings,
                         purpose="consolidation",
                         legacy_model_id=settings.consolidate_model,
                     )
                     result = await Consolidator(
-                        session,
-                        get_provider(settings, target=target),
-                        settings,
-                    ).run(yesterday)
-                logger.info(
-                    "记忆整理完成 date=%s 会话=%d 记忆写入=%d",
-                    result.date,
-                    result.summarized_conversations,
-                    result.memory_writes,
-                )
+                        session, get_provider(settings, target=target), settings
+                    ).run(day)
+            logger.info(
+                "记忆整理完成 date=%s 会话=%d 记忆写入=%d 待补 %d 天",
+                result.date, result.summarized_conversations,
+                result.memory_writes, len(days) - 1,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
-            # 整理失败不能拖垮进程，明天照常再试。
+            # 整理失败不能拖垮进程。失败的那天已经记进 consolidation_runs，
+            # 不会被无限重试 —— 想重跑用 POST /api/jobs/consolidate?day=...
             logger.exception("记忆整理任务失败")
 
 

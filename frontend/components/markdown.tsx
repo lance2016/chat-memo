@@ -12,15 +12,9 @@ function ShikiCode({ code, language }: { code: string; language: string }) {
   const [html, setHtml] = useState("");
   const [copied, setCopied] = useState(false);
   const [wrapped, setWrapped] = useState(false);
-  const [theme, setTheme] = useState("github-light-default");
-
-  useEffect(() => {
-    const update = () => setTheme(document.documentElement.dataset.theme === "dark" ? "github-dark-default" : "github-light-default");
-    update();
-    const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
-    return () => observer.disconnect();
-  }, []);
+  // Fenced blocks intentionally stay dark in both app themes. Inline code is
+  // styled separately as a quiet light blue-gray token.
+  const [theme] = useState("github-dark-default");
 
   useEffect(() => {
     let active = true;

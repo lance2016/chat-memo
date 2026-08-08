@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backup import run_backup
 from app.db.session import get_session
+from app.jobs import backfill
 from app.jobs.consolidate import Consolidator
 from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
@@ -34,6 +35,59 @@ class ConsolidateOut(BaseModel):
     digest_failed: bool
     index_issues: int
     index_report: str
+
+
+class ConsolidationRunOut(BaseModel):
+    day: str
+    status: str
+    detail: str
+    summarized_conversations: int
+    memory_writes: int
+    index_issues: int
+    seconds: float
+
+
+class ConsolidationHealthOut(BaseModel):
+    """整理这条核心循环健不健康。
+
+    **「静默不运转」比「报错」危险得多** —— 整理不跑的时候没有任何症状，
+    要过好几天才隐约觉得「它怎么不记得了」。这个接口就是那双眼睛。
+    """
+
+    auto: bool
+    # 该整理但还没整理的日子。非空说明正在补，或者补不动了
+    pending: list[str]
+    # 最近一次整理是哪天、什么结果
+    last_day: str
+    last_status: str
+    runs: list[ConsolidationRunOut]
+
+
+@router.get("/consolidate/health", response_model=ConsolidationHealthOut)
+async def consolidation_health(
+    session: AsyncSession = Depends(get_session),
+) -> ConsolidationHealthOut:
+    settings = await resolve_settings(session)
+    runs = await backfill.recent_runs(session)
+    pending = await backfill.pending_days(session, settings)
+    return ConsolidationHealthOut(
+        auto=settings.consolidate_auto,
+        pending=[day.isoformat() for day in pending],
+        last_day=runs[0].day.isoformat() if runs else "",
+        last_status=runs[0].status if runs else "",
+        runs=[
+            ConsolidationRunOut(
+                day=run.day.isoformat(),
+                status=run.status,
+                detail=run.detail,
+                summarized_conversations=run.summarized_conversations,
+                memory_writes=run.memory_writes,
+                index_issues=run.index_issues,
+                seconds=run.seconds,
+            )
+            for run in runs
+        ],
+    )
 
 
 @router.post("/consolidate", response_model=ConsolidateOut)

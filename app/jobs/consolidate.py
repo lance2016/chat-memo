@@ -31,6 +31,7 @@ from app.db.models import (
     Message,
     OpenLoop,
 )
+from app.jobs import backfill
 from app.jobs.prompts import (
     CONSOLIDATE_ISSUES_TEMPLATE,
     CONSOLIDATE_PROMPT,
@@ -83,6 +84,33 @@ class ConsolidationResult:
     index_report: str = ""
 
 
+def _run_status(result: ConsolidationResult) -> str:
+    """这次算成功、跳过、还是失败。
+
+    ⚠️ **agent loop 出错时不抛异常** —— 它把消息作为 `Error` 事件塞进 `detail`，
+    整理函数照常返回。只看异常的话这种情况会被记成 `ok`，于是补跑逻辑再也不碰
+    这一天，那天的记忆就此永久缺失，而且完全静默。这正是这张表要防的东西。
+    """
+    # 顺序要紧：摘要失败要先于 skipped 判断。全部摘要都失败时 `skipped` 也是 True，
+    # 但那不是「那天没有值得沉淀的内容」，而是**根本没读到输入** ——
+    # 记成 skipped 的话这天就再也不会被补跑了。
+    if result.failed_summaries or (result.detail and not result.skipped):
+        return "failed"
+    if result.skipped:
+        # 「那天没有值得沉淀的内容」是正常结果，不是失败
+        return "skipped"
+    return "ok"
+
+
+def _run_detail(result: ConsolidationResult) -> str:
+    parts = [result.detail] if result.detail else []
+    if result.failed_summaries:
+        parts.append(f"{result.failed_summaries} 个会话摘要失败，这天的输入不完整")
+    if result.digest_failed:
+        parts.append("每日回顾生成失败（记忆整理本身不受影响）")
+    return "；".join(parts)
+
+
 class Consolidator:
     def __init__(
         self,
@@ -103,9 +131,36 @@ class Consolidator:
     async def run(self, day: dt.date | None = None) -> ConsolidationResult:
         """Run the job with all model calls tagged as ``consolidate``."""
 
+        day = day or dt.date.today()
+        started = time.monotonic()
         with bind(purpose="consolidate"):
-            result = await self._run(day)
+            try:
+                result = await self._run(day)
+            except Exception as exc:
+                # 失败也要留痕。**不记的话补跑逻辑会每十分钟重试同一个坏日子**，
+                # 而且失败本身没有任何人看得见 —— 整理是核心循环，
+                # 「静默不运转」比「报错」危险得多。
+                await backfill.record(
+                    self.session,
+                    day,
+                    status="failed",
+                    detail=f"{type(exc).__name__}: {exc}",
+                    seconds=time.monotonic() - started,
+                )
+                await self.session.commit()
+                raise
             await self._self_check(result)
+            await backfill.record(
+                self.session,
+                day,
+                status=_run_status(result),
+                detail=_run_detail(result),
+                summarized_conversations=result.summarized_conversations,
+                memory_writes=result.memory_writes,
+                index_issues=result.index_issues,
+                seconds=time.monotonic() - started,
+            )
+            await self.session.commit()
             return result
 
     async def _self_check(self, result: ConsolidationResult) -> None:

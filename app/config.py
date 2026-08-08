@@ -92,7 +92,12 @@ class Settings(BaseSettings):
     # 通常是**别的东西先坏**。
     backup_keep: int = 14
 
-    consolidate_auto: bool = False
+    # 默认开。原来默认关，原因写在注释里：进程一重启计时器就从头开始，笔记本凌晨
+    # 多半在睡眠，定时器很容易整天不触发 —— 于是「一个帮人记事的助手，自己的记忆
+    # 整理却依赖人记得去触发」。改成补跑式之后（查「哪天该整理但没整理」，
+    # 见 app/jobs/backfill.py），重启和睡眠都不再让它漏掉，才有资格默认开着。
+    consolidate_auto: bool = True
+    # 昨天要过了这个钟点才开始整理。补跑式下它不再是「闹钟」，只是「别太早动手」。
     consolidate_hour: int = 4
 
     # agent loop 单次请求内允许的最大工具轮次，防止失控循环。

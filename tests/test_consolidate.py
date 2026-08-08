@@ -215,3 +215,61 @@ async def test_clean_index_adds_nothing_to_the_prompt(session: AsyncSession) -> 
 
     prompt = provider.client.messages.calls[1]["messages"][0]["content"][0]["text"]
     assert "索引问题" not in prompt and "缺条目" not in prompt
+
+
+async def test_a_run_is_recorded_so_it_is_not_redone(session: AsyncSession) -> None:
+    """整理跑完要在 consolidation_runs 留一笔。
+
+    补跑逻辑的判据就是这张表；不记的话每十分钟会重跑同一天。
+    手动触发也走同一条路径，所以手动补过的日子不会被自动再跑一遍。
+    """
+    from app.jobs import backfill
+
+    await seed_conversation(session, "我在做一个聊天项目", "记住了")
+    provider = provider_with([text_turn("用户在做一个聊天项目"), text_turn("已整理")])
+
+    result = await Consolidator(session, provider).run(TODAY)
+
+    runs = await backfill.recent_runs(session)
+    assert len(runs) == 1
+    assert runs[0].day == TODAY
+    assert runs[0].status == ("skipped" if result.skipped else "ok")
+    assert runs[0].seconds >= 0
+
+
+async def test_an_errored_agent_loop_is_recorded_as_failed(
+    session: AsyncSession,
+) -> None:
+    """**agent loop 出错时不抛异常** —— 它把消息塞进 detail 然后正常返回。
+
+    只看异常的话这种情况会被记成 ok，补跑逻辑再也不碰这一天，那天的记忆就此
+    永久缺失，而且完全静默。这正是这张表要防的东西。
+    """
+    from app.jobs import backfill
+
+    await seed_conversation(session, "会失败的一天", "好")
+    provider = provider_with([text_turn("摘要")])  # 整理那轮没有预设，agent loop 报错
+
+    result = await Consolidator(session, provider).run(TODAY)
+
+    assert not result.skipped and result.detail  # 没抛，但确实出错了
+    runs = await backfill.recent_runs(session)
+    assert len(runs) == 1 and runs[0].status == "failed"
+    assert runs[0].detail
+
+
+async def test_partial_input_loss_is_not_recorded_as_success(
+    session: AsyncSession,
+) -> None:
+    """摘要失败 = 模型压根没看到那段对话。
+
+    这天记出来的东西是残缺的，不该被当成「整理过了」而不再重跑。
+    """
+    from app.jobs import backfill
+
+    await seed_conversation(session, "一些内容", "回应")
+    await Consolidator(session, provider_with([])).run(TODAY)  # 摘要直接抛
+
+    runs = await backfill.recent_runs(session)
+    assert runs[0].status == "failed"
+    assert "输入不完整" in runs[0].detail
