@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
 from app.kb.tool import KbToolExecutor
 from app.llm.composite import CompositeExecutor
+from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
 from app.llm.provider import ToolExecutor
 from app.llm.title import get_title_client
@@ -49,6 +50,8 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 class ChatRequest(BaseModel):
     conversation_id: int | None = None
     content: str = Field(min_length=1)
+    # 选择器传入的模型。保存到会话后，后续消息默认继续使用它。
+    model_profile_id: int | None = None
 
 
 class ConversationOut(BaseModel):
@@ -58,12 +61,16 @@ class ConversationOut(BaseModel):
     updated_at: Any
     # null = 跟随全局默认（见 GET /api/settings 的 thinking_default）
     thinking: bool | None = None
+    # null = 第一轮尚未固定模型，或历史数据尚未迁移
+    model_profile_id: int | None = None
 
 
 class ConversationUpdate(BaseModel):
     title: str | None = None
     # 传 null 表示恢复成「跟随全局默认」
     thinking: bool | None = None
+    # null 表示恢复跟随全局默认；聊天请求会在第一轮实际使用后固定档案。
+    model_profile_id: int | None = None
 
 
 @router.get("/settings")
@@ -76,13 +83,17 @@ async def get_runtime_settings(
     """
     settings = await resolve_settings(session)
     overrides = await load_overrides(session)
-    is_anthropic = settings.provider == "anthropic"
+    try:
+        target = await resolve_model_target(session, settings)
+    except ValueError:
+        target = None
+    is_anthropic = target.protocol == "anthropic" if target is not None else settings.provider == "anthropic"
     return {
         **describe(settings, overrides),
         # 兼容前端已有的运行时卡片
-        "provider": settings.provider,
-        "model": settings.model if is_anthropic else settings.deepseek_model,
-        "thinking_default": True if is_anthropic else settings.deepseek_thinking,
+        "provider": target.service_slug if target is not None else settings.provider,
+        "model": target.model_id if target is not None else settings.model if is_anthropic else settings.deepseek_model,
+        "thinking_default": target.capabilities.get("thinking", False) if target is not None else True if is_anthropic else settings.deepseek_thinking,
         "thinking_toggle": True,
         # 知识库（Obsidian vault）是否挂载。只读状态位 —— vault_path 是 .env 配置，设置页改不了
         "kb_enabled": bool(settings.vault_path),
@@ -99,6 +110,13 @@ async def update_runtime_settings(
     改完立刻生效，不需要重启 —— 每个请求都会重新解析一次配置。
     """
     base = get_settings()
+    # 兼容旧设置页：用户直接改 provider/model 时，清掉新目录的默认引用，
+    # 避免界面看起来已经切换，实际聊天仍沿用旧的 profile。
+    payload = dict(payload)
+    if any(key in payload for key in ("provider", "model", "deepseek_model")):
+        payload.setdefault("chat_model_profile_id", None)
+    if "consolidate_model" in payload:
+        payload.setdefault("consolidate_model_profile_id", None)
     try:
         await apply(session, payload, await resolve_settings(session, base))
     except SettingError as exc:
@@ -118,6 +136,7 @@ class MessageOut(BaseModel):
     # 只有 assistant 消息有；字段名随 provider 不同（DeepSeek 是 prompt_tokens，
     # Anthropic 是 input_tokens），前端按需读取。
     usage: dict[str, Any] | None = None
+    model_profile_id: int | None = None
     created_at: Any
 
 
@@ -242,7 +261,16 @@ async def update_conversation(
     所以用 ``exclude_unset`` 区分「没传」和「传了 null」。
     """
     conversation = await _require_conversation(session, conversation_id)
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("model_profile_id") is not None:
+        settings = await resolve_settings(session)
+        try:
+            await resolve_model_target(
+                session, settings, profile_id=changes["model_profile_id"]
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    for field, value in changes.items():
         setattr(conversation, field, value)
     return conversation
 
@@ -497,8 +525,19 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     yield _sse({"type": "error", "message": "会话不存在"})
                     return
 
-                # 每轮重新解析：设置页改完不用重启就能生效
+                # 每轮重新解析：设置页改完不用重启就能生效。会话选择优先于全局默认。
                 settings = await resolve_settings(session)
+                target = await resolve_model_target(
+                    session,
+                    settings,
+                    profile_id=payload.model_profile_id or conversation.model_profile_id,
+                )
+                if not target.capabilities.get("tool_calling", False):
+                    yield _sse({"type": "error", "message": "当前模型不支持工具调用，无法运行记忆和时间线功能"})
+                    return
+                effective_settings = target.apply(settings)
+                if target.profile_id is not None:
+                    conversation.model_profile_id = target.profile_id
                 store = MemoryStore(
                     session, actor="chat", conversation_id=conversation.id
                 )
@@ -509,7 +548,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                             session,
                             actor="chat",
                             conversation_id=conversation.id,
-                            settings=settings,
+                            settings=effective_settings,
                         )
                     ),
                 ]
@@ -519,13 +558,14 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 executor: ToolExecutor = CompositeExecutor(*executors)
                 service = ChatService(
                     session=session,
-                    provider=get_provider(settings),
+                    provider=get_provider(effective_settings, target=target),
                     executor=executor,
-                    settings=settings,
+                    settings=effective_settings,
+                    model_profile_id=target.profile_id,
                     # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
                     title_client=get_title_client(settings),
                 )
-                system = await build_system_prompt(store, settings)
+                system = await build_system_prompt(store, effective_settings)
 
                 # The browser gets the ID only as an SSE metadata event. It
                 # never needs Phoenix's API or collector endpoint.

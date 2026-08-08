@@ -12,11 +12,16 @@ import type {
   DebugPrompt,
   DebugRequestDetail,
   DebugRequestList,
+  EvalDataset,
+  EvalHistoryEntry,
+  EvalRunState,
   HealthStatus,
   Memory,
   MemoryNode,
+  MemoryIndexAudit,
   MemoryStats,
   MemoryVersion,
+  ModelCatalog,
   NotifyStatus,
   NotifyTestResult,
   OpenLoop,
@@ -131,6 +136,56 @@ export function getHealth() {
 
 export function getRuntimeSettings() {
   return request<RuntimeSettings>("/api/settings");
+}
+
+export function getModelCatalog(purpose: "chat" | "consolidation" = "chat") {
+  return request<ModelCatalog>(`/api/models?purpose=${purpose}`);
+}
+
+export function createModelService(input: {
+  name: string;
+  slug: string;
+  protocol: "anthropic" | "openai_compatible";
+  base_url?: string;
+  credential_ref?: string;
+}) {
+  return request<ModelCatalog>("/api/models/services", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateModelService(id: number, changes: Record<string, unknown>) {
+  return request<ModelCatalog>(`/api/models/services/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export function createModelProfile(input: {
+  service_id: number;
+  model_id: string;
+  display_name?: string;
+  capabilities?: Record<string, boolean>;
+}) {
+  return request<ModelCatalog>("/api/models/profiles", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateModelProfile(id: number, changes: Record<string, unknown>) {
+  return request<ModelCatalog>(`/api/models/profiles/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export function setDefaultModel(purpose: "chat" | "consolidation", profileId: number | null) {
+  return request<ModelCatalog>("/api/models/default", {
+    method: "POST",
+    body: JSON.stringify({ purpose, profile_id: profileId }),
+  });
 }
 
 export function getToolCatalog() {
@@ -328,6 +383,37 @@ export function getMemoryStats(days = 30, top = 10) {
   return request<MemoryStats>(`/api/memories/stats?days=${days}&top=${top}`);
 }
 
+export function getEvalDataset() {
+  return request<EvalDataset>("/api/eval/dataset");
+}
+
+export function getEvalStatus() {
+  return request<EvalRunState | null>("/api/eval/status");
+}
+
+export function startEvalRun(options: { judge?: boolean; only?: string } = {}) {
+  return request<EvalRunState>("/api/eval/run", {
+    method: "POST",
+    body: JSON.stringify({ judge: options.judge ?? true, only: options.only ?? "" }),
+  });
+}
+
+export function acknowledgeEvalRun() {
+  return request<EvalRunState | null>("/api/eval/acknowledge", { method: "POST" });
+}
+
+export function cancelEvalRun() {
+  return request<EvalRunState | null>("/api/eval/cancel", { method: "POST" });
+}
+
+export function listEvalRuns(limit = 20) {
+  return request<EvalHistoryEntry[]>(`/api/eval/runs?limit=${limit}`);
+}
+
+export function getMemoryAudit() {
+  return request<MemoryIndexAudit>("/api/memories/audit");
+}
+
 function memoryRelativePath(path: string) {
   return path.replace(/^\/memories\/?/, "").split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
@@ -426,6 +512,7 @@ export function parseSseEventLine(line: string, onEvent: (event: ChatEvent) => v
 export async function streamChat(
   conversationId: number | null,
   content: string,
+  modelProfileId: number | null,
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
 ) {
@@ -438,7 +525,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ conversation_id: conversationId, content }),
+      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId }),
       signal,
     });
   } catch (cause) {

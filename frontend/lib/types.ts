@@ -5,6 +5,50 @@ export interface Conversation {
   updated_at: string;
   /** null 表示跟随运行时默认值。 */
   thinking: boolean | null;
+  /** null 表示尚未固定，第一轮会固定当时的默认模型。 */
+  model_profile_id: number | null;
+}
+
+export interface ModelCapabilities {
+  streaming: boolean;
+  tool_calling: boolean;
+  thinking: boolean;
+  vision: boolean;
+  json_mode: boolean;
+  [key: string]: boolean;
+}
+
+export interface ModelServiceSummary {
+  id: number;
+  slug: string;
+  name: string;
+  protocol: "anthropic" | "openai_compatible";
+  base_url: string;
+  credential_configured: boolean;
+  enabled: boolean;
+}
+
+export interface ModelProfileSummary {
+  id: number;
+  slug: string;
+  service_id: number;
+  service_slug: string;
+  service_name: string;
+  protocol: "anthropic" | "openai_compatible";
+  model_id: string;
+  display_name: string;
+  enabled: boolean;
+  available: boolean;
+  reason: string;
+  capabilities: ModelCapabilities;
+  is_default: boolean;
+}
+
+export interface ModelCatalog {
+  purpose: "chat" | "consolidation";
+  default_profile_id: number | null;
+  services: ModelServiceSummary[];
+  profiles: ModelProfileSummary[];
 }
 
 export interface RuntimeSettings {
@@ -277,6 +321,23 @@ export interface MemoryStats {
   by_actor: { actor: string; reads: number; writes: number }[];
 }
 
+/** 索引与实际记忆文件的一致性。索引漏了某个文件，那条记忆模型就再也读不到了。 */
+export interface MemoryIndexAudit {
+  ok: boolean;
+  issue_count: number;
+  summary: string;
+  total_files: number;
+  index_missing: boolean;
+  /** 有内容但索引里没有 —— 模型看不见它们 */
+  missing: string[];
+  /** 索引指向的文件不存在 */
+  orphaned: string[];
+  /** [路径, 实际字数] */
+  overlong: [string, number][];
+  /** [行号, 原文] */
+  malformed: [number, string][];
+}
+
 export interface ConsolidateResult {
   date: string;
   summarized_conversations: number;
@@ -445,4 +506,84 @@ export interface ConversationContext {
   trimmed_messages: number;
   prompt_tokens: number;
   cached_tokens: number;
+}
+
+/** 一条评测样本的概览。完整内容在 evals/cases/*.json 里，界面只显示标注状态。 */
+export interface EvalCaseSummary {
+  id: string;
+  date: string;
+  note: string;
+  conversations: number;
+  memory_files: number;
+  facts: number;
+  corrections: number;
+  forbidden: number;
+  no_op: boolean;
+  /** 标注自查的结果。非空时这条样本不能参与评测 */
+  problems: string[];
+}
+
+export interface EvalDataset {
+  directory: string;
+  total: number;
+  no_op_cases: number;
+  valid: boolean;
+  cases: EvalCaseSummary[];
+}
+
+export interface EvalSummary {
+  total: number;
+  usable: number;
+  crashed: number;
+  judge_failed: number;
+  /** null = 这批样本里没有可判定的项，和 0 不是一回事 */
+  recall: number | null;
+  correction_rate: number | null;
+  errors_total: number;
+  no_op_respected: number | null;
+  index_issues_total: number;
+  index_clean_rate: number | null;
+  writes_total: number;
+  tool_calls_total: number;
+  seconds_total: number;
+}
+
+export interface EvalCaseScore {
+  case_id: string;
+  recall: number | null;
+  correction_rate: number | null;
+  error_count: number;
+  no_op_respected: boolean | null;
+  index_issues: number;
+  memory_writes: number;
+  tool_calls: number;
+  seconds: number;
+  crashed: boolean;
+  judge_failed: boolean;
+  detail: string;
+  usable: boolean;
+}
+
+export interface EvalRunState {
+  run_id: string;
+  /** interrupted = 进程重启把这轮带走了，结果没保存 */
+  status: "running" | "done" | "failed" | "interrupted";
+  total: number;
+  completed: number;
+  current_case: string;
+  started_at: string;
+  finished_at: string;
+  detail: string;
+  saved_path: string;
+  meta: Record<string, string>;
+  summary: EvalSummary | null;
+  scores: EvalCaseScore[];
+}
+
+export interface EvalHistoryEntry {
+  name: string;
+  created_at: string;
+  model: string;
+  judged: boolean;
+  summary: EvalSummary | null;
 }

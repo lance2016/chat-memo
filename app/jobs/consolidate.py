@@ -24,11 +24,13 @@ from app.db.models import (
     Conversation,
     ConversationSummary,
     DailyDigest,
+    Memory,
     MemoryVersion,
     Message,
     OpenLoop,
 )
 from app.jobs.prompts import (
+    CONSOLIDATE_ISSUES_TEMPLATE,
     CONSOLIDATE_PROMPT,
     DIGEST_PROMPT,
     DIGEST_SYSTEM,
@@ -36,6 +38,7 @@ from app.jobs.prompts import (
 )
 from app.llm.events import Error
 from app.llm.provider import LLMProvider
+from app.memory.audit import IndexAudit, audit_index
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
@@ -75,6 +78,10 @@ class ConsolidationResult:
     new_loops: int = 0
     closed_loops: int = 0
     digest_failed: bool = False
+    # 整理跑完后的索引一致性自检。issues=0 表示索引和实际记忆文件完全对得上；
+    # 非 0 时 report 是给人看的一行说明，具体条目下次整理会带进 prompt 让模型修。
+    index_issues: int = 0
+    index_report: str = ""
 
 
 class Consolidator:
@@ -86,7 +93,29 @@ class Consolidator:
         """Run the job with all model calls tagged as ``consolidate``."""
 
         with bind(purpose="consolidate"):
-            return await self._run(day)
+            result = await self._run(day)
+            await self._self_check(result)
+            return result
+
+    async def _self_check(self, result: ConsolidationResult) -> None:
+        """整理完机械校验一遍索引。
+
+        放在 `run` 而不是 `_apply` 里，因为「这天没东西可整理」的路径也要查 ——
+        索引坏掉和当天有没有对话无关，而连着几天没内容恰恰是最不会有人去看的时候。
+        校验本身不修任何东西，问题留给下一次整理的 prompt（`_index_audit`）。
+        """
+        audit = await self._index_audit()
+        result.index_issues = audit.issue_count
+        result.index_report = audit.summary()
+        if audit.ok:
+            logger.info("%s", audit.summary())
+        else:
+            # warning 而不是 error：记忆本身没坏，是索引和它对不上，下次整理会修。
+            logger.warning("%s（下次整理会带进 prompt）", audit.summary())
+
+    async def _index_audit(self) -> IndexAudit:
+        """当前记忆快照的索引校验。纯查询，不写任何东西。"""
+        return audit_index(list((await self.session.execute(select(Memory))).scalars()))
 
     async def _run(self, day: dt.date | None = None) -> ConsolidationResult:
         day = day or dt.date.today()
@@ -250,8 +279,14 @@ class Consolidator:
         executor = MemoryToolExecutor(store)
         # 整理的输入是对话摘要，用不上知识库 —— 不注册 kb 工具，提示词里也别提它
         system = await build_system_prompt(store, include_kb=False, include_timeline=False)
+        # 上次留下的索引问题在这里进 prompt。模型只看得到索引本身，看不到「实际有哪些
+        # 记忆文件」—— `missing` 这类问题它凭自己永远发现不了，必须由代码算出来告诉它。
+        issues = (await self._index_audit()).as_prompt()
         prompt = CONSOLIDATE_PROMPT.format(
-            date=day.isoformat(), index=INDEX_PATH, summaries="\n\n".join(summaries)
+            date=day.isoformat(),
+            index=INDEX_PATH,
+            issues=CONSOLIDATE_ISSUES_TEMPLATE.format(issues=issues) if issues else "",
+            summaries="\n\n".join(summaries),
         )
 
         # 用版本表的水位线数「真正写了几次」，比数工具调用准 —— view 不算改动。

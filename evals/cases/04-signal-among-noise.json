@@ -1,0 +1,121 @@
+{
+  "id": "04-signal-among-noise",
+  "date": "2026-04-02",
+  "memory_before": {
+    "/memories/MEMORY.md": "# 记忆索引\n\n- [基本情况](profile/basics.md) — 居住、工作与家庭\n- [工具与环境偏好](profile/preferences.md) — 常用工具与开发环境\n- [人物](profile/people.md) — 家人、同事与朋友\n- [聊天助手项目](projects/chat.md) — 项目目标、技术选型与进展\n",
+    "/memories/profile/basics.md": "# 基本情况\n\n- 在深圳南山上班，写字楼办公\n- 每周三固定在家远程\n- 养了一只叫豆豆的猫\n",
+    "/memories/profile/preferences.md": "# 工具与环境偏好\n\n- Python 依赖用 uv 管理，不用 pip\n- 终端用 Ghostty，shell 是 zsh\n",
+    "/memories/profile/people.md": "# 人物\n\n- 阿宁：女朋友，在做设计\n",
+    "/memories/projects/chat.md": "# 聊天助手项目\n\n- 自用的个人 AI 助手，FastAPI + Postgres\n- 长期记忆按渐进式披露组织，索引常驻上下文\n"
+  },
+  "conversations": [
+    {
+      "title": "流式响应老是断",
+      "messages": [
+        {
+          "role": "user",
+          "text": "SSE 流到一半就断，前端 EventSource 收到 error 但没有任何报错信息，后端日志也是干净的"
+        },
+        {
+          "role": "assistant",
+          "text": "中间有没有反向代理？nginx 默认会缓冲响应，长连接容易被它掐掉。"
+        },
+        {
+          "role": "user",
+          "text": "有 nginx。proxy_buffering 我没关"
+        },
+        {
+          "role": "assistant",
+          "text": "加上 `proxy_buffering off;` 和 `proxy_read_timeout 3600s;` 试试。"
+        },
+        {
+          "role": "user",
+          "text": "关了缓冲就好了，另外我还把 X-Accel-Buffering: no 加到响应头了"
+        },
+        {
+          "role": "assistant",
+          "text": "那两处都堵上了，稳。"
+        },
+        {
+          "role": "user",
+          "text": "顺便说一句，这个项目我准备下个月开源，License 用 MIT。主要是想让别人拿去改自己的助手，不是想做产品"
+        },
+        {
+          "role": "assistant",
+          "text": "那 README 要把「自用」这个定位写清楚，省得有人当成通用框架来提 issue。"
+        },
+        {
+          "role": "user",
+          "text": "对，我就是这个意思。这半年我业余时间基本都投在这个项目上了"
+        }
+      ]
+    },
+    {
+      "title": "给阿宁挑显示器",
+      "messages": [
+        {
+          "role": "user",
+          "text": "帮阿宁挑个显示器，她做设计的，预算五千以内"
+        },
+        {
+          "role": "assistant",
+          "text": "色域和出厂校色是关键。她主要做印刷品还是屏幕内容？"
+        },
+        {
+          "role": "user",
+          "text": "屏幕为主，偶尔出印刷稿。她下个月从现在那家公司离职，打算自己接单做自由职业，所以要在家里搭一套"
+        },
+        {
+          "role": "assistant",
+          "text": "那 27 寸 4K、覆盖 99% sRGB 的档位就够，五千内选择挺多。"
+        },
+        {
+          "role": "user",
+          "text": "行，我看看。她说要白色的，别的都无所谓"
+        }
+      ]
+    },
+    {
+      "title": "SQL 慢查询",
+      "messages": [
+        {
+          "role": "user",
+          "text": "这条 SQL 跑了 8 秒，explain 里是 seq scan，表两百万行"
+        },
+        {
+          "role": "assistant",
+          "text": "贴一下 where 条件。八成是条件列上没索引，或者用了函数把索引废掉了。"
+        },
+        {
+          "role": "user",
+          "text": "where date(created_at) = '2026-04-01'"
+        },
+        {
+          "role": "assistant",
+          "text": "date() 包住列就走不了索引了。改成范围条件：created_at >= ... and < ...。"
+        },
+        {
+          "role": "user",
+          "text": "改完 40 毫秒，离谱"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "facts": [
+      "chat 项目计划下个月以 MIT 协议开源",
+      "chat 项目定位是自用助手供他人参考改造，不做通用框架或产品",
+      "用户近半年的业余时间主要投入在 chat 项目上",
+      "阿宁下个月从现公司离职，转做自由职业设计师",
+      "阿宁将在家中搭建工作环境"
+    ],
+    "corrections": [],
+    "forbidden": [
+      "SSE 断流的排查过程，以及 proxy_buffering off / X-Accel-Buffering 这类配置细节",
+      "date(created_at) 导致 seq scan 的 SQL 优化结论",
+      "给阿宁挑显示器的具体参数（27 寸 4K、99% sRGB、五千预算、要白色）"
+    ],
+    "no_op": false
+  },
+  "note": "最像真实一天的样本：三个会话里技术细节的字数远超个人事实，值得沉淀的东西全是顺口带出来的半句话（「顺便说一句，这个项目我准备下个月开源」）。\n\n测的是信噪比，两个方向的失败都要抓：漏记（被技术内容淹没，五条事实一条没捞到）和滥记（把 nginx 配置、SQL 优化写进长期记忆）。所以 forbidden 写得很具体，逐条对着记忆全文查就能判。\n\n显示器参数放进 forbidden 是刻意的边界用例：它关于一个真实的人（阿宁），看起来像个人事实，但「五千预算的白色 4K 显示器」是一次性购物需求，下个月就过期了；同一段对话里「她要离职做自由职业」才是稳定事实。分不清这两者的模型会把记忆写成购物清单。"
+}

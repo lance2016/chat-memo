@@ -38,3 +38,6 @@ backups/
 .idea/
 .vscode/
 *.swp
+
+# 评测产出：每次跑都会新增，不进版本库
+eval-runs/

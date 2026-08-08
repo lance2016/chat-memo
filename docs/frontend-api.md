@@ -6,6 +6,29 @@
 - 技术栈建议：Next.js 15 (App Router) + TypeScript + Tailwind + shadcn/ui
 - 前端**不直接调任何模型 API**，一律走后端
 
+## 模型目录与聊天选择
+
+模型服务和具体模型已经分开管理。服务只保存协议、地址和凭据引用，API Key 仍放在环境变量；模型档案保存具体 `model_id`、显示名称和能力声明。
+
+```text
+GET  /api/models?purpose=chat
+POST /api/models/services
+POST /api/models/profiles
+POST /api/models/default
+```
+
+聊天请求可以携带当前选择的模型档案；首次使用后会固定到会话：
+
+```json
+{
+  "conversation_id": 12,
+  "content": "你好",
+  "model_profile_id": 3
+}
+```
+
+聊天模型至少需要 `streaming=true` 和 `tool_calling=true`。前端应只展示 `available=true` 的档案；不可用原因由 `reason` 返回。
+
 ## 更新日志
 
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
@@ -835,6 +858,70 @@ GET /api/search?q=依赖&limit=20
 
 顶部一个搜索框（`Cmd+K` 唤起最好），下拉分两组显示「对话」和「记忆」。
 输入防抖 300ms，少于 2 个字符不发请求。
+
+## 评测
+
+记忆整理的质量评测。**起任务 + 轮询**，不是同步请求 —— 跑一轮几分钟。
+
+| 接口 | 作用 | 前端要点 |
+|---|---|---|
+| `GET /api/eval/dataset` | 数据集现状 | `problems` 非空的样本要显示出来；`valid=false` 时禁用开跑按钮 |
+| `POST /api/eval/run` | 起一轮，202 返回受理单 | 已有一轮在跑返回 **409**，提示「已经在跑了」而不是报错 |
+| `GET /api/eval/status` | 进度和结果，没跑过返回 `null` | 只在 `status="running"` 时轮询（2s），跑完就停 |
+| `POST /api/eval/cancel` | 停掉当前这轮 | |
+| `POST /api/eval/acknowledge` | 确认看过「被打断」提示 | |
+| `GET /api/eval/runs` | 历史结果，新的在前 | |
+| `GET /api/eval/runs/{name}` | 某轮完整结果（含裁判逐条证据） | |
+| `POST /api/eval/export?day=YYYY-MM-DD` | 导出真实的一天成待标注样本 | 返回 `snapshot_empty=true` 时要警告，那种样本不补齐不能用 |
+
+`status` 四态，**`interrupted` 不能当成「没跑过」**：
+
+| 值 | 含义 |
+|---|---|
+| `running` | 跑着，`completed/total` + `current_case` 做进度 |
+| `done` | 跑完，`summary` 和 `scores` 有值 |
+| `failed` | 执行出错，看 `detail` |
+| `interrupted` | 后端进程重启把这轮带走了，结果没保存 —— 必须显式告诉用户，否则几分钟和一堆 token 无声消失 |
+
+⚠️ **指标里的 `null` 不是 0**。`recall: null` 表示「这批样本没有可判定的项」
+（比如全是 `no_op` 样本），渲染成 `0%` 会看起来像质量崩了，而人会拿着这个假信号去改提示词。
+一律渲染成 `—`。
+
+已实现于记忆页的「质量评测」视图（`frontend/components/eval-panel.tsx`）。
+
+## 索引一致性校验
+
+```http
+GET /api/memories/audit
+```
+
+索引和实际记忆文件对不对得上。**这是唯一能发现「记忆静默死亡」的接口**：
+`MEMORY.md` 漏掉一行，那个文件还在数据库里、左侧目录还点得开，
+但它不在索引里，模型就永远不知道有这个文件。
+
+```json
+{
+  "ok": false, "issue_count": 3, "summary": "索引校验：1 个文件没进索引、2 条描述超长",
+  "total_files": 18, "index_missing": false,
+  "missing":   ["/memories/projects/chat.md"],
+  "orphaned":  [],
+  "overlong":  [["/memories/career/cloudwalk.md", 55]],
+  "malformed": [[7, "- profile/identity.md 基本信息"]]
+}
+```
+
+| 字段 | 含义 | 前端处理 |
+|---|---|---|
+| `missing` | 有内容但索引里没有 | **最严重**，做成可点击跳到该文件 |
+| `orphaned` | 索引指向的文件不存在 | 只展示路径，别做跳转（点开是 404） |
+| `overlong` | `[路径, 实际字数]`，描述超 25 字 | 带上字数，好判断要删多少 |
+| `malformed` | `[行号, 原文]` | 展示原文，指到 `MEMORY.md` 的行 |
+
+只读、随时可调，每日整理跑完也会自查一遍并写进 `ConsolidateOut.index_issues` /
+`index_report`。**代码只发现不自动修** —— 条目描述要读懂文件内容才写得出来，
+下次整理会带着问题清单让模型自己修，所以界面上不要提供「一键修复」。
+
+已实现于记忆页的使用分析视图（`IndexAuditCard`）。
 
 ## 记忆使用率
 

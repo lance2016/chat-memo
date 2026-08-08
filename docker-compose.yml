@@ -96,6 +96,12 @@ services:
       - ./pyproject.toml:/app/pyproject.toml:ro
       # 备份落到宿主机，容器重建也不会丢
       - ./backups:/backups
+      # 评测结果同理，而且**必须挂**：界面在容器里跑、命令行在宿主机跑，不挂的话
+      # 两边各写各的 eval-runs，同一个功能长出两份互相看不见的历史 ——
+      # baseline 对比会拿错参照，而且容器一重建，界面上跑出来的结果就全没了。
+      - ./eval-runs:/app/eval-runs
+      # 样本要能在宿主机用编辑器改（标注是手工活），容器里跑评测时读到的是同一份
+      - ./evals:/app/evals
       # Obsidian vault 只读挂载（写保护做在挂载层，不依赖 prompt 约束）。
       # 未设置 VAULT_PATH 时挂个空占位目录，此时容器内 VAULT_PATH 为空、功能整体关闭。
       - ${VAULT_PATH:-./.vault-placeholder}:/vault:ro

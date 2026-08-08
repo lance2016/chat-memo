@@ -10,6 +10,7 @@ from app.settings_store import resolve_settings
 from app.backup import run_backup
 from app.db.session import get_session
 from app.jobs.consolidate import Consolidator
+from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
 from app.security import require_api_key
 
@@ -31,6 +32,8 @@ class ConsolidateOut(BaseModel):
     new_loops: int
     closed_loops: int
     digest_failed: bool
+    index_issues: int
+    index_report: str
 
 
 @router.post("/consolidate", response_model=ConsolidateOut)
@@ -40,7 +43,13 @@ async def consolidate(
 ) -> ConsolidateOut:
     """手动触发记忆整理。不传 day 就整理今天。"""
     settings = await resolve_settings(session)
-    provider = get_provider(settings, model_override=settings.consolidate_model)
+    target = await resolve_model_target(
+        session,
+        settings,
+        purpose="consolidation",
+        legacy_model_id=settings.consolidate_model,
+    )
+    provider = get_provider(settings, target=target)
     result = await Consolidator(session, provider).run(day)
     return ConsolidateOut(**result.__dict__)
 

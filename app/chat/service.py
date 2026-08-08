@@ -288,6 +288,7 @@ class ChatService:
         executor: ToolExecutor | None = None,
         settings: Settings | None = None,
         title_client: TitleClient | None = None,
+        model_profile_id: int | None = None,
     ) -> None:
         self.session = session
         self.provider = provider
@@ -297,6 +298,7 @@ class ChatService:
         # 那样任何只注入了假 provider 的测试都会跟着开发机的 .env 走真实网络请求。
         # None = 用聊天 provider 兜底（同样关思考）。
         self.title_client = title_client
+        self.model_profile_id = model_profile_id
 
     async def load_history(self, conversation_id: int) -> list[dict[str, Any]]:
         """按原样取回历史。
@@ -329,6 +331,7 @@ class ChatService:
             role=role,
             content=content,
             usage=usage,
+            model_profile_id=self.model_profile_id,
             search_text=extract_text(content),
         )
         self.session.add(message)

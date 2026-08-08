@@ -5,6 +5,7 @@ import { ChatPage } from "./chat-page";
 const mocks = vi.hoisted(() => ({
   createConversation: vi.fn(),
   getMemoryStats: vi.fn(),
+  getModelCatalog: vi.fn(),
   getConversationContext: vi.fn(),
   getTtsStatus: vi.fn(),
   listConversations: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("@/lib/api", () => ({
   deleteConversation: vi.fn(),
   errorMessage: (_cause: unknown, fallback: string) => fallback,
   getMemoryStats: mocks.getMemoryStats,
+  getModelCatalog: mocks.getModelCatalog,
   getConversationContext: mocks.getConversationContext,
   getNextSpeech: vi.fn(),
   getTtsStatus: mocks.getTtsStatus,
@@ -62,6 +64,7 @@ const conversation = {
   created_at: "2026-08-07T00:00:00Z",
   updated_at: "2026-08-07T00:00:00Z",
   thinking: null,
+  model_profile_id: null,
 };
 
 const otherConversation = {
@@ -86,6 +89,7 @@ describe("ChatPage streaming lifecycle", () => {
     mocks.listMessages.mockResolvedValue([]);
     mocks.createConversation.mockResolvedValue(conversation);
     mocks.getMemoryStats.mockResolvedValue({ total_memories: 0 });
+    mocks.getModelCatalog.mockResolvedValue({ purpose: "chat", default_profile_id: null, services: [], profiles: [] });
     mocks.getConversationContext.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
     mocks.getTtsStatus.mockResolvedValue({ mode: "off", enabled: false });
     mocks.stopSpeech.mockResolvedValue({ dropped: 0 });
@@ -97,7 +101,7 @@ describe("ChatPage streaming lifecycle", () => {
 
   it("applies a title event to the conversation that owns the stream", async () => {
     let finishStream!: () => void;
-    mocks.streamChat.mockImplementation(async (_id, _content, onEvent) => {
+    mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, onEvent) => {
       onEvent({ type: "conversation", conversation });
       onEvent({ type: "title", title: "服务端标题" });
       await new Promise<void>((resolve) => { finishStream = resolve; });
@@ -111,7 +115,7 @@ describe("ChatPage streaming lifecycle", () => {
 
   it("aborts the active stream when the page unmounts", async () => {
     let streamSignal: AbortSignal | undefined;
-    mocks.streamChat.mockImplementation(async (_id, _content, _onEvent, signal?: AbortSignal) => {
+    mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, _onEvent, signal?: AbortSignal) => {
       streamSignal = signal;
       await new Promise<void>((_resolve, reject) => {
         signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
@@ -142,7 +146,7 @@ describe("ChatPage streaming lifecycle", () => {
 
     let emit!: (event: { type: string; text?: string }) => void;
     let finishStream!: () => void;
-    mocks.streamChat.mockImplementation(async (_id, _content, onEvent) => {
+    mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, onEvent) => {
       emit = onEvent;
       await new Promise<void>((resolve) => { finishStream = resolve; });
     });

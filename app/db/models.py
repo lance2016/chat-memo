@@ -28,6 +28,64 @@ def _now_column() -> Mapped[dt.datetime]:
     return mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ModelService(Base):
+    """一个模型服务连接，密钥只保存为环境变量引用，不落库。"""
+
+    __tablename__ = "model_services"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # anthropic | openai_compatible
+    protocol: Mapped[str] = mapped_column(String(32))
+    base_url: Mapped[str] = mapped_column(String(500), default="")
+    # 例如 DEEPSEEK_API_KEY。这里永远不保存真正的 secret。
+    credential_ref: Mapped[str] = mapped_column(String(120), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    profiles: Mapped[list[ModelProfile]] = relationship(
+        back_populates="service", cascade="all, delete-orphan"
+    )
+
+
+class ModelProfile(Base):
+    """一个服务上的具体模型，以及它对产品能力的声明。"""
+
+    __tablename__ = "model_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    service_id: Mapped[int] = mapped_column(
+        ForeignKey("model_services.id", ondelete="CASCADE"), index=True
+    )
+    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    model_id: Mapped[str] = mapped_column(String(240))
+    display_name: Mapped[str] = mapped_column(String(160))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict
+    )
+    options: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), default=dict
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    service: Mapped[ModelService] = relationship(back_populates="profiles")
+
+
 class Conversation(Base):
     __tablename__ = "conversations"
 
@@ -44,6 +102,10 @@ class Conversation(Base):
     )
     # 该会话是否思考。NULL = 跟随全局默认，前端切换时才写具体值。
     thinking: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # NULL = 尚未固定，第一轮会记录当时的默认模型。
+    model_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("model_profiles.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation",
@@ -71,6 +133,10 @@ class Message(Base):
     )
     usage: Mapped[dict[str, Any] | None] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    # 记录这条消息实际使用的模型；旧消息为空是正常的。
+    model_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("model_profiles.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # 只含 text 块的纯文本，写入时冗余出来专供搜索。
     # 正文埋在 JSONB 数组里没法直接建索引；抽出来才能挂 GIN 三元组索引，

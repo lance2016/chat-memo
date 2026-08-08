@@ -1,0 +1,98 @@
+{
+  "id": "03-no-op-technical-day",
+  "date": "2026-03-21",
+  "memory_before": {
+    "/memories/MEMORY.md": "# 记忆索引\n\n- [基本情况](profile/basics.md) — 居住、工作与家庭\n- [工具与环境偏好](profile/preferences.md) — 常用工具与开发环境\n",
+    "/memories/profile/basics.md": "# 基本情况\n\n- 在深圳南山上班，写字楼办公\n- 每周三固定在家远程\n",
+    "/memories/profile/preferences.md": "# 工具与环境偏好\n\n- Python 依赖用 uv 管理，不用 pip\n- 终端用 Ghostty，shell 是 zsh\n"
+  },
+  "conversations": [
+    {
+      "title": "pandas 合并两张表",
+      "messages": [
+        {
+          "role": "user",
+          "text": "pandas 里 merge 和 join 到底有什么区别，我老是记混"
+        },
+        {
+          "role": "assistant",
+          "text": "merge 是按列合并，join 默认按索引合并，join 本质上是 merge 的一个便捷包装。多数情况下直接用 merge 更好推理。"
+        },
+        {
+          "role": "user",
+          "text": "那 how='outer' 之后 NaN 怎么区分「本来就没值」和「没匹配上」"
+        },
+        {
+          "role": "assistant",
+          "text": "合并前给右表加一列常量做 indicator，或者直接用 indicator=True 参数。"
+        },
+        {
+          "role": "user",
+          "text": "indicator 这个好，我试试"
+        }
+      ]
+    },
+    {
+      "title": "nginx 502",
+      "messages": [
+        {
+          "role": "user",
+          "text": "nginx 报 502 bad gateway，后端服务是活的，日志里啥也没有"
+        },
+        {
+          "role": "assistant",
+          "text": "先看 nginx 的 error.log，502 一般是上游连接被拒或超时。upstream 配的是什么？"
+        },
+        {
+          "role": "user",
+          "text": "配的 127.0.0.1:8000，但服务监听的是容器里的 0.0.0.0:8000"
+        },
+        {
+          "role": "assistant",
+          "text": "那就是宿主机的 127.0.0.1 连不到容器网络，upstream 要改成容器名或者把端口映射出来。"
+        },
+        {
+          "role": "user",
+          "text": "对，端口没映射。加上 -p 就好了，谢了"
+        }
+      ]
+    },
+    {
+      "title": "一个正则",
+      "messages": [
+        {
+          "role": "user",
+          "text": "写个正则匹配形如 v1.2.3 的版本号，要能提取三段数字"
+        },
+        {
+          "role": "assistant",
+          "text": "`^v(\\d+)\\.(\\d+)\\.(\\d+)$`，三个捕获组分别是主次修订号。"
+        },
+        {
+          "role": "user",
+          "text": "如果有 v1.2.3-beta.1 这种呢"
+        },
+        {
+          "role": "assistant",
+          "text": "在后面加可选段：`^v(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z.-]+))?$`。"
+        },
+        {
+          "role": "user",
+          "text": "行"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "facts": [],
+    "corrections": [],
+    "forbidden": [
+      "pandas merge 与 join 的区别、indicator 参数用法",
+      "nginx 502 的排查过程或「端口没映射」这个结论",
+      "版本号正则表达式",
+      "「用户在用 pandas / nginx / Docker」这类从一次性提问倒推出来的偏好"
+    ],
+    "no_op": true
+  },
+  "note": "唯一一条纯反例：一整天三个会话全是一次性技术问答，正确行为是什么都不写。\n\n没有这种样本，评测就会奖励一个疯狂写记忆的模型 —— 只测正例时，「什么都往里塞」永远拿满分。这条同时也是 SUMMARY_SYSTEM 那一层的测试：摘要阶段 memory 字段就该留空，整理阶段根本不该被触发。\n\nforbidden 里特意写了最后一条：模型很爱从「他问了 nginx」推出「他在用 nginx」然后当成技术栈偏好记下来。问过一次不等于在用，这是编造。"
+}

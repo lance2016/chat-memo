@@ -62,6 +62,21 @@ async def test_persists_user_and_assistant_turns(session: AsyncSession) -> None:
     assert any(isinstance(e, Done) for e in events)
 
 
+async def test_persists_selected_model_profile(session: AsyncSession) -> None:
+    conversation = await make_conversation(session)
+    service = ChatService(
+        session,
+        provider_with([text_turn("答")]),
+        model_profile_id=17,
+    )
+
+    await drain(service, conversation, "hi")
+
+    rows = await messages_of(session, conversation.id)
+    assert rows
+    assert all(row.model_profile_id == 17 for row in rows)
+
+
 async def test_internal_turn_events_are_not_streamed(session: AsyncSession) -> None:
     """AssistantTurn / ToolResultTurn 只用于落库，不该出现在 SSE 里。"""
     conversation = await make_conversation(session)

@@ -143,3 +143,75 @@ async def test_transcript_ignores_thinking_and_tool_blocks(
     transcript = provider.client.messages.calls[0]["messages"][0]["content"]
     assert "示例市" in transcript
     assert "内部推理" not in transcript
+
+
+async def test_self_check_reports_index_drift(session: AsyncSession) -> None:
+    """整理跑完要能说出「索引和实际记忆对不上」——否则漏索引是彻底静默的。"""
+    await seed_conversation(session, "我在做一个聊天项目", "记住了")
+    await MemoryStore(session, actor="manual").create("/memories/MEMORY.md", "# 记忆索引")
+
+    provider = provider_with(
+        [
+            text_turn("用户在做一个聊天项目"),
+            tool_turn(
+                "memory",
+                {
+                    "command": "create",
+                    "path": "/memories/projects/chat.md",
+                    "file_text": "- 个人 AI 助手项目",
+                },
+            ),
+            # 模型写了记忆文件却没更新索引 —— 这正是要抓的那种失败
+            text_turn("已整理"),
+        ]
+    )
+
+    result = await Consolidator(session, provider).run(TODAY)
+
+    assert result.memory_writes == 1
+    assert result.index_issues == 1
+    assert "没进索引" in result.index_report
+
+
+async def test_self_check_passes_when_index_matches(session: AsyncSession) -> None:
+    await seed_conversation(session, "我在做一个聊天项目", "记住了")
+    store = MemoryStore(session, actor="manual")
+    await store.create("/memories/projects/chat.md", "- 个人 AI 助手项目")
+    await store.create(
+        "/memories/MEMORY.md", "- [聊天项目](projects/chat.md) — 项目目标与进展"
+    )
+
+    provider = provider_with([text_turn("用户在做一个聊天项目"), text_turn("无需改动")])
+    result = await Consolidator(session, provider).run(TODAY)
+
+    assert result.index_issues == 0
+    assert "通过" in result.index_report
+
+
+async def test_known_index_issues_enter_the_next_prompt(
+    session: AsyncSession,
+) -> None:
+    """反馈回路：代码发现的问题必须传给模型，它自己看不到实际有哪些记忆文件。"""
+    await seed_conversation(session, "我在做一个聊天项目", "记住了")
+    store = MemoryStore(session, actor="manual")
+    await store.create("/memories/projects/chat.md", "- 个人 AI 助手项目")
+    await store.create("/memories/MEMORY.md", "# 记忆索引")  # 条目缺失
+
+    provider = provider_with([text_turn("用户在做一个聊天项目"), text_turn("已整理")])
+    await Consolidator(session, provider).run(TODAY)
+
+    # calls[0] 是摘要，calls[1] 才是整理
+    prompt = provider.client.messages.calls[1]["messages"][0]["content"][0]["text"]
+    assert "/memories/projects/chat.md" in prompt
+    assert "缺条目" in prompt
+
+
+async def test_clean_index_adds_nothing_to_the_prompt(session: AsyncSession) -> None:
+    """没问题时整段不出现 —— 每轮塞一句「本次无问题」是纯粹的 token 浪费。"""
+    await seed_conversation(session, "我在做一个聊天项目", "记住了")
+
+    provider = provider_with([text_turn("用户在做一个聊天项目"), text_turn("已整理")])
+    await Consolidator(session, provider).run(TODAY)
+
+    prompt = provider.client.messages.calls[1]["messages"][0]["content"][0]["text"]
+    assert "索引问题" not in prompt and "缺条目" not in prompt

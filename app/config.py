@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # anthropic | deepseek
     provider: str = "deepseek"
 
+    # 新模型目录的全局默认。为空时兼容旧的 provider/model 配置。
+    chat_model_profile_id: int | None = None
+    consolidate_model_profile_id: int | None = None
+
     anthropic_api_key: str = ""
     model: str = "claude-opus-5"
     max_tokens: int = 64000

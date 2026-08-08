@@ -1,0 +1,85 @@
+{
+  "id": "02-conflict-correction",
+  "date": "2026-03-18",
+  "memory_before": {
+    "/memories/MEMORY.md": "# 记忆索引\n\n- [基本情况](profile/basics.md) — 居住、工作与家庭\n- [工具与环境偏好](profile/preferences.md) — 常用工具与开发环境\n- [聊天助手项目](projects/chat.md) — 项目目标、技术选型与进展\n",
+    "/memories/profile/basics.md": "# 基本情况\n\n- 在深圳南山上班，写字楼办公\n- 每周三固定在家远程\n- 养了一只叫豆豆的猫\n",
+    "/memories/profile/preferences.md": "# 工具与环境偏好\n\n- 笔记全部记在 Notion，方案和读书笔记都在里面\n- Python 依赖用 uv 管理，不用 pip\n- 终端用 Ghostty，shell 是 zsh\n",
+    "/memories/projects/chat.md": "# 聊天助手项目\n\n- 自用的个人 AI 助手，FastAPI + SQLite\n- 长期记忆按渐进式披露组织，索引常驻上下文\n"
+  },
+  "conversations": [
+    {
+      "title": "笔记搬家",
+      "messages": [
+        {
+          "role": "user",
+          "text": "折腾了一个周末，我把 Notion 里的东西全导出来搬进 Obsidian 了，以后笔记都在本地 vault 里"
+        },
+        {
+          "role": "assistant",
+          "text": "全量搬完了还是只搬了一部分？Notion 那边还留着吗？"
+        },
+        {
+          "role": "user",
+          "text": "全搬完了，Notion 账号我已经降到免费版了，就当个归档，不会再往里写东西。主要是想要本地文件和双链"
+        },
+        {
+          "role": "assistant",
+          "text": "那以后我引用你的笔记时按 Obsidian 的 vault 路径来。"
+        },
+        {
+          "role": "user",
+          "text": "对，vault 就叫 notes，放在 iCloud 里同步"
+        }
+      ]
+    },
+    {
+      "title": "数据库换不换",
+      "messages": [
+        {
+          "role": "user",
+          "text": "chat 那个项目我打算把 SQLite 换成 Postgres"
+        },
+        {
+          "role": "assistant",
+          "text": "为什么？单人用 SQLite 一般够。"
+        },
+        {
+          "role": "user",
+          "text": "主要是全文检索和 JSON 字段查得难受，而且我想上向量检索，pgvector 一步到位。已经在写迁移了，这周应该能切完"
+        },
+        {
+          "role": "assistant",
+          "text": "那 alembic 的迁移脚本要重跑一遍。"
+        },
+        {
+          "role": "user",
+          "text": "嗯，已经在弄了"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "facts": [
+      "用户的 Obsidian vault 名为 notes，通过 iCloud 同步",
+      "chat 项目改用 Postgres 是为了全文检索和 pgvector 向量检索"
+    ],
+    "corrections": [
+      {
+        "stale": "- 笔记全部记在 Notion，方案和读书笔记都在里面",
+        "becomes": "笔记已全部迁移到 Obsidian 本地 vault，Notion 只作归档不再写入"
+      },
+      {
+        "stale": "- 自用的个人 AI 助手，FastAPI + SQLite",
+        "becomes": "chat 项目的数据库从 SQLite 迁移到 Postgres"
+      }
+    ],
+    "forbidden": [
+      "同时保留「笔记记在 Notion」和「笔记记在 Obsidian」两条并存的记录",
+      "同时保留「用 SQLite」和「用 Postgres」两条并存的记录",
+      "alembic 迁移脚本要重跑这类一次性操作细节"
+    ],
+    "no_op": false
+  },
+  "note": "测 CONSOLIDATE_PROMPT 第 2 条：和已有记录冲突的要 str_replace 改掉旧的，不要并存。两条冲突分别落在 profile/ 和 projects/ 两个文件里，逼着模型先 view 再改，而不是只往一个文件追加。\n\n最想抓的失败是**新旧并存** —— 模型很容易只把新说法追加一行就收工，留下一份自相矛盾的记忆，而且这种错误在生产里完全静默。所以判分要先确认corrections 里的 stale 原文真的消失了，再看 becomes 有没有进去；只看新说法是判不出这个失败的。stale 片段照抄 memory_before 原文，改动 memory_before 时记得同步改这里，否则 validate() 会报。"
+}

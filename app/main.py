@@ -15,6 +15,9 @@ from app.db.session import get_session, get_sessionmaker
 from app.jobs.router import router as jobs_router
 from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
 from app.debug.router import router as debug_router
+from app.eval.router import router as eval_router
+from app.llm.catalog import resolve_model_target
+from app.llm.router import router as model_router
 from app.memory.router import router as memory_router
 from app.notify.router import router as notify_router
 from app.review.router import router as review_router
@@ -105,10 +108,17 @@ def create_app() -> FastAPI:
         # 换掉之后，用快照会一直报旧的 —— 健康检查报错模型比不报还糟。
         active = await resolve_settings(session)
         # 报当前生效的那个模型 —— 之前无论 PROVIDER 是什么都报 Anthropic 的，会误导。
-        active_model = (
-            active.model if active.provider == "anthropic" else active.deepseek_model
-        )
-        return {"status": "ok", "provider": active.provider, "model": active_model}
+        try:
+            target = await resolve_model_target(session, active)
+            return {
+                "status": "ok",
+                "provider": target.service_slug,
+                "model": target.model_id,
+            }
+        except ValueError:
+            # 目录配置不完整时仍让数据库健康检查返回可读状态；聊天接口会给出具体原因。
+            active_model = active.model if active.provider == "anthropic" else active.deepseek_model
+            return {"status": "ok", "provider": active.provider, "model": active_model}
 
     @app.get("/api/ping", dependencies=[Depends(require_api_key)])
     async def ping() -> dict[str, bool]:
@@ -121,10 +131,12 @@ def create_app() -> FastAPI:
     app.include_router(timeline_router)
     app.include_router(notify_router)
     app.include_router(tool_catalog_router)
+    app.include_router(model_router)
     app.include_router(jobs_router)
     app.include_router(tts_router)
     app.include_router(tts_public_router)
     app.include_router(debug_router)
+    app.include_router(eval_router)
     return app
 
 

@@ -2,16 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { diffLines } from "diff";
-import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RefreshCw, RotateCcw, Save, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RefreshCw, FlaskConical, RotateCcw, Save, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { deleteMemory, errorMessage, getMemory, getMemoryStats, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
+import { deleteMemory, errorMessage, getMemory, getMemoryAudit, getMemoryStats, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
-import type { Memory, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
+import type { Memory, MemoryIndexAudit, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
 import { LatestRequest } from "@/lib/latest-request";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { EvalPanel } from "@/components/eval-panel";
 import { useI18n } from "@/components/i18n-provider";
+
+type MemoryView = "files" | "stats" | "eval";
 
 function actorLabel(actor: MemoryVersion["actor"]) {
   return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
@@ -58,7 +61,46 @@ function DiffView({ before, after }: { before: string; after: string }) {
   return <div className="diff-panel">{chunks.length === 0 ? <span className="diff-line">没有变化</span> : chunks.map((chunk, index) => <span className={`diff-line ${chunk.added ? "diff-added" : chunk.removed ? "diff-removed" : ""}`} key={`${index}-${chunk.value}`}>{chunk.added ? "+ " : chunk.removed ? "- " : "  "}{chunk.value}</span>)}</div>;
 }
 
-function MemoryStatsPanel({ stats, loading, error, onRetry, onOpenFile, onDelete }: { stats: MemoryStats | null; loading: boolean; error: string; onRetry: () => void; onOpenFile: (path: string) => void; onDelete: (path: string) => void }) {
+/** 索引一致性。
+ *
+ * 放在使用分析里而不是文件列表旁边，是因为它回答的是「这批记忆整体健不健康」，
+ * 和使用率是同一类问题。**索引漏掉一个文件是完全静默的**：文件还在、还能在左侧
+ * 目录里点开，但它不在索引里，模型就永远不知道有这个文件 —— 只有这张卡片会说出来。
+ */
+export function IndexAuditCard({ audit, error, onOpenFile }: { audit: MemoryIndexAudit | null; error: string; onOpenFile: (path: string) => void }) {
+  const { t } = useI18n();
+  if (error) return <section className="memory-stat-card audit-card"><div className="stats-card-heading"><div><span className="card-kicker">{t("memories.audit.kicker")}</span><h2>{t("memories.audit.title")}</h2></div><TriangleAlert size={16} /></div><div className="stats-card-empty">{t("memories.audit.error")}：{error}</div></section>;
+  if (!audit) return null;
+
+  const rows: { key: string; label: string; hint: string; items: { path?: string; text: string; note?: string }[] }[] = [
+    { key: "missing", label: t("memories.audit.missing"), hint: t("memories.audit.missingHint"), items: audit.missing.map((path) => ({ path, text: memoryLabel(path), note: path.replace("/memories/", "") })) },
+    { key: "orphaned", label: t("memories.audit.orphaned"), hint: t("memories.audit.orphanedHint"), items: audit.orphaned.map((path) => ({ text: path.replace("/memories/", "") })) },
+    { key: "overlong", label: t("memories.audit.overlong"), hint: t("memories.audit.overlongHint"), items: audit.overlong.map(([path, chars]) => ({ path, text: memoryLabel(path), note: t("memories.audit.chars", { count: chars }) })) },
+    { key: "malformed", label: t("memories.audit.malformed"), hint: "", items: audit.malformed.map(([line, raw]) => ({ text: raw, note: t("memories.audit.line", { line }) })) },
+  ].filter((row) => row.items.length > 0);
+
+  return <section className={`memory-stat-card audit-card ${audit.ok ? "audit-ok" : "audit-warn"}`}>
+    <div className="stats-card-heading">
+      <div><span className="card-kicker">{t("memories.audit.kicker")}</span><h2>{t("memories.audit.title")}</h2></div>
+      {audit.ok ? <ShieldCheck size={16} /> : <span className="count-pill">{audit.issue_count}</span>}
+    </div>
+    {audit.ok
+      ? <div className="audit-ok-line"><ShieldCheck size={14} />{t("memories.audit.ok", { count: audit.total_files })}</div>
+      : <div className="audit-issues">
+          {audit.index_missing && <div className="audit-group"><span className="audit-group-label">{t("memories.audit.indexMissing")}</span></div>}
+          {rows.map((row) => <div className="audit-group" key={row.key}>
+            <span className="audit-group-label">{row.label}<em>{row.hint}</em></span>
+            <div className="audit-items">{row.items.map((item, index) => item.path
+              ? <button className="audit-item audit-item-button" key={`${row.key}-${index}`} onClick={() => onOpenFile(item.path as string)} title={item.path}><strong>{item.text}</strong>{item.note && <small>{item.note}</small>}</button>
+              : <span className="audit-item" key={`${row.key}-${index}`}><strong>{item.text}</strong>{item.note && <small>{item.note}</small>}</span>)}</div>
+          </div>)}
+          <p className="audit-fix">{t("memories.audit.fix")}</p>
+        </div>}
+    <p className="audit-hint">{t("memories.audit.hint")}</p>
+  </section>;
+}
+
+function MemoryStatsPanel({ stats, audit, auditError, loading, error, onRetry, onOpenFile, onDelete }: { stats: MemoryStats | null; audit: MemoryIndexAudit | null; auditError: string; loading: boolean; error: string; onRetry: () => void; onOpenFile: (path: string) => void; onDelete: (path: string) => void }) {
   if (loading) return <div className="centered-empty stats-empty">读取记忆使用率…</div>;
   if (!stats) return <div className="centered-empty stats-empty"><div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法读取记忆活动" : "暂无记忆使用率数据"}</strong>{error && <span>{error}</span>}{error && <button className="ghost-button" onClick={onRetry}><RefreshCw size={12} />重试</button>}</div></div>;
 
@@ -71,6 +113,7 @@ function MemoryStatsPanel({ stats, loading, error, onRetry, onOpenFile, onDelete
     <div className="stats-context-bar"><span>仅统计模型主动读取和更新，不含索引摘要注入</span><strong>近 30 天</strong></div>
     <div className="memory-stat-cards"><div><span>记忆文件</span><strong>{stats.total_memories}</strong></div><div><span>主动读取</span><strong>{stats.total_reads}</strong></div><div><span>写入次数</span><strong>{stats.total_writes}</strong></div><div className={stats.missed_reads ? "stat-warning" : ""}><span>未命中读取</span><strong>{stats.missed_reads}</strong></div></div>
     <div className="memory-stats-grid">
+      <IndexAuditCard audit={audit} error={auditError} onOpenFile={onOpenFile} />
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">MOST USED</span><h2>经常使用的记忆</h2></div><Activity size={16} /></div>{stats.top.length ? <div className="stat-list">{stats.top.map((item) => <button className="stat-row stat-row-button" key={item.path} onClick={() => onOpenFile(item.path)}><span className="stat-row-label" title={item.path}><strong>{memoryLabel(item.path)}</strong><small>{item.path.replace("/memories/", "")}</small></span><i><b style={{ width: `${Math.max(4, item.reads / maxReads * 100)}%` }} /></i><em>{item.reads}</em></button>)}</div> : <div className="stats-card-empty">还没有记忆读取记录。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">ACTIVE DAYS</span><h2>发生读写的日期</h2></div><span className="legend"><i className="legend-read" />读 <i className="legend-write" />写</span></div>{activeDays.length ? <div className="daily-bars">{activeDays.map((item) => <div className="daily-bar-row" key={item.day}><span>{formatDate(item.day)}</span><i><b className="bar-read" style={{ width: `${Math.max(item.reads ? 5 : 0, item.reads / maxDaily * 100)}%` }} /><b className="bar-write" style={{ width: `${Math.max(item.writes ? 5 : 0, item.writes / maxDaily * 100)}%` }} /></i><em>{item.reads + item.writes}</em></div>)}</div> : <div className="stats-card-empty">近 30 天没有发生记忆读写。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">BY ACTOR</span><h2>变更来源</h2></div></div>{stats.by_actor.length ? <div className="stat-list">{stats.by_actor.map((item) => <div className="actor-stat-row" key={item.actor}><span className={`actor-badge actor-${item.actor}`}>{actorLabelFromName(item.actor)}</span><i><b style={{ width: `${Math.max(item.reads ? 4 : 0, item.reads / maxActor * 100)}%` }} /></i><em>读 {item.reads} · 写 {item.writes}</em></div>)}</div> : <div className="stats-card-empty">暂无来源统计。</div>}</section>
@@ -98,8 +141,16 @@ export function MemoriesPage() {
   const [error, setError] = useState("");
   const [treeError, setTreeError] = useState("");
   const [treeOpen, setTreeOpen] = useState(false);
-  const [showStats, setShowStats] = useState(searchParams.get("view") === "stats");
+  // 三态而不是布尔：文件 / 使用分析 / 质量评测。showStats 作为派生量保留，
+  // 免得把下面所有「非文件视图」的分支都改一遍。
+  const [view, setView] = useState<MemoryView>(() => {
+    const initial = searchParams.get("view");
+    return initial === "stats" || initial === "eval" ? initial : "files";
+  });
+  const showStats = view !== "files";
   const [stats, setStats] = useState<MemoryStats | null>(null);
+  const [audit, setAudit] = useState<MemoryIndexAudit | null>(null);
+  const [auditError, setAuditError] = useState("");
   const [loadingStats, setLoadingStats] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ path: string; isDirectory: boolean } | null>(null);
@@ -161,18 +212,24 @@ export function MemoriesPage() {
     setLoadingStats(true);
     setError("");
     try {
-      const result = await getMemoryStats(30, 10);
-      if (statsRequestsRef.current.isCurrent(request)) setStats(result);
-    } catch (cause) {
+      // 两个请求分别处理失败：索引校验挂了不该让整页使用率一起消失，
+      // 反过来也一样 —— 它们回答的是两个独立的问题。
+      const [statsResult, auditResult] = await Promise.allSettled([
+        getMemoryStats(30, 10),
+        getMemoryAudit(),
+      ]);
       if (!statsRequestsRef.current.isCurrent(request)) return;
-      setError(errorMessage(cause, "无法加载记忆使用率"));
+      if (statsResult.status === "fulfilled") setStats(statsResult.value);
+      else setError(errorMessage(statsResult.reason, "无法加载记忆使用率"));
+      if (auditResult.status === "fulfilled") { setAudit(auditResult.value); setAuditError(""); }
+      else setAuditError(errorMessage(auditResult.reason, "无法读取索引校验"));
     } finally {
       if (statsRequestsRef.current.isCurrent(request)) setLoadingStats(false);
     }
   }, []);
 
   useEffect(() => { if (selectedPath) void loadFile(selectedPath); }, [loadFile, selectedPath]);
-  useEffect(() => { if (showStats) void loadStats(); }, [loadStats, showStats]);
+  useEffect(() => { if (view === "stats") void loadStats(); }, [loadStats, view]);
 
   const selectFile = (entry: MemoryTreeEntry) => {
     if (entry.isDir) return;
@@ -202,7 +259,7 @@ export function MemoriesPage() {
       if (memory?.path === path || isDirectory && memory?.path.startsWith(`${path}/`)) { setMemory(null); setContent(""); setVersions([]); }
       const next = updated.find((node) => !node.is_dir && node.path === "/memories/MEMORY.md") ?? updated.find((node) => !node.is_dir);
       if (next) { setSelectedPath(next.path); if (!showStats) router.push(`/memories?path=${encodeURIComponent(next.path)}`); } else setSelectedPath("");
-      if (showStats) void loadStats();
+      if (view === "stats") void loadStats();
       setMessage(isDirectory ? "已递归删除目录" : "已删除记忆");
       return true;
     } catch (cause) {
@@ -256,17 +313,17 @@ export function MemoriesPage() {
   ].filter(Boolean).join(" ");
   const older = versions.find((version) => version.id === olderId);
   const newer = versions.find((version) => version.id === newerId);
-  const toggleStats = () => {
-    const next = !showStats;
-    setShowStats(next);
-    setMessage("");
-    setError("");
-    router.push(next ? "/memories?view=stats" : selectedPath ? `/memories?path=${encodeURIComponent(selectedPath)}` : "/memories");
+  const switchView = (target: MemoryView) => {
+    if (target === view) return;
+    setView(target);
+    // 视图进 URL：刷新和分享链接都要能回到同一个视图。
+    router.push(`/memories${target === "files" ? "" : `?view=${target}`}`);
+    if (target === "stats") void loadStats();
   };
 
   const openStatsFile = (path: string) => {
     if (path !== selectedPath && !confirmAppNavigation()) return;
-    setShowStats(false);
+    setView("files");
     setSelectedPath(path);
     router.push(`/memories?path=${encodeURIComponent(path)}`);
   };
@@ -284,11 +341,11 @@ export function MemoriesPage() {
           <div className="memory-editor-primary">
             <button className="icon-button mobile-menu" aria-label={t("memories.openTree")} onClick={() => setTreeOpen(true)}><Menu size={19} /></button>
             {!showStats && memory && <><div className="editor-tabs" role="tablist" aria-label={t("memories.view")}><button className={`editor-tab ${tab === "edit" ? "active" : ""}`} role="tab" aria-selected={tab === "edit"} onClick={() => setTab("edit")}>{t("memories.edit")}</button><button className={`editor-tab ${tab === "preview" ? "active" : ""}`} role="tab" aria-selected={tab === "preview"} onClick={() => setTab("preview")}>{t("memories.preview")}</button></div>{hasChanges && <span className="memory-unsaved-indicator" role="status" title={t("memories.unsaved")}><i />{t("memories.unsaved")}</span>}</>}
-            {(showStats || !memory) && <span className="memory-mobile-context">{showStats ? t("memories.analytics") : t("memories.files")}</span>}
+            {(showStats || !memory) && <span className="memory-mobile-context">{view === "eval" ? t("memories.evaluation") : view === "stats" ? t("memories.analytics") : t("memories.files")}</span>}
           </div>
-          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={!showStats ? "active" : ""} role="tab" aria-selected={!showStats} onClick={() => showStats && toggleStats()}><FileText size={13} />{t("memories.files")}</button><button className={showStats ? "active" : ""} role="tab" aria-selected={showStats} onClick={() => !showStats && toggleStats()}><BarChart3 size={13} />{t("memories.analytics")}</button></div>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
+          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={view === "files" ? "active" : ""} role="tab" aria-selected={view === "files"} onClick={() => switchView("files")}><FileText size={13} />{t("memories.files")}</button><button className={view === "stats" ? "active" : ""} role="tab" aria-selected={view === "stats"} onClick={() => switchView("stats")}><BarChart3 size={13} />{t("memories.analytics")}</button><button className={view === "eval" ? "active" : ""} role="tab" aria-selected={view === "eval"} onClick={() => switchView("eval")}><FlaskConical size={13} />{t("memories.evaluation")}</button></div>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
         </header>
-        {showStats ? <MemoryStatsPanel stats={stats} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={(path) => setDeleteTarget({ path, isDirectory: false })} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
+        {view === "eval" ? <EvalPanel /> : view === "stats" ? <MemoryStatsPanel stats={stats} audit={audit} auditError={auditError} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={(path) => setDeleteTarget({ path, isDirectory: false })} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
           <div className="editor-area">{loadingFile ? <div className="centered-empty">打开文件中…</div> : tab === "edit" ? <textarea className="editor-textarea" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /> : <div className="preview assistant-content"><Markdown>{content}</Markdown></div>}</div>
           <section className="versions-panel"><div className="versions-head"><span><History size={14} style={{ verticalAlign: "-3px", marginRight: 5 }} />版本历史（{versions.length}）</span><div className="version-selectors">{versions.length > 0 && <><select aria-label="较旧版本" value={olderId ?? ""} onChange={(event) => setOlderId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><select aria-label="较新版本" value={newerId ?? ""} onChange={(event) => setNewerId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><button className="ghost-button" onClick={requestRestore} disabled={!older || restoring}><RotateCcw size={12} />{restoring ? "恢复中…" : "恢复"}</button></>}</div></div>
             {older && newer && older.id !== newer.id && <DiffView before={older.content} after={newer.content} />}

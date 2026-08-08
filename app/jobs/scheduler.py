@@ -7,6 +7,7 @@ import logging
 from app.config import get_settings
 from app.db.session import get_sessionmaker
 from app.jobs.consolidate import Consolidator
+from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
 from app.notify.service import Notifier
 from app.notify.sweep import sweep
@@ -42,9 +43,16 @@ async def run_daily_consolidation() -> None:
                 day=yesterday.isoformat(),
             ):
                 async with get_sessionmaker()() as session:
+                    settings = await resolve_settings(session)
+                    target = await resolve_model_target(
+                        session,
+                        settings,
+                        purpose="consolidation",
+                        legacy_model_id=settings.consolidate_model,
+                    )
                     result = await Consolidator(
                         session,
-                        get_provider(model_override=get_settings().consolidate_model),
+                        get_provider(settings, target=target),
                     ).run(yesterday)
                 logger.info(
                     "记忆整理完成 date=%s 会话=%d 记忆写入=%d",

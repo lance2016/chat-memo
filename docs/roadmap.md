@@ -7,6 +7,7 @@
 - 前端的体验与架构改造另有分阶段计划：**[roadmap-frontend.md](roadmap-frontend.md)**
 - 时间事项模块的设计、边界和阶段计划见 **[timeline.md](timeline.md)**
 - 日志与可观测性的完整方案见 **[observability.md](observability.md)**
+- 记忆质量怎么测、指标怎么选见 **[evaluation.md](evaluation.md)**
 
 ## 排序原则
 
@@ -32,12 +33,14 @@
 
 - 加 `consolidation_runs` 表记录每次执行（时间、状态、错误）
 - 启动时 + ticker 里查"昨天该整理但没记录"，有就补跑
-- 顺带：整理完成后**机械校验** `MEMORY.md` 索引与实际记忆文件是否一致，差异喂回下次
-  整理 prompt。现在全靠 prompt 让模型自己维护索引（`app/jobs/consolidate.py:46`），
-  索引漏了哪个文件，那条记忆就实质性死亡 —— 文件还在，但渐进式披露永远不会读到它
+- ~~顺带：整理完成后**机械校验** `MEMORY.md` 索引与实际记忆文件是否一致，差异喂回下次
+  整理 prompt~~ ✅ 已实现（`app/memory/audit.py`，方案见
+  [evaluation.md](evaluation.md) 第三节）：整理后自检写进 `ConsolidationResult`
+  和日志，问题清单进下次整理的 prompt，另有 `GET /api/memories/audit` 随时可查
 
 **验证**：改系统时间或注入时钟跨过 `consolidate_hour`，杀进程重启，观察补跑且
-`consolidation_runs` 有记录；故意在 `MEMORY.md` 删一行索引，下次整理后校验报告差异。
+`consolidation_runs` 有记录。索引校验部分已由 `tests/test_memory_audit.py` 和
+`tests/test_consolidate.py` 钉住。
 
 ### 2. 备份闭环
 
@@ -59,6 +62,19 @@
 ---
 
 ## P1 — 放大器：眼睛与守门
+
+### 0. 评测（✅ 脚手架已就绪，欠的是标注）
+
+方案与指标选型见 [evaluation.md](evaluation.md)，代码在 `app/eval/`，
+用法在 [../evals/README.md](../evals/README.md)。
+
+**剩下的唯一一件事是人工标注**：`evals/cases/` 现在那 6 条是编的示例，覆盖的是
+「想得到的」失败模式。真实分布要用 `python -m app.eval export --day` 从自己的对话
+里导 10～20 天出来手工标 `expect`。这件事没法外包给模型 —— 让它标期望再拿去评它，
+等于让它自己出考卷。
+
+标完之后，下面这些「等信号」的条目才真的等得到信号：P2-5 的质量收益、
+P3 里索引分层和写记忆时缓存失效那几条。
 
 ### 3. 可观测性：接 Phoenix（应用侧阶段 0/1/2 已落地，已补降噪与 trace 联动）
 

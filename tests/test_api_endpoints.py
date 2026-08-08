@@ -435,3 +435,31 @@ async def test_restore_records_a_new_version(
 async def test_restore_missing_version_404(client: AsyncClient) -> None:
     resp = await client.post("/api/memories/restore", json={"version_id": 99999})
     assert resp.status_code == 404
+
+
+# ---------- 索引校验 ----------
+
+
+async def test_audit_reports_a_memory_missing_from_the_index(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    store = MemoryStore(session, actor="manual")
+    await store.create("/memories/MEMORY.md", "- [身份](profile/identity.md) — 基本信息")
+    await store.create("/memories/profile/identity.md", "- 住在示例市")
+    await store.create("/memories/projects/chat.md", "- 个人助手项目")
+
+    body = (await client.get("/api/memories/audit")).json()
+
+    assert body["ok"] is False
+    assert body["missing"] == ["/memories/projects/chat.md"]
+    assert body["total_files"] == 2
+
+
+async def test_audit_route_is_not_shadowed_by_the_path_route(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    """`/audit` 必须声明在 `/{path:path}` 之前，否则会被当成一条记忆路径去查。"""
+    response = await client.get("/api/memories/audit")
+
+    assert response.status_code == 200
+    assert "issue_count" in response.json()

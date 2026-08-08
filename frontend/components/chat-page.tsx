@@ -4,10 +4,10 @@ import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutE
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
+import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
-import type { ChatEvent, Conversation, ConversationContext, ToolActivity, Turn, TtsStatus } from "@/lib/types";
+import type { ChatEvent, Conversation, ConversationContext, ModelCatalog, ToolActivity, Turn, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
 import { conversationsChangedEvent, notifyWorkspaceConversationsChanged, notifyWorkspaceSelectedConversationChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
@@ -91,7 +91,12 @@ function greeting(t: ReturnType<typeof useI18n>["t"]) {
   return t("chat.greeting.evening");
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse }: {
+function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCatalog | null; value: number | null; disabled: boolean; onChange: (value: number | null) => void }) {
+  if (!catalog) return null;
+  return <label className="chat-model-picker"><span>模型</span><select value={value ?? ""} disabled={disabled} onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)} aria-label="选择聊天模型"><option value="">跟随默认模型</option>{catalog.services.map((service) => <optgroup label={service.name} key={service.id}>{catalog.profiles.filter((profile) => profile.service_id === service.id).map((profile) => <option value={profile.id} disabled={!profile.available && profile.id !== value} key={profile.id}>{profile.display_name}{profile.is_default ? " · 默认" : profile.available ? "" : " · 不可用"}</option>)}</optgroup>)}</select></label>;
+}
+
+function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange }: {
   conversations: Conversation[];
   input: string;
   memoryCount: number | null;
@@ -104,6 +109,9 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   onSubmit: (event: FormEvent) => void;
   onOpenConversation: (id: number) => void;
   onReturnToResponse: () => void;
+  modelCatalog: ModelCatalog | null;
+  modelProfileId: number | null;
+  onModelChange: (value: number | null) => void;
 }) {
   const { locale, t } = useI18n();
   const recent = conversations.slice(0, 2);
@@ -120,7 +128,7 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
       {backgroundResponseTitle && <button type="button" className="home-background-stream" onClick={onReturnToResponse}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: backgroundResponseTitle })}</span><ArrowRight size={13} /></button>}
       <form className="home-capture" onSubmit={onSubmit}>
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div><div className="home-capture-actions"><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
+        <div className="home-capture-foot"><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div><div className="home-capture-actions"><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
@@ -247,6 +255,8 @@ export function ChatPage() {
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [selectedModelProfileId, setSelectedModelProfileId] = useState<number | null>(null);
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
   const [traceIds, setTraceIds] = useState<Record<number, string>>({});
   const selectedIdRef = useRef<number | null>(selectedId);
@@ -263,7 +273,13 @@ export function ChatPage() {
 
   useEffect(() => {
     void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
+    void getModelCatalog().then(setModelCatalog).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    const conversation = conversations.find((item) => item.id === selectedId);
+    setSelectedModelProfileId(conversation?.model_profile_id ?? modelCatalog?.default_profile_id ?? null);
+  }, [conversations, modelCatalog?.default_profile_id, selectedId]);
 
   useEffect(() => {
     setPreferences(readPreferences());
@@ -655,6 +671,9 @@ export function ChatPage() {
       setConversations((current) => [created, ...current.filter((item) => item.id !== created.id)]);
       streamConversationIdRef.current = created.id;
       setStreamConversationId(created.id);
+      if (created.model_profile_id !== null && created.model_profile_id !== undefined) {
+        setSelectedModelProfileId(created.model_profile_id);
+      }
       // A home-page send opens its new conversation only while the user is
       // still on Home. If they deliberately opened another conversation before
       // the server assigned an id, keep their navigation choice intact.
@@ -796,7 +815,7 @@ export function ChatPage() {
         await truncateMessages(activeConversationId, after);
         setTurns(baseTurns);
       }
-      await streamChat(activeConversationId, content, (event) => {
+      await streamChat(activeConversationId, content, selectedModelProfileId, (event) => {
         if (event.type === "conversation") activeConversationId = event.conversation.id;
         handleEvent(event, activeConversationId);
       }, controller.signal);
@@ -886,11 +905,12 @@ export function ChatPage() {
   return (
     <div className="app-shell">
       <main className="main-panel">
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} /> : <>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
               <div className="chat-conversation-title"><span>{showArchived ? t("chat.archived") : t("chat.current")}</span><strong>{selected?.title ?? t("chat.opening")}</strong>{sending && streamBelongsToSelection && <em className="chat-live-status"><i />{t("chat.responding")}</em>}</div>
               <div className="chat-conversation-toolbar-right">
+                <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
                 {streamBelongsToSelection && activeTraceId && <TraceControls traceId={activeTraceId} />}
                 {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
               </div>

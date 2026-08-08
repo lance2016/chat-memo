@@ -1,0 +1,60 @@
+{
+  "id": "06-index-gap",
+  "date": "2026-04-28",
+  "memory_before": {
+    "/memories/MEMORY.md": "# 记忆索引\n\n- [基本情况](profile/basics.md) — 居住、工作与家庭\n- [工具与环境偏好](profile/preferences.md) — 常用工具与开发环境\n- [聊天助手项目](projects/chat.md) — 项目目标、技术选型与进展\n",
+    "/memories/profile/basics.md": "# 基本情况\n\n- 在深圳南山上班，写字楼办公\n- 每周三固定在家远程\n- 养了一只叫豆豆的猫\n",
+    "/memories/profile/preferences.md": "# 工具与环境偏好\n\n- Python 依赖用 uv 管理，不用 pip\n- 终端用 Ghostty，shell 是 zsh\n",
+    "/memories/projects/chat.md": "# 聊天助手项目\n\n- 自用的个人 AI 助手，FastAPI + Postgres\n- 计划以 MIT 协议开源\n",
+    "/memories/health/notes.md": "# 健康\n\n- 花生过敏，误食会引起口腔肿胀\n- 每周二、周四晚上跑步五公里\n"
+  },
+  "conversations": [
+    {
+      "title": "膝盖有点疼",
+      "messages": [
+        {
+          "role": "user",
+          "text": "跑完步右膝外侧疼，休息两天好了，一跑又疼"
+        },
+        {
+          "role": "assistant",
+          "text": "听着像髂胫束的问题。你跑量最近加了吗？"
+        },
+        {
+          "role": "user",
+          "text": "加了，从五公里加到八公里，两周前开始的"
+        },
+        {
+          "role": "assistant",
+          "text": "加量太快了。建议退回五公里，把周四那次换成游泳减少冲击。"
+        },
+        {
+          "role": "user",
+          "text": "行，那我改成周二跑步、周四游泳。反正小区里有泳池，游泳我从小就会，比跑步轻松"
+        },
+        {
+          "role": "assistant",
+          "text": "那这个替换很自然。"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "facts": [
+      "用户因右膝外侧疼痛把跑量从八公里退回五公里",
+      "用户把每周四的跑步改为游泳",
+      "用户会游泳，小区内有泳池"
+    ],
+    "corrections": [
+      {
+        "stale": "- 每周二、周四晚上跑步五公里",
+        "becomes": "每周二跑步五公里，周四改为游泳"
+      }
+    ],
+    "forbidden": [
+      "髂胫束综合征的成因与康复动作等通用医学科普内容"
+    ],
+    "no_op": false
+  },
+  "note": "唯一一条测索引维护的样本：memory_before 里 /memories/health/notes.md 有内容，但 MEMORY.md 三行条目里没有它 —— 这就是 audit.py 报的 `missing`。\n\n两层判分互相印证：机械层直接对整理后的快照跑 audit_index()，missing 必须清空且新条目符合 `- [标题](相对路径) — 主题范围`、描述不超 25 字；模型裁判层看 facts 和 corrections。两层用的是同一份快照，机械层不过关的话第 2 层分数就不用解读了。\n\n刻意让当天的对话正好落在这个失联的文件上（健康/运动）：模型得先 view health/notes.md 才能改对旧记录，而索引里没有它 —— 也就是说，如果模型只照着索引办事，它连这个文件存在都不知道，会把跑步习惯当成新事实重记一遍，留下两处矛盾。这条样本因此同时暴露「索引缺口」和它的下游后果。\n\n注意：整理时 CONSOLIDATE_PROMPT 会带上 audit 生成的问题清单，所以模型不是全靠自觉；这条样本测的是反馈回路端到端有没有闭合。"
+}

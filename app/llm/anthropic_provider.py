@@ -27,10 +27,16 @@ logger = logging.getLogger(__name__)
 
 class AnthropicProvider:
     def __init__(
-        self, settings: Settings | None = None, client: AsyncAnthropic | None = None
+        self,
+        settings: Settings | None = None,
+        client: AsyncAnthropic | None = None,
+        base_url: str = "",
     ) -> None:
         self.settings = settings or get_settings()
-        self.client = client or AsyncAnthropic(api_key=self.settings.anthropic_api_key)
+        self.client = client or AsyncAnthropic(
+            api_key=self.settings.anthropic_api_key,
+            **({"base_url": base_url} if base_url else {}),
+        )
 
     @property
     def model_name(self) -> str:

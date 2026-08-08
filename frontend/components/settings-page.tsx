@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
-import { apiBaseLabel, clearDebugRequests, createBackup, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, synthesizeSpeech, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
+import { apiBaseLabel, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
-import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
+import type { AsrStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ToolCatalog } from "@/components/tool-catalog";
@@ -188,6 +188,105 @@ function DebugDialog({ kind, prompt, request, loading, error, copied, onClose, o
       </> : null}
     </section>
   </div>;
+}
+
+function ModelServicesPanel() {
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [consolidationCatalog, setConsolidationCatalog] = useState<ModelCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [serviceName, setServiceName] = useState("");
+  const [serviceSlug, setServiceSlug] = useState("");
+  const [protocol, setProtocol] = useState<"anthropic" | "openai_compatible">("openai_compatible");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [credentialRef, setCredentialRef] = useState("");
+  const [profileServiceId, setProfileServiceId] = useState<number | "">("");
+  const [modelId, setModelId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const [next, consolidation] = await Promise.all([getModelCatalog(), getModelCatalog("consolidation")]);
+      setCatalog(next);
+      setConsolidationCatalog(consolidation);
+      setProfileServiceId((current) => current || next.services[0]?.id || "");
+      setError("");
+    } catch (cause) {
+      setError(errorMessage(cause, "读取模型目录失败"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void refresh(); }, []);
+
+  const mutate = async (action: () => Promise<ModelCatalog>, purpose: "chat" | "consolidation" = "chat") => {
+    setBusy(true);
+    try {
+      const next = await action();
+      if (purpose === "consolidation") setConsolidationCatalog(next);
+      else setCatalog(next);
+      setError("");
+    } catch (cause) {
+      setError(errorMessage(cause, "模型目录更新失败"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addService = async () => {
+    if (!serviceName.trim() || !serviceSlug.trim()) return;
+    await mutate(() => createModelService({ name: serviceName.trim(), slug: serviceSlug.trim(), protocol, base_url: baseUrl.trim(), credential_ref: credentialRef.trim() }));
+    setServiceName("");
+    setServiceSlug("");
+    setBaseUrl("");
+    setCredentialRef("");
+  };
+
+  const addProfile = async () => {
+    if (!profileServiceId || !modelId.trim()) return;
+    await mutate(() => createModelProfile({ service_id: Number(profileServiceId), model_id: modelId.trim(), display_name: displayName.trim() || modelId.trim() }));
+    setModelId("");
+    setDisplayName("");
+  };
+
+  return <SettingsVisualGroup icon={BrainCircuit} title="模型服务与模型" description="服务连接只保存凭据引用，具体模型可添加多个并在聊天页快速切换" tone="accent" className="model-services-group">
+    {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型目录…</div> : <>
+      <div className="model-profile-list">
+        {(catalog?.profiles ?? []).map((profile) => <div className={`model-profile-row ${profile.is_default || consolidationCatalog?.default_profile_id === profile.id ? "is-default" : ""}`} key={profile.id}>
+          <div className="model-profile-main"><strong>{profile.display_name}</strong><span>{profile.service_name} · {profile.model_id}</span></div>
+          <div className="model-profile-meta"><span className={profile.available ? "value-success" : "value-warning"}>{profile.available ? "可用" : profile.reason || "不可用"}</span><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("chat", profile.id))}>{profile.is_default ? "聊天默认" : "设为聊天默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("consolidation", profile.id), "consolidation")}>{consolidationCatalog?.default_profile_id === profile.id ? "整理默认" : "设为整理默认"}</button><button className="icon-button" type="button" disabled={busy} title={profile.enabled ? "停用模型" : "启用模型"} onClick={() => void mutate(() => updateModelProfile(profile.id, { enabled: !profile.enabled }))}>{profile.enabled ? <Check size={13} /> : <RotateCcw size={13} />}</button></div>
+        </div>)}
+        {!catalog?.profiles.length && <div className="settings-empty">还没有模型档案。</div>}
+      </div>
+
+      <details className="model-service-editor">
+        <summary>添加模型服务</summary>
+        <div className="model-service-form">
+          <input className="runtime-input" value={serviceName} onChange={(event) => setServiceName(event.target.value)} placeholder="服务名称，例如 OpenRouter" />
+          <input className="runtime-input" value={serviceSlug} onChange={(event) => setServiceSlug(event.target.value.toLowerCase())} placeholder="slug，例如 openrouter" />
+          <select className="runtime-select" value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)}><option value="openai_compatible">OpenAI Compatible</option><option value="anthropic">Anthropic</option></select>
+          <input className="runtime-input runtime-input-wide" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="Base URL，例如 https://openrouter.ai/api/v1" />
+          <input className="runtime-input" value={credentialRef} onChange={(event) => setCredentialRef(event.target.value.toUpperCase())} placeholder="API Key 环境变量名" />
+          <button className="ghost-button" type="button" disabled={busy || !serviceName.trim() || !serviceSlug.trim()} onClick={() => void addService()}>添加服务</button>
+        </div>
+        <p className="settings-card-footnote">这里只保存环境变量名，不保存 API Key。先在 .env 配置对应变量，再在这里引用。</p>
+      </details>
+
+      <details className="model-service-editor">
+        <summary>添加模型档案</summary>
+        <div className="model-service-form">
+          <select className="runtime-select" value={profileServiceId} onChange={(event) => setProfileServiceId(event.target.value ? Number(event.target.value) : "")}><option value="">选择模型服务</option>{(catalog?.services ?? []).map((service) => <option value={service.id} key={service.id}>{service.name}</option>)}</select>
+          <input className="runtime-input" value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder="模型 ID，例如 qwen/qwen3-32b" />
+          <input className="runtime-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名称（可选）" />
+          <button className="ghost-button" type="button" disabled={busy || !profileServiceId || !modelId.trim()} onClick={() => void addProfile()}>添加模型</button>
+        </div>
+      </details>
+    </>}
+    {error && <div className="settings-card-callout"><TriangleAlert size={14} /><span>{error}</span></div>}
+  </SettingsVisualGroup>;
 }
 
 export function SettingsPage() {
@@ -623,6 +722,7 @@ export function SettingsPage() {
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? <>
               <SettingsVisualGroup icon={BrainCircuit} title="日常模型" description="模型厂商、具体模型与默认推理方式" tone="accent">{modelPrimaryFields.length ? renderRuntimeFields(modelPrimaryFields) : <div className="settings-empty">当前没有日常模型字段。</div>}</SettingsVisualGroup>
               <SettingsVisualGroup icon={Gauge} title="回答与工具限制" description="输出上限、标题模型和最大工具次数" tone="warm">{modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}</SettingsVisualGroup>
+              <ModelServicesPanel />
             </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
           </section>}
 

@@ -11,8 +11,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import MemoryVersion
+from app.db.models import Memory, MemoryVersion
 from app.db.session import get_session
+from app.memory.audit import audit_index
 from app.memory.errors import InvalidMemoryPath, MemoryNotFound, MemoryToolError
 from app.memory.paths import MEMORY_ROOT
 from app.memory.stats import collect_stats
@@ -67,6 +68,24 @@ class MemoryUsageOut(BaseModel):
     idle_days: int | None
     # 判断噪音要结合长度：短记忆靠索引摘要就够用，reads=0 属正常
     content_chars: int
+
+
+class IndexAuditOut(BaseModel):
+    """索引一致性校验。ok=false 时下一次整理会带着这些问题让模型自己修。"""
+
+    ok: bool
+    issue_count: int
+    summary: str
+    total_files: int
+    index_missing: bool
+    # 有内容但索引里没有 —— 这些记忆模型看不见了
+    missing: list[str]
+    # 索引指向的文件不存在
+    orphaned: list[str]
+    # [路径, 实际字数]
+    overlong: list[tuple[str, int]]
+    # [行号, 原文]
+    malformed: list[tuple[int, str]]
 
 
 class DailyActivityOut(BaseModel):
@@ -124,6 +143,27 @@ async def get_stats(
     和 ``/versions`` 一样，必须声明在 ``/{path:path}`` 之前。
     """
     return await collect_stats(session, days=days, top_n=top)
+
+
+@router.get("/audit", response_model=IndexAuditOut)
+async def get_audit(session: AsyncSession = Depends(get_session)) -> Any:
+    """索引和实际记忆文件对不对得上。
+
+    只读，随时可以调；每日整理跑完也会自查一遍（见 jobs/consolidate.py）。
+    和 ``/stats`` 一样，必须声明在 ``/{path:path}`` 之前。
+    """
+    audit = audit_index(list((await session.execute(select(Memory))).scalars()))
+    return IndexAuditOut(
+        ok=audit.ok,
+        issue_count=audit.issue_count,
+        summary=audit.summary(),
+        total_files=audit.total_files,
+        index_missing=audit.index_missing,
+        missing=list(audit.missing),
+        orphaned=list(audit.orphaned),
+        overlong=[list(item) for item in audit.overlong],
+        malformed=[list(item) for item in audit.malformed],
+    )
 
 
 @router.post("/restore", response_model=MemoryOut)

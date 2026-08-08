@@ -60,6 +60,12 @@ WRITABLE: tuple[Field, ...] = (
     Field("custom_instructions", "自定义指令", "text", allow_empty=True,
           maximum=4000, group="prompt"),
     Field("provider", "模型厂商", "enum", choices=("anthropic", "deepseek")),
+    # 由模型目录管理，保留在 Settings 里只是为了让旧的配置解析链路能够读取。
+    # group 非空，所以不会作为普通数字输入暴露在设置页。
+    Field("chat_model_profile_id", "聊天模型档案", "int", minimum=1,
+          group="model-routing"),
+    Field("consolidate_model_profile_id", "整理模型档案", "int", minimum=1,
+          group="model-routing"),
     Field("deepseek_model", "DeepSeek 模型", "str", provider="deepseek"),
     Field("deepseek_max_tokens", "输出上限", "int", minimum=256, maximum=128000,
           provider="deepseek"),
