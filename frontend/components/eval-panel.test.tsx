@@ -43,7 +43,7 @@ function state(overrides: Partial<EvalRunState> = {}): EvalRunState {
     run_id: "abc", status: "done", total: 2, completed: 2, current_case: "",
     started_at: "2026-08-08T12:00:00", finished_at: "2026-08-08T12:05:00",
     detail: "", saved_path: "eval-runs/x.json", meta: { model: "deepseek-v4-flash" },
-    summary: summary(), scores: [],
+    summary: summary(), scores: [], mode: "run", noises: [], noise_spread: 0,
     ...overrides,
   };
 }

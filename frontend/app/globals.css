@@ -3847,3 +3847,52 @@ html[data-theme="dark"] .workspace-sidebar-conversation.selected > a { color: va
 .env-status-note { flex-basis: 100%; color: var(--amber); font-size: 10.5px; }
 .env-status-warn .env-status-pill { color: var(--amber); background: rgba(230, 188, 113, .14); }
 .env-status-plain { margin-top: 10px; }
+
+/* 导出 / 噪声 / 标注。同样追加在末尾。 */
+.eval-export { display: flex; align-items: center; gap: 8px; padding: 4px 18px 0; }
+.eval-export input[type="date"] { padding: 6px 9px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--surface-secondary); color: var(--text-primary); font-size: 11.5px; }
+.eval-export-note { margin: 8px 18px 0; padding: 8px 10px; border-radius: 7px; background: var(--surface-secondary); color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+
+.eval-noise-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 18px 0; }
+.eval-noise-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); font-size: 11.5px; }
+.eval-noise-row:last-child { border-bottom: 0; }
+.eval-noise-row em { flex: 1; font-style: normal; color: var(--text-tertiary); font-variant-numeric: tabular-nums; text-align: right; }
+.eval-noise-row strong { color: var(--amber); font-variant-numeric: tabular-nums; }
+
+.annot-open { margin-top: 4px; align-self: flex-start; font-size: 10.5px; padding: 3px 8px; }
+
+.annot-panel { display: flex; flex-direction: column; gap: 14px; max-width: 1050px; margin: 0 auto 16px; padding: 16px 18px; border: 1px solid var(--accent); border-radius: 13px; background: var(--surface-primary); }
+.annot-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.annot-head > div:first-child { display: flex; flex-direction: column; gap: 3px; }
+.annot-head strong { font-size: 13px; }
+.annot-head small, .annot-note { color: var(--text-tertiary); font-size: 11px; }
+.annot-note { margin: 0; line-height: 1.65; }
+.annot-head-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+.annot-noop { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-secondary); cursor: pointer; }
+.annot-noop span { display: flex; flex-direction: column; gap: 2px; }
+.annot-noop strong { font-size: 12px; font-weight: 500; }
+.annot-noop small { color: var(--text-tertiary); font-size: 10.5px; line-height: 1.55; }
+
+.annot-field { display: flex; flex-direction: column; gap: 7px; }
+.annot-field-head { display: flex; flex-direction: column; gap: 2px; }
+.annot-field-head strong { font-size: 12px; font-weight: 500; }
+.annot-field-head small { color: var(--text-tertiary); font-size: 10.5px; }
+.annot-list { display: flex; flex-direction: column; gap: 6px; }
+.annot-row, .annot-correction { display: flex; align-items: center; gap: 7px; }
+.annot-correction input { flex: 1; min-width: 0; }
+.annot-row input, .annot-correction input { padding: 7px 10px; border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--surface-secondary); color: var(--text-primary); font-size: 11.5px; }
+.annot-row input { flex: 1; min-width: 0; }
+.annot-row input:focus-visible, .annot-correction input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.annot-add { align-self: flex-start; font-size: 11px; padding: 4px 9px; }
+
+.annot-source { border-top: 1px solid var(--border-subtle); padding-top: 11px; }
+.annot-source summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px; }
+.annot-source summary::-webkit-details-marker { display: none; }
+.annot-source summary strong { font-size: 12px; font-weight: 500; }
+.annot-source summary small { color: var(--text-tertiary); font-size: 10.5px; }
+.annot-conversation, .annot-memory { margin-top: 10px; padding: 10px 12px; border-radius: 8px; background: var(--surface-secondary); }
+.annot-conversation strong, .annot-memory code { display: block; margin-bottom: 6px; font-size: 11.5px; }
+.annot-conversation p { margin: 0 0 5px; font-size: 11.5px; line-height: 1.65; color: var(--text-secondary); }
+.annot-conversation em { font-style: normal; color: var(--text-tertiary); margin-right: 7px; }
+.annot-memory pre { margin: 0; font-size: 10.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }

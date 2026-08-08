@@ -12,7 +12,10 @@ import type {
   DebugPrompt,
   DebugRequestDetail,
   DebugRequestList,
+  EvalCaseDetail,
   EvalDataset,
+  EvalExpect,
+  EvalExportResult,
   EvalHistoryEntry,
   EvalRunState,
   HealthStatus,
@@ -405,6 +408,28 @@ export function startEvalRun(options: { judge?: boolean; only?: string } = {}) {
 
 export function acknowledgeEvalRun() {
   return request<EvalRunState | null>("/api/eval/acknowledge", { method: "POST" });
+}
+
+export function startNoiseRun(options: { caseId?: string; repeat?: number } = {}) {
+  return request<EvalRunState>("/api/eval/noise", {
+    method: "POST",
+    body: JSON.stringify({ case_id: options.caseId ?? "", repeat: options.repeat ?? 3 }),
+  });
+}
+
+export function exportEvalDay(day: string) {
+  return request<EvalExportResult>(`/api/eval/export?day=${day}`, { method: "POST" });
+}
+
+export function getEvalCase(caseId: string) {
+  return request<EvalCaseDetail>(`/api/eval/cases/${encodeURIComponent(caseId)}`);
+}
+
+export function saveEvalExpect(caseId: string, expect: EvalExpect) {
+  return request<EvalCaseDetail>(`/api/eval/cases/${encodeURIComponent(caseId)}/expect`, {
+    method: "PUT",
+    body: JSON.stringify(expect),
+  });
 }
 
 export function cancelEvalRun() {

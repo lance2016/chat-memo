@@ -25,7 +25,15 @@ from app.config import Settings
 from app.eval import report
 from app.eval.dataset import EvalCase, load_cases
 from app.eval.judge import Judge, JudgeVerdict
-from app.eval.metrics import CaseScore, Summary, score_case, summarize
+from app.eval.metrics import (
+    MIN_NOISE,
+    CaseScore,
+    Noise,
+    Summary,
+    measure_noise,
+    score_case,
+    summarize,
+)
 from app.eval.runner import CaseRun, run_case
 from app.llm.provider import LLMProvider
 
@@ -98,6 +106,58 @@ async def execute(
     return result
 
 
+@dataclass
+class NoiseResult:
+    """同一条样本重复跑出来的波动。这是所有对比的解释力下限。"""
+
+    case_id: str
+    repeat: int = 0
+    scores: list[CaseScore] = field(default_factory=list)
+    noises: list[Noise] = field(default_factory=list)
+
+    @property
+    def spread(self) -> float:
+        """给 `run --noise` 用的那个数。取召回的波动，没有就退回一个保守下限。"""
+        return self.noises[0].spread if self.noises else MIN_NOISE
+
+
+async def measure(
+    case: EvalCase,
+    provider: LLMProvider,
+    judge: Judge | None,
+    *,
+    repeat: int = 3,
+    settings: Settings | None = None,
+    on_start: StartHook | None = None,
+    on_done: DoneHook | None = None,
+) -> NoiseResult:
+    """同一条样本连跑 N 次，量出「多大的差异才值得解读」。
+
+    **这是第一次跑评测前该做的第一件事。** 没有它，后面所有的「改了 prompt 提升了
+    3 个点」都可能只是同一份输入的正常抖动。
+
+    和 `execute` 分开而不是塞进它：那边按样本索引结果（`runs[case_id]`），
+    同一条跑多次会自己覆盖自己。
+    """
+    result = NoiseResult(case_id=case.id, repeat=repeat)
+    for index in range(repeat):
+        if on_start is not None:
+            on_start(index, repeat, case.id)
+        run = await run_case(case, provider, settings=settings, sequence=index)
+        verdict = None
+        if judge is not None and not run.crashed:
+            verdict = await judge.judge(case, run.memory_after, run.transcript)
+        result.scores.append(score_case(case, run, verdict))
+        if on_done is not None:
+            on_done(index + 1, repeat, case.id, run)
+
+    result.noises = [
+        measure_noise("事实召回", [s.recall for s in result.scores]),
+        measure_noise("记忆写入次数", [float(s.memory_writes) for s in result.scores]),
+    ]
+    return result
+
+
 def load_dataset(directory: Path | str = DEFAULT_CASES, only: str = "") -> list[EvalCase]:
     """读数据集，标注有问题就拒绝跑。
 
@@ -124,6 +184,8 @@ class RunState:
 
     run_id: str
     status: str  # running | done | failed
+    # run = 跑一轮数据集；noise = 同一条样本重复跑
+    mode: str = "run"
     total: int = 0
     completed: int = 0
     current_case: str = ""
@@ -135,6 +197,9 @@ class RunState:
     scores: list[CaseScore] = field(default_factory=list)
     saved_path: str = ""
     meta: dict[str, str] = field(default_factory=dict)
+    # 只有 mode=noise 时有：每个指标的波动，以及建议用在 run 上的 --noise 值
+    noises: list[Noise] = field(default_factory=list)
+    noise_spread: float = 0.0
 
     @property
     def running(self) -> bool:
@@ -216,6 +281,21 @@ class EvalRegistry:
         """确认看过中断提示，清掉记号。"""
         self._clear_marker()
 
+    def _begin(self, total: int, mode: str, meta: dict[str, str]) -> RunState:
+        if self._state is not None and self._state.running:
+            raise EvalBusy("已经有一轮评测在跑了")
+        state = RunState(
+            run_id=uuid.uuid4().hex[:8],
+            status="running",
+            mode=mode,
+            total=total,
+            started_at=_now(),
+            meta=meta,
+        )
+        self._state = state
+        self._write_marker(state)
+        return state
+
     def start(
         self,
         cases: list[EvalCase],
@@ -227,22 +307,78 @@ class EvalRegistry:
         directory: Path = report.DEFAULT_DIR,
     ) -> RunState:
         """起一轮后台评测，立刻返回状态。跑着的时候再调会抛 `EvalBusy`。"""
-        if self._state is not None and self._state.running:
-            raise EvalBusy("已经有一轮评测在跑了")
-
-        state = RunState(
-            run_id=uuid.uuid4().hex[:8],
-            status="running",
-            total=len(cases),
-            started_at=_now(),
-            meta=meta,
-        )
-        self._state = state
-        self._write_marker(state)
+        state = self._begin(len(cases), "run", meta)
         self._task = asyncio.create_task(
             self._run(state, cases, provider, judge, directory, settings)
         )
         return state
+
+    def start_noise(
+        self,
+        case: EvalCase,
+        provider: LLMProvider,
+        judge: Judge | None,
+        *,
+        repeat: int,
+        meta: dict[str, str],
+        settings: Settings | None = None,
+    ) -> RunState:
+        """起一轮噪声测量。和 `start` 共用同一把「同时只能跑一轮」的锁。
+
+        噪声结果不写进 `eval-runs/` —— 那个目录是「可对比的历史」，而噪声是
+        一次性的标定，混进去只会让 baseline 列表变脏。
+        """
+        state = self._begin(repeat, "noise", meta)
+        self._task = asyncio.create_task(
+            self._measure(state, case, provider, judge, repeat, settings)
+        )
+        return state
+
+    async def _measure(
+        self,
+        state: RunState,
+        case: EvalCase,
+        provider: LLMProvider,
+        judge: Judge | None,
+        repeat: int,
+        settings: Settings | None,
+    ) -> None:
+        def on_start(completed: int, total: int, case_id: str) -> None:
+            state.completed = completed
+            state.current_case = f"{case_id}（第 {completed + 1}/{total} 次）"
+
+        def on_done(completed: int, total: int, case_id: str, run: CaseRun) -> None:
+            state.completed = completed
+            state.current_case = ""
+
+        try:
+            result = await measure(
+                case,
+                provider,
+                judge,
+                repeat=repeat,
+                settings=settings,
+                on_start=on_start,
+                on_done=on_done,
+            )
+        except Exception as exc:
+            logger.exception("噪声测量失败: run_id=%s", state.run_id)
+            state.status = "failed"
+            state.detail = f"{type(exc).__name__}: {exc}"
+            state.finished_at = _now()
+            self._clear_marker()
+            return
+
+        state.scores = result.scores
+        state.noises = result.noises
+        state.noise_spread = result.spread
+        state.status = "done"
+        state.finished_at = _now()
+        self._clear_marker()
+        logger.info(
+            "噪声测量完成 run_id=%s：%s 跑 %d 次，波动 ±%.2f",
+            state.run_id, case.id, repeat, result.spread,
+        )
 
     async def _run(
         self,

@@ -581,6 +581,44 @@ export interface EvalCaseScore {
   usable: boolean;
 }
 
+export interface EvalNoise {
+  metric: string;
+  values: number[];
+  spread: number;
+}
+
+export interface EvalCorrection {
+  stale: string;
+  becomes: string;
+}
+
+export interface EvalExpect {
+  facts: string[];
+  corrections: EvalCorrection[];
+  forbidden: string[];
+  no_op: boolean;
+}
+
+export interface EvalCaseDetail {
+  id: string;
+  date: string;
+  note: string;
+  /** 整理前的记忆快照：path -> content。冻结的输入，界面只读 */
+  memory_before: Record<string, string>;
+  conversations: { title: string; messages: { role: string; text: string }[] }[];
+  expect: EvalExpect;
+  problems: string[];
+}
+
+export interface EvalExportResult {
+  path: string;
+  id: string;
+  conversations: number;
+  memory_files: number;
+  /** 版本记录不全时快照会偏空，这种样本不补齐 memory_before 就不能用 */
+  snapshot_empty: boolean;
+}
+
 export interface EvalRunState {
   run_id: string;
   /** interrupted = 进程重启把这轮带走了，结果没保存 */
@@ -595,6 +633,11 @@ export interface EvalRunState {
   meta: Record<string, string>;
   summary: EvalSummary | null;
   scores: EvalCaseScore[];
+  /** run = 跑一轮数据集；noise = 同一条样本重复跑 */
+  mode: "run" | "noise";
+  noises: EvalNoise[];
+  /** 建议用在 run 上的 --noise 值 */
+  noise_spread: number;
 }
 
 export interface EvalHistoryEntry {

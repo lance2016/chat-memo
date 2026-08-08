@@ -333,3 +333,143 @@ async def test_the_running_marker_is_not_listed_as_a_result(
     names = [entry["name"] for entry in (await client.get("/api/eval/runs")).json()]
 
     assert names == ["20260102-000000"]
+
+
+# ---------- 噪声测量 ----------
+
+
+async def test_noise_repeats_the_same_case(tmp_path) -> None:
+    """同一条样本跑 N 次，N 份打分都要留下。
+
+    不能塞进 `execute`：那边按样本 id 索引结果（`runs[case_id]`），
+    同一条跑多次会自己覆盖自己，最后只剩一份。
+    """
+    turns = [text_turn("摘要"), text_turn("无需改动")] * 3
+
+    result = await service.measure(
+        make_case(), provider_with(turns), None, repeat=3
+    )
+
+    assert result.repeat == 3
+    assert len(result.scores) == 3
+    assert {noise.metric for noise in result.noises} == {"事实召回", "记忆写入次数"}
+
+
+async def test_noise_never_reports_zero_spread(tmp_path) -> None:
+    """三次恰好撞在一起不代表系统稳定，别让下限被压到 0。"""
+    turns = [text_turn("摘要"), text_turn("无需改动")] * 3
+
+    result = await service.measure(make_case(), provider_with(turns), None, repeat=3)
+
+    assert result.spread >= 0.05
+
+
+async def test_noise_shares_the_busy_lock_with_run(tmp_path) -> None:
+    """噪声和评测抢同一个 provider 和限流额度，不该同时跑。"""
+    registry = EvalRegistry(marker_dir=tmp_path)
+    registry.start([make_case()], writing_provider(), None, meta={}, directory=tmp_path)
+
+    with pytest.raises(EvalBusy):
+        registry.start_noise(make_case(), writing_provider(), None, repeat=2, meta={})
+
+    await registry.wait()
+
+
+async def test_noise_results_do_not_pollute_the_history(tmp_path, monkeypatch) -> None:
+    """`eval-runs/` 是「可对比的历史」，噪声是一次性标定，混进去会让 baseline 变脏。"""
+    from app.eval import report as report_module
+
+    monkeypatch.setattr(report_module, "DEFAULT_DIR", tmp_path)
+    registry = EvalRegistry(marker_dir=tmp_path)
+    registry.start_noise(
+        make_case(),
+        provider_with([text_turn("摘要"), text_turn("无改动")] * 2),
+        None,
+        repeat=2,
+        meta={},
+    )
+    await registry.wait()
+
+    assert registry.state is not None and registry.state.mode == "noise"
+    assert list(tmp_path.glob("2*.json")) == []
+
+
+# ---------- 标注 ----------
+
+
+async def test_reading_a_case_exposes_the_frozen_input(
+    client: AsyncClient, tmp_path
+) -> None:
+    """标注界面要看得到对话原文和整理前的记忆 —— 不然没法判断该记什么。"""
+    dump_case(make_case("day-1"), tmp_path / "day-1.json")
+
+    body = (await client.get(f"/api/eval/cases/day-1?directory={tmp_path}")).json()
+
+    assert body["conversations"][0]["messages"][0]["text"]
+    assert "/memories/MEMORY.md" in body["memory_before"]
+    assert body["expect"]["facts"]
+
+
+async def test_saving_expect_leaves_the_input_frozen(
+    client: AsyncClient, tmp_path
+) -> None:
+    """只改 expect。对话和记忆快照是冻结的输入，动了就不再是同一条样本，
+    之前跑出来的结果也就没法比了。"""
+    dump_case(make_case("day-2"), tmp_path / "day-2.json")
+    before = (await client.get(f"/api/eval/cases/day-2?directory={tmp_path}")).json()
+
+    saved = await client.put(
+        f"/api/eval/cases/day-2/expect?directory={tmp_path}",
+        json={"facts": ["用户改用 uv"], "corrections": [], "forbidden": [], "no_op": False},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["expect"]["facts"] == ["用户改用 uv"]
+    assert saved.json()["conversations"] == before["conversations"]
+    assert saved.json()["memory_before"] == before["memory_before"]
+
+
+async def test_saving_a_half_done_annotation_is_allowed(
+    client: AsyncClient, tmp_path
+) -> None:
+    """标到一半存盘很常见，不该被拒。
+
+    问题回给界面显示，真正拦住的地方在开跑前（`load_dataset`）——
+    那里拒绝才有意义：一条标错的样本会安静地拉低分数好几轮。
+    """
+    dump_case(make_case("day-3"), tmp_path / "day-3.json")
+
+    saved = await client.put(
+        f"/api/eval/cases/day-3/expect?directory={tmp_path}",
+        json={"facts": [], "corrections": [], "forbidden": [], "no_op": False},
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["problems"], "半成品要把问题回给界面"
+
+
+async def test_blank_entries_are_dropped_on_save(client: AsyncClient, tmp_path) -> None:
+    """界面上的空输入框不该变成一条空事实点 —— 那会让裁判对着空字符串判定。"""
+    dump_case(make_case("day-4"), tmp_path / "day-4.json")
+
+    saved = await client.put(
+        f"/api/eval/cases/day-4/expect?directory={tmp_path}",
+        json={
+            "facts": ["真的事实", "   ", ""],
+            "corrections": [{"stale": "", "becomes": "无主"}],
+            "forbidden": [],
+            "no_op": False,
+        },
+    )
+
+    assert saved.json()["expect"]["facts"] == ["真的事实"]
+    assert saved.json()["expect"]["corrections"] == []
+
+
+async def test_case_name_cannot_escape_the_dataset_directory(
+    client: AsyncClient,
+) -> None:
+    """case_id 来自 URL，拼进路径前必须挡住穿越。"""
+    for evil in ("..%2f..%2fetc%2fpasswd", ".ssh", "nope"):
+        response = await client.get(f"/api/eval/cases/{evil}")
+        assert response.status_code in (400, 404), evil

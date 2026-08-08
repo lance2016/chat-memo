@@ -23,6 +23,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
 from app.eval import report, service
+from app.eval.dataset import (
+    CASE_SUFFIX,
+    Correction,
+    Expectation,
+    dump_case,
+    load_case,
+)
 from app.eval.judge import Judge
 from app.eval.service import EvalBusy, RunState
 from app.llm.factory import get_provider
@@ -102,6 +109,9 @@ class RunStateOut(BaseModel):
     meta: dict[str, str]
     summary: SummaryOut | None
     scores: list[CaseScoreOut]
+    mode: str = "run"
+    noises: list[NoiseOut] = Field(default_factory=list)
+    noise_spread: float = 0.0
 
 
 class StartRequest(BaseModel):
@@ -112,6 +122,46 @@ class StartRequest(BaseModel):
     judge_provider: str = ""
     # 只跑第 0/1 层。想先确认链路通不通、又不想花裁判的钱时用
     judge: bool = True
+
+
+class NoiseOut(BaseModel):
+    metric: str
+    values: list[float]
+    spread: float
+
+
+class NoiseRequest(BaseModel):
+    cases: str = Field(default=str(service.DEFAULT_CASES))
+    # 测哪条样本。留空取数据集里第一条
+    case_id: str = ""
+    repeat: int = Field(default=3, ge=2, le=10)
+    model: str = ""
+    judge_model: str = ""
+    judge_provider: str = ""
+
+
+class ExpectCorrection(BaseModel):
+    stale: str
+    becomes: str = ""
+
+
+class ExpectPayload(BaseModel):
+    facts: list[str] = Field(default_factory=list)
+    corrections: list[ExpectCorrection] = Field(default_factory=list)
+    forbidden: list[str] = Field(default_factory=list)
+    no_op: bool = False
+
+
+class CaseDetailOut(BaseModel):
+    """一条样本的全部内容，给标注界面用。"""
+
+    id: str
+    date: str
+    note: str
+    memory_before: dict[str, str]
+    conversations: list[dict[str, Any]]
+    expect: ExpectPayload
+    problems: list[str]
 
 
 class HistoryEntryOut(BaseModel):
@@ -177,18 +227,10 @@ async def start_run(
 
     # 必须是生效配置（数据库覆盖叠加在 .env 上），否则评的不是你实际在跑的那套。
     settings = await resolve_settings(session)
-    provider = get_provider(
-        settings, model_override=payload.model or settings.consolidate_model
+    provider, built_judge = _providers(
+        settings, payload.model, payload.judge_provider, payload.judge_model
     )
-
-    judge = None
-    if payload.judge:
-        judge_settings = (
-            settings.model_copy(update={"provider": payload.judge_provider})
-            if payload.judge_provider
-            else settings
-        )
-        judge = Judge(get_provider(judge_settings, model_override=payload.judge_model))
+    judge = built_judge if payload.judge else None
 
     try:
         state = service.registry.start(
@@ -207,6 +249,96 @@ async def start_run(
         # 409 而不是 400：请求本身没问题，只是现在这个时候不行。
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     return _state_out(state)
+
+
+@router.post("/noise", response_model=RunStateOut, status_code=status.HTTP_202_ACCEPTED)
+async def start_noise(
+    payload: NoiseRequest, session: AsyncSession = Depends(get_session)
+) -> Any:
+    """同一条样本连跑 N 次，量出「多大的差异才值得解读」。
+
+    **这是第一次跑评测前该做的第一件事。** 没有它，之后所有的「改了 prompt
+    提升了 3 个点」都可能只是同一份输入的正常抖动。
+    """
+    try:
+        cases = service.load_dataset(payload.cases, payload.case_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if not cases:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "没有可用的样本")
+
+    settings = await resolve_settings(session)
+    provider, judge = _providers(settings, payload.model, payload.judge_provider, payload.judge_model)
+    try:
+        state = service.registry.start_noise(
+            cases[0],
+            provider,
+            judge,
+            repeat=payload.repeat,
+            settings=settings,
+            meta={"case": cases[0].id, "model": getattr(provider, "model_name", "")},
+        )
+    except EvalBusy as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return _state_out(state)
+
+
+@router.get("/cases/{case_id}", response_model=CaseDetailOut)
+async def get_case(case_id: str, directory: str = str(service.DEFAULT_CASES)) -> Any:
+    """一条样本的全部内容。标注界面靠它显示对话原文和整理前的记忆。"""
+    case = _read_case(directory, case_id)
+    return CaseDetailOut(
+        id=case.id,
+        date=case.date,
+        note=case.note,
+        memory_before=case.memory_before,
+        conversations=[
+            {"title": c.title, "messages": [asdict(m) for m in c.messages]}
+            for c in case.conversations
+        ],
+        expect=ExpectPayload(
+            facts=case.expect.facts,
+            corrections=[
+                ExpectCorrection(stale=c.stale, becomes=c.becomes)
+                for c in case.expect.corrections
+            ],
+            forbidden=case.expect.forbidden,
+            no_op=case.expect.no_op,
+        ),
+        problems=case.validate(),
+    )
+
+
+@router.put("/cases/{case_id}/expect", response_model=CaseDetailOut)
+async def save_expect(
+    case_id: str, payload: ExpectPayload, directory: str = str(service.DEFAULT_CASES)
+) -> Any:
+    """保存标注。
+
+    **只改 `expect`**，对话和记忆快照原样留着 —— 那两样是冻结的输入，
+    动了就不再是同一条样本，之前跑出来的结果也就没法比了。
+
+    保存时不拒绝有问题的标注：标到一半存盘很常见。问题回给界面显示，
+    真正拦住的地方在开跑前（`load_dataset`）。
+    """
+    from dataclasses import replace as dataclass_replace
+
+    case = _read_case(directory, case_id)
+    updated = dataclass_replace(
+        case,
+        expect=Expectation(
+            facts=[item.strip() for item in payload.facts if item.strip()],
+            corrections=[
+                Correction(stale=c.stale.strip(), becomes=c.becomes.strip())
+                for c in payload.corrections
+                if c.stale.strip()
+            ],
+            forbidden=[item.strip() for item in payload.forbidden if item.strip()],
+            no_op=payload.no_op,
+        ),
+    )
+    dump_case(updated, _case_path(directory, case_id))
+    return await get_case(case_id, directory)
 
 
 @router.get("/status", response_model=RunStateOut | None)
@@ -308,6 +440,42 @@ async def export_case(
     }
 
 
+def _providers(settings, model: str, judge_provider: str, judge_model: str):
+    """按同一套规则造被评的 provider 和裁判 provider。
+
+    抽出来是因为 run 和 noise 两条路必须用**完全一样**的装配 ——
+    噪声是拿来解释 run 的分数波动的，两边模型不一致的话这个数就没有意义了。
+    """
+    provider = get_provider(
+        settings, model_override=model or settings.consolidate_model
+    )
+    judge_settings = (
+        settings.model_copy(update={"provider": judge_provider})
+        if judge_provider
+        else settings
+    )
+    return provider, Judge(get_provider(judge_settings, model_override=judge_model))
+
+
+def _case_path(directory: str, case_id: str) -> Path:
+    """样本文件路径。`case_id` 来自 URL，拼进路径前必须挡住穿越。"""
+    if "/" in case_id or "\\" in case_id or case_id.startswith("."):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "非法的样本名")
+    return Path(directory) / f"{case_id}{CASE_SUFFIX}"
+
+
+def _read_case(directory: str, case_id: str):
+    path = _case_path(directory, case_id)
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "没有这条样本")
+    try:
+        return load_case(path)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, f"样本读不了：{exc}"
+        ) from exc
+
+
 def _state_out(state: RunState) -> RunStateOut:
     return RunStateOut(
         run_id=state.run_id,
@@ -320,6 +488,9 @@ def _state_out(state: RunState) -> RunStateOut:
         detail=state.detail,
         saved_path=state.saved_path,
         meta=state.meta,
+        mode=state.mode,
+        noises=[NoiseOut(**asdict(noise)) for noise in state.noises],
+        noise_spread=state.noise_spread,
         summary=SummaryOut(**asdict(state.summary)) if state.summary else None,
         scores=[
             CaseScoreOut(**asdict(score), usable=score.usable) for score in state.scores

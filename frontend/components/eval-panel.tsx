@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CircleAlert, FlaskConical, Play, RefreshCw, Square, TriangleAlert } from "lucide-react";
-import { acknowledgeEvalRun, cancelEvalRun, errorMessage, getEvalDataset, getEvalStatus, listEvalRuns, startEvalRun } from "@/lib/api";
+import { Activity, CircleAlert, Download, FlaskConical, Pencil, Play, RefreshCw, Square, TriangleAlert } from "lucide-react";
+import { acknowledgeEvalRun, cancelEvalRun, errorMessage, exportEvalDay, getEvalDataset, getEvalStatus, listEvalRuns, startEvalRun, startNoiseRun } from "@/lib/api";
+import { EvalAnnotator } from "@/components/eval-annotator";
 import type { EvalCaseScore, EvalDataset, EvalHistoryEntry, EvalRunState, EvalSummary } from "@/lib/types";
 
 /** 跑一轮要几分钟，轮询频率按「人能忍受多久看不到变化」定，不用更快。 */
@@ -63,6 +64,10 @@ export function EvalPanel() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [judge, setJudge] = useState(true);
+  const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10));
+  const [exporting, setExporting] = useState(false);
+  const [exported, setExported] = useState("");
+  const [editing, setEditing] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async (withDataset = false) => {
@@ -109,6 +114,34 @@ export function EvalPanel() {
     }
   };
 
+  const runNoise = async () => {
+    setError("");
+    try {
+      setState(await startNoiseRun({ repeat: 3 }));
+    } catch (cause) {
+      setError(errorMessage(cause, "无法启动噪声测量"));
+    }
+  };
+
+  const exportDay = async () => {
+    setExporting(true);
+    setError("");
+    try {
+      const result = await exportEvalDay(day);
+      setExported(
+        result.snapshot_empty
+          ? `已导出 ${result.id}，但整理前记忆为空（这天早于版本记录），补齐 memory_before 才能用`
+          : `已导出 ${result.id}：${result.conversations} 个会话 · 整理前 ${result.memory_files} 个记忆文件。下一步标注它。`,
+      );
+      await refresh(true);
+      setEditing(result.id);
+    } catch (cause) {
+      setError(errorMessage(cause, "导出失败"));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const stop = async () => {
     try {
       setState(await cancelEvalRun());
@@ -142,6 +175,9 @@ export function EvalPanel() {
             <Play size={13} />{running ? "跑着呢…" : "开始评测"}
           </button>
           {running && <button className="ghost-button" onClick={() => void stop()}><Square size={12} />停止</button>}
+          <button className="ghost-button" type="button" onClick={() => void runNoise()} disabled={running || blocked} title="同一条样本连跑 3 次，量出多大的差异才值得解读">
+            <Activity size={13} />量噪声
+          </button>
           <label className="eval-toggle">
             <input type="checkbox" checked={judge} disabled={running} onChange={(event) => setJudge(event.target.checked)} />
             用模型裁判判分
@@ -174,7 +210,24 @@ export function EvalPanel() {
       </div>
     </section>
 
-    {state?.summary && state.status !== "running" && <section className="memory-stat-card eval-result-card">
+    {state?.mode === "noise" && state.status === "done" && <section className="memory-stat-card eval-result-card">
+      <div className="stats-card-heading">
+        <div><span className="card-kicker">NOISE</span><h2>噪声</h2></div>
+        <span className="eval-meta">{state.meta.case}</span>
+      </div>
+      <div className="eval-noise-list">
+        {state.noises.map((noise) => <div className="eval-noise-row" key={noise.metric}>
+          <span>{noise.metric}</span>
+          <em>{noise.values.map((value) => value.toFixed(2)).join(" · ")}</em>
+          <strong>±{noise.spread.toFixed(2)}</strong>
+        </div>)}
+      </div>
+      <p className="eval-hint">
+        比 ±{state.noise_spread.toFixed(2)} 小的差异不要解读成改进 —— 那是同一份输入的正常抖动。
+      </p>
+    </section>}
+
+    {state?.mode === "run" && state?.summary && state.status !== "running" && <section className="memory-stat-card eval-result-card">
       <div className="stats-card-heading">
         <div><span className="card-kicker">LAST RESULT</span><h2>最近一轮</h2></div>
         <span className="eval-meta">{formatTime(state.finished_at)} · {state.meta.model || "未知模型"}</span>
@@ -190,12 +243,21 @@ export function EvalPanel() {
       </p>
     </section>}
 
+    {editing && <EvalAnnotator caseId={editing} onClose={() => setEditing("")} onSaved={() => void refresh(true)} />}
+
     <div className="memory-stats-grid">
       {dataset && <section className="memory-stat-card">
         <div className="stats-card-heading">
           <div><span className="card-kicker">DATASET</span><h2>样本</h2></div>
           <span className="count-pill">{dataset.no_op_cases} 条反例</span>
         </div>
+        <div className="eval-export">
+          <input type="date" value={day} onChange={(event) => setDay(event.target.value)} aria-label="要导出的日期" />
+          <button className="ghost-button" type="button" onClick={() => void exportDay()} disabled={exporting}>
+            <Download size={13} />{exporting ? "导出中…" : "从这天导出"}
+          </button>
+        </div>
+        {exported && <p className="eval-export-note">{exported}</p>}
         <div className="eval-case-list">
           {dataset.cases.map((item) => <div className={`eval-case ${item.problems.length ? "eval-case-bad" : ""}`} key={item.id}>
             <div className="eval-case-head">
@@ -203,6 +265,9 @@ export function EvalPanel() {
               {item.no_op ? <span className="eval-tag eval-tag-noop">不该写记忆</span> : <span className="eval-tag">{item.facts} 事实 · {item.corrections} 修正</span>}
             </div>
             {item.note && <p title={item.note}>{item.note}</p>}
+            <button className="ghost-button annot-open" type="button" onClick={() => setEditing(item.id)}>
+              <Pencil size={11} />{item.facts || item.corrections || item.no_op ? "编辑标注" : "去标注"}
+            </button>
             {item.problems.map((problem) => <span className="eval-case-problem" key={problem}><CircleAlert size={11} />{problem}</span>)}
           </div>)}
         </div>
