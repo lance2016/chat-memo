@@ -53,6 +53,7 @@ async def run_daily_consolidation() -> None:
                     result = await Consolidator(
                         session,
                         get_provider(settings, target=target),
+                        settings,
                     ).run(yesterday)
                 logger.info(
                     "记忆整理完成 date=%s 会话=%d 记忆写入=%d",

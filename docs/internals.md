@@ -200,15 +200,18 @@ curl localhost:18000/api/debug/prompt             # 当前 system prompt 原文�
 
 ```
 app/
-  config.py                 pydantic-settings
+  config.py                 pydantic-settings（只剩「怎么调」，不含模型路由）
   security.py               X-API-Key 校验
+  agent.py                  一次 agent 运行的统一装配：provider + 工具 + system prompt
   db/models.py              SQLAlchemy 模型
   llm/
     provider.py             LLMProvider / ToolExecutor 协议
+    target.py               ModelTarget：「调哪个模型」的唯一载体
+    catalog.py              模型服务 / 模型档案（数据库里的模型目录）
     anthropic_provider.py   Claude 的流式 agent loop
-    deepseek_provider.py    DeepSeek 的 agent loop + 消息格式互转
-    factory.py              按 PROVIDER 选实现
-    composite.py            把 memory 和 kb 工具拼给同一个 agent loop
+    deepseek_provider.py    OpenAI 兼容协议的 agent loop + 消息格式互转
+    factory.py              按**协议**选实现
+    composite.py            按工具名把多个 executor 拼成一个
     events.py               agent 事件定义
   memory/
     paths.py                路径校验（拒绝穿越）
@@ -242,9 +245,35 @@ app/
 
 ## 加新模型
 
-实现 `app/llm/provider.py` 里的 `LLMProvider` 协议，在 `factory.py` 注册即可，
-chat / memory / jobs 层不用动。OpenAI 兼容的接口可以直接照抄 `deepseek_provider.py`，
-通常只需要改 base_url 和模型名。
+分两种情况，成本差很远：
+
+**OpenAI 兼容的服务**（硅基流动、OpenRouter、本地 vLLM…）—— **不用改代码**。
+在模型页加一个「模型服务」（填 base_url 和凭据引用）再加模型即可。
+`factory.py` 的注册表按**协议**分发，所有兼容服务共用同一个实现。
+
+**新协议**（比如 Gemini 原生）—— 实现 `app/llm/provider.py` 的 `LLMProvider` 协议，
+在 `factory._BY_PROTOCOL` 注册一行。不用动 `Settings`，不用动 chat / jobs / eval
+任何调用方：它们拿到的都是 `ModelTarget`，只认协议名。
+
+两条铁律：
+
+- **「调哪个模型」只从 `ModelTarget` 取**（地址、密钥、模型 ID、max_tokens、思考默认）。
+  `Settings` 里只剩换模型也不变的东西。往 Settings 加 `xxx_model` 字段就是在往回走。
+- **`provider == "anthropic"` 只允许出现在 `ModelTarget.from_settings()` 里**，
+  那是老配置的兼容入口，模型目录接管之后整个函数可以删掉。
+
+DeepSeek 侧的两个注意点：思考内容不能回传（翻译时丢弃）；没有原生记忆工具，
+schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。
+
+## 加新工具
+
+改一张表：`app/agent.py` 的 `TOOLKITS`。一条声明包含三件事 —— 怎么建 executor、
+哪些用途（chat / consolidation）启用、额外的可用条件（比如知识库要挂了 vault）。
+
+**三件事必须绑在一起**，这正是这张表存在的理由。它们原先散在三处手写实现里，
+产生过两类静默故障：提示词讲了某个工具却没注册它（模型反复调用不存在的工具），
+以及工具注册了但提示词没提（模型不知道自己有）。现在 system prompt 的分段由
+「实际注册了哪些工具」推导，结构上不可能再对不上。
 
 DeepSeek 侧的两个注意点：思考内容不能回传（翻译时丢弃）；没有原生记忆工具，
 schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。

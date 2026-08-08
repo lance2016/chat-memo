@@ -76,9 +76,17 @@ INSTALL_OBS=1 OBS_TRACING=1 docker compose --profile obs up -d --build api phoen
 - `app/main.py` — `create_app()` 装配所有 router；`lifespan` 里起三个后台任务
   （每日整理、通知 ticker、TTS 预热）。目前没有独立 worker，后台任务跑在 API 进程内。
 - `app/llm/` — `provider.py` 定义 `LLMProvider`/`ToolExecutor` 协议，
-  `anthropic_provider.py` / `deepseek_provider.py` 各自实现流式 agent loop，
-  `factory.py` 按 provider 名选实现，`composite.py` 把 memory / kb / timeline 工具拼给同一个 loop。
-  **加新模型只需实现协议 + 在 factory 注册**，chat / memory / jobs 层不用动。
+  `target.py` 的 `ModelTarget` 是「调哪个模型」的唯一载体（地址/密钥/模型 ID/
+  max_tokens/思考默认），`Settings` 只剩「怎么调」（工具轮次上限、请求快照开关）。
+  `factory.py` **按协议**而不是厂商名分发：加一个 OpenAI 兼容服务只需在模型目录加一行
+  记录，代码零改动；加一个新协议写一个 provider 类并注册一行。
+  `catalog.py` 从数据库解析模型服务/档案，`composite.py` 按工具名路由。
+  ⚠️ `ModelTarget.from_settings()` 是**全代码库唯一**允许出现 `provider == "anthropic"`
+  的地方；别在别处再判断厂商，要什么就从 target 上取。
+- `app/agent.py` — **一次 agent 运行的统一装配**：provider + 工具 + system prompt。
+  聊天、每日整理、评测、`/api/debug/prompt` 都走它。工具在 `TOOLKITS` 表里声明
+  「怎么建 + 什么用途启用 + 什么条件可用」，system prompt 的分段由实际注册的工具推导 ——
+  **加一个新工具只改这张表**，不要回到各处手写 executor 列表。
 - `app/memory/` — 三层记忆的 L2，逻辑上是 `/memories` 文件树，物理上是 Postgres 行。
   `store.py` 是虚拟文件系统（每次变更写 `memory_versions` 快照，支持回滚），
   `prompt.py` 组装 system prompt，`paths.py` 做路径穿越校验，

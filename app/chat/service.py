@@ -29,6 +29,7 @@ from app.llm.events import (
 )
 from app.logging_setup import dim, ok_mark
 from app.llm.provider import LLMProvider, ToolExecutor
+from app.llm.target import ModelTarget
 from app.llm.title import TitleClient
 from app.obs import bind
 
@@ -230,7 +231,9 @@ def sanitize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def build_runtime_context(settings: Settings, now: dt.datetime | None = None) -> str:
+def build_runtime_context(
+    settings: Settings, now: dt.datetime | None = None, model: str = ""
+) -> str:
     """注入到本轮 user 消息前的运行时信息。
 
     **不能放 system prompt** —— 那是 prompt cache 的稳定前缀，插入时间戳会让整段缓存失效。
@@ -241,9 +244,9 @@ def build_runtime_context(settings: Settings, now: dt.datetime | None = None) ->
     """
     now = now or dt.datetime.now()
     weekday = "一二三四五六日"[now.weekday()]
-    model = (
-        settings.model if settings.provider == "anthropic" else settings.deepseek_model
-    )
+    # 模型名由调用方从 provider 拿（`provider.model_name`），这里不再按厂商字段猜 ——
+    # 猜的那份在换 provider 或用模型目录选模型之后就会和实际调用的对不上。
+    model = model or ModelTarget.from_settings(settings).model_id
     return (
         "<runtime_context>\n"
         f"当前时间：{now:%Y-%m-%d} 星期{weekday} {now:%H:%M}\n"
@@ -403,7 +406,12 @@ class ChatService:
         await self.session.commit()
 
         outgoing = [
-            {"type": "text", "text": build_runtime_context(self.settings)},
+            {
+                "type": "text",
+                "text": build_runtime_context(
+                    self.settings, model=self.provider.model_name
+                ),
+            },
             *user_content,
         ]
         messages = [*history, {"role": "user", "content": outgoing}]

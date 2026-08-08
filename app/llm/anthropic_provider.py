@@ -21,6 +21,7 @@ from app.llm.events import (
     ToolUse,
 )
 from app.llm.provider import ToolExecutor
+from app.llm.target import ModelTarget
 
 logger = logging.getLogger(__name__)
 
@@ -31,25 +32,32 @@ class AnthropicProvider:
         settings: Settings | None = None,
         client: AsyncAnthropic | None = None,
         base_url: str = "",
+        target: ModelTarget | None = None,
     ) -> None:
+        """`target` 说「调哪个模型」，`settings` 只剩「怎么调」。
+
+        不传 target 时从 settings 推一个 —— 老部署和只注入了假 client 的测试
+        走这条路，行为和以前完全一致。
+        """
         self.settings = settings or get_settings()
+        self.target = target or ModelTarget.from_settings(self.settings)
         self.client = client or AsyncAnthropic(
-            api_key=self.settings.anthropic_api_key,
-            **({"base_url": base_url} if base_url else {}),
+            api_key=self.target.api_key,
+            **({"base_url": url} if (url := base_url or self.target.base_url) else {}),
         )
 
     @property
     def model_name(self) -> str:
-        return self.settings.model
+        return self.target.model_id
 
     def _request_kwargs(self, system: str, thinking: bool = True) -> dict[str, Any]:
-        effort = self.settings.effort
+        effort = self.target.effort or self.settings.effort
         if not thinking and effort in {"xhigh", "max"}:
             # Opus 5 上「关闭思考」只在 effort <= high 时被接受，否则 400。
             effort = "high"
         return {
-            "model": self.settings.model,
-            "max_tokens": self.settings.max_tokens,
+            "model": self.target.model_id,
+            "max_tokens": self.target.max_tokens,
             # system 是稳定前缀（人格 + 记忆索引），在这里打缓存断点。
             # 绝不能往 system 里插时间戳/会话 ID —— 缓存是前缀匹配，一变就全失效。
             "system": [
@@ -94,7 +102,7 @@ class AnthropicProvider:
             snapshot = (
                 debug.recorder.record(
                     provider="anthropic",
-                    model=self.settings.model,
+                    model=self.target.model_id,
                     payload=payload,
                     iteration=iteration,
                 )
@@ -194,8 +202,8 @@ class AnthropicProvider:
         非流式请求会撞上 SDK 的 HTTP 超时。
         """
         async with self.client.messages.stream(
-            model=self.settings.model,
-            max_tokens=max_tokens or self.settings.max_tokens,
+            model=self.target.model_id,
+            max_tokens=max_tokens or self.target.max_tokens,
             system=system,
             messages=[{"role": "user", "content": prompt}],
             thinking={"type": "adaptive"} if thinking else {"type": "disabled"},

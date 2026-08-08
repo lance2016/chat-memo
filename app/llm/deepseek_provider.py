@@ -34,6 +34,7 @@ from app.llm.events import (
     ToolUse,
 )
 from app.llm.provider import ToolExecutor
+from app.llm.target import ModelTarget
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +55,26 @@ class _Turn:
 
 class DeepSeekProvider:
     def __init__(
-        self, settings: Settings | None = None, client: AsyncOpenAI | None = None
+        self,
+        settings: Settings | None = None,
+        client: AsyncOpenAI | None = None,
+        target: ModelTarget | None = None,
     ) -> None:
+        """`target` 说「调哪个模型」，`settings` 只剩「怎么调」。
+
+        这个实现承载所有 OpenAI 兼容协议的服务（DeepSeek、硅基流动、OpenRouter、
+        本地推理），差异全部由 target 的 base_url / api_key / model_id 表达。
+        """
         self.settings = settings or get_settings()
+        self.target = target or ModelTarget.from_settings(self.settings)
         self.client = client or AsyncOpenAI(
-            api_key=self.settings.deepseek_api_key,
-            base_url=self.settings.deepseek_base_url,
+            api_key=self.target.api_key or "not-needed",
+            base_url=self.target.base_url or None,
         )
 
     @property
     def model_name(self) -> str:
-        return self.settings.deepseek_model
+        return self.target.model_id
 
     async def run(
         self,
@@ -78,13 +88,13 @@ class DeepSeekProvider:
         tools = executor.openai_definitions if executor is not None else []
         total_usage: dict[str, int] = {}
         want_thinking = (
-            self.settings.deepseek_thinking if thinking is None else thinking
+            self.target.thinking_default if thinking is None else thinking
         )
 
         for iteration in range(self.settings.max_tool_iterations):
             request: dict[str, Any] = {
-                "model": self.settings.deepseek_model,
-                "max_tokens": self.settings.deepseek_max_tokens,
+                "model": self.target.model_id,
+                "max_tokens": self.target.max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
                     *to_openai_messages(working),
@@ -105,7 +115,7 @@ class DeepSeekProvider:
             snapshot = (
                 debug.recorder.record(
                     provider="deepseek",
-                    model=self.settings.deepseek_model,
+                    model=self.target.model_id,
                     payload=request,
                     iteration=iteration,
                 )
@@ -233,8 +243,8 @@ class DeepSeekProvider:
         thinking: bool = True,
     ) -> str:
         request: dict[str, Any] = {
-            "model": self.settings.deepseek_model,
-            "max_tokens": max_tokens or self.settings.deepseek_max_tokens,
+            "model": self.target.model_id,
+            "max_tokens": max_tokens or self.target.max_tokens,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},

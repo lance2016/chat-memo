@@ -50,7 +50,7 @@ async def consolidate(
         legacy_model_id=settings.consolidate_model,
     )
     provider = get_provider(settings, target=target)
-    result = await Consolidator(session, provider).run(day)
+    result = await Consolidator(session, provider, settings).run(day)
     return ConsolidateOut(**result.__dict__)
 
 

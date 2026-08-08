@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.config import Settings
 from app.eval import report
 from app.eval.dataset import EvalCase, load_cases
 from app.eval.judge import Judge, JudgeVerdict
@@ -62,6 +63,7 @@ async def execute(
     provider: LLMProvider,
     judge: Judge | None,
     *,
+    settings: Settings | None = None,
     on_start: StartHook | None = None,
     on_done: DoneHook | None = None,
 ) -> ExecutionResult:
@@ -80,7 +82,7 @@ async def execute(
         if on_start is not None:
             on_start(index, len(cases), case.id)
 
-        run = await run_case(case, provider)
+        run = await run_case(case, provider, settings=settings)
         result.runs[case.id] = run
 
         verdict = None
@@ -221,6 +223,7 @@ class EvalRegistry:
         judge: Judge | None,
         *,
         meta: dict[str, str],
+        settings: Settings | None = None,
         directory: Path = report.DEFAULT_DIR,
     ) -> RunState:
         """起一轮后台评测，立刻返回状态。跑着的时候再调会抛 `EvalBusy`。"""
@@ -237,7 +240,7 @@ class EvalRegistry:
         self._state = state
         self._write_marker(state)
         self._task = asyncio.create_task(
-            self._run(state, cases, provider, judge, directory)
+            self._run(state, cases, provider, judge, directory, settings)
         )
         return state
 
@@ -248,6 +251,7 @@ class EvalRegistry:
         provider: LLMProvider,
         judge: Judge | None,
         directory: Path,
+        settings: Settings | None = None,
     ) -> None:
         def on_start(completed: int, total: int, case_id: str) -> None:
             state.completed = completed
@@ -260,7 +264,12 @@ class EvalRegistry:
 
         try:
             result = await execute(
-                cases, provider, judge, on_start=on_start, on_done=on_done
+                cases,
+                provider,
+                judge,
+                settings=settings,
+                on_start=on_start,
+                on_done=on_done,
             )
         except Exception as exc:
             # 不 re-raise：这是后台任务，抛出去只会变成一条 "Task exception was never

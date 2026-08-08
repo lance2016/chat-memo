@@ -16,6 +16,7 @@ from app.jobs.router import router as jobs_router
 from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
 from app.debug.router import router as debug_router
 from app.eval.router import router as eval_router
+from app.llm.target import ModelTarget
 from app.llm.catalog import resolve_model_target
 from app.llm.router import router as model_router
 from app.memory.router import router as memory_router
@@ -117,8 +118,12 @@ def create_app() -> FastAPI:
             }
         except ValueError:
             # 目录配置不完整时仍让数据库健康检查返回可读状态；聊天接口会给出具体原因。
-            active_model = active.model if active.provider == "anthropic" else active.deepseek_model
-            return {"status": "ok", "provider": active.provider, "model": active_model}
+            fallback = ModelTarget.from_settings(active)
+            return {
+                "status": "ok",
+                "provider": fallback.service_slug,
+                "model": fallback.model_id,
+            }
 
     @app.get("/api/ping", dependencies=[Depends(require_api_key)])
     async def ping() -> dict[str, bool]:

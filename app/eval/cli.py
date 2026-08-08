@@ -103,7 +103,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"整理模型 {getattr(provider, 'model_name', '未知')}"
           + ("" if judge is None else f" · 裁判 {args.judge_model or '同上'}"))
 
-    result = await _execute(cases, provider, judge)
+    result = await _execute(cases, provider, judge, settings)
     runs, verdicts, scores = result.runs, result.verdicts, result.scores
     summary = result.summary
 
@@ -133,7 +133,10 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 async def _execute(
-    cases: list[EvalCase], provider: LLMProvider, judge: Judge | None
+    cases: list[EvalCase],
+    provider: LLMProvider,
+    judge: Judge | None,
+    settings: Settings | None = None,
 ) -> ExecutionResult:
     """跑一批样本，边跑边在终端打点。
 
@@ -150,7 +153,12 @@ async def _execute(
               + (" · 崩溃" if run.crashed else ""))
 
     return await service.execute(
-        cases, provider, judge, on_start=on_start, on_done=on_done
+        cases,
+        provider,
+        judge,
+        settings=settings,
+        on_start=on_start,
+        on_done=on_done,
     )
 
 
@@ -178,7 +186,7 @@ async def _noise(args: argparse.Namespace) -> int:
     recalls: list[float | None] = []
     writes: list[float | None] = []
     for i in range(args.repeat):
-        run = await run_case(case, provider, sequence=i)
+        run = await run_case(case, provider, settings=settings, sequence=i)
         verdict = (
             await judge.judge(case, run.memory_after, run.transcript)
             if not run.crashed

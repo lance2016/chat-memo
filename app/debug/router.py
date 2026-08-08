@@ -13,10 +13,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import build_agent_context
 from app.db.session import get_session
 from app.debug.recorder import recorder
-from app.memory.prompt import build_system_prompt
-from app.memory.store import MemoryStore
 from app.security import require_api_key
 from app.settings_store import resolve_settings
 
@@ -69,9 +68,13 @@ async def current_prompt(session: AsyncSession = Depends(get_session)) -> dict[s
     也是最容易误解的地方。
     """
     settings = await resolve_settings(session)
-    system = await build_system_prompt(MemoryStore(session, actor="manual"), settings)
+    # 走和聊天同一套装配，否则这个「看当前提示词」的接口会慢慢显示成另一份东西 ——
+    # 一个不准的调试视图比没有更糟。track_reads 由 actor=manual 的语义保证不污染统计。
+    context = await build_agent_context(session, settings=settings, purpose="chat")
+    system = context.system
     return {
         "system": system,
+        "toolkits": list(context.toolkits),
         "chars": len(system),
         # 粗略估算，中文约 1 字 1 token，英文更少。用来判断量级，不是精确计费。
         "approx_tokens": len(system),

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import Settings
 from app.db.models import Base, Conversation, Memory, Message
 from app.eval.dataset import EvalCase
 from app.jobs.consolidate import ConsolidationResult, Consolidator
@@ -78,9 +79,17 @@ class CaseRun:
 
 
 async def run_case(
-    case: EvalCase, provider: LLMProvider, *, sequence: int = 0
+    case: EvalCase,
+    provider: LLMProvider,
+    *,
+    settings: Settings | None = None,
+    sequence: int = 0,
 ) -> CaseRun:
     """在一个一次性数据库里重放一条样本。
+
+    `settings` 传**生产库解析出来的生效配置**。样本跑在一次性内存库里，那里没有
+    `app_settings` 行，就地 resolve 只会拿到代码默认值 —— 而 system prompt 里的
+    owner_name 和自定义指令都从 settings 来，用默认值等于评了一份线上不存在的提示词。
 
     `sequence` 只在同一条样本重复跑（测噪声）时用来区分，进 trace 元数据。
     """
@@ -104,7 +113,9 @@ async def run_case(
                 session_id=f"{case.id}#{sequence}",
             ):
                 try:
-                    run.result = await Consolidator(session, provider).run(day)
+                    run.result = await Consolidator(
+                        session, provider, settings
+                    ).run(day)
                 except Exception as exc:
                     # 不 re-raise：一条样本崩了不该让整轮评测停下来，但必须记下来 ——
                     # crashed 的样本在报告里单独一列，绝不能当成 0 分混进平均值。

@@ -203,13 +203,17 @@ async def test_settings_endpoint_reports_current_model(client: AsyncClient) -> N
 
 
 def test_model_override_does_not_mutate_global_settings() -> None:
-    """settings 是 lru_cache 出来的全局单例，覆盖必须复制，不能就地改。"""
+    """settings 是 lru_cache 出来的全局单例，覆盖不能就地改它。
+
+    覆盖现在落在 `ModelTarget` 上而不是 Settings 的厂商字段上 —— 这比原来更强：
+    settings 根本不参与「调哪个模型」，也就没有被污染的可能。
+    """
     from app.llm.factory import get_provider
 
     base = Settings(provider="deepseek", deepseek_api_key="t", deepseek_model="flash")
     provider = get_provider(base, model_override="pro")
 
-    assert provider.settings.deepseek_model == "pro"
+    assert provider.model_name == "pro"
     assert base.deepseek_model == "flash"  # 原对象没被污染
 
 
@@ -217,4 +221,34 @@ def test_empty_override_keeps_configured_model() -> None:
     from app.llm.factory import get_provider
 
     base = Settings(provider="deepseek", deepseek_api_key="t", deepseek_model="flash")
-    assert get_provider(base, model_override="").settings.deepseek_model == "flash"
+    assert get_provider(base, model_override="").model_name == "flash"
+
+
+def test_protocol_picks_the_implementation_not_the_vendor_name() -> None:
+    """注册表按协议分发：加一个 OpenAI 兼容厂商不该需要动 factory。"""
+    from app.llm.deepseek_provider import DeepSeekProvider
+    from app.llm.factory import get_provider
+    from app.llm.target import ModelTarget
+
+    target = ModelTarget(
+        protocol="openai_compatible",
+        model_id="qwen-max",
+        display_name="Qwen",
+        base_url="https://example.invalid/v1",
+        api_key="k",
+        service_slug="some-new-vendor",
+    )
+    provider = get_provider(Settings(), target=target)
+
+    assert isinstance(provider, DeepSeekProvider)
+    assert provider.model_name == "qwen-max"
+
+
+def test_unknown_protocol_is_rejected_with_the_options() -> None:
+    from app.llm.factory import get_provider
+    from app.llm.target import ModelTarget
+
+    target = ModelTarget(protocol="gemini", model_id="x", display_name="x")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="未知的模型协议"):
+        get_provider(Settings(), target=target)

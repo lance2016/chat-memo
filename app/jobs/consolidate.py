@@ -29,6 +29,8 @@ from app.db.models import (
     Message,
     OpenLoop,
 )
+from app.agent import build_agent_context
+from app.config import Settings, get_settings
 from app.jobs.prompts import (
     CONSOLIDATE_ISSUES_TEMPLATE,
     CONSOLIDATE_PROMPT,
@@ -39,9 +41,6 @@ from app.jobs.prompts import (
 from app.llm.events import Error
 from app.llm.provider import LLMProvider
 from app.memory.audit import IndexAudit, audit_index
-from app.memory.prompt import build_system_prompt
-from app.memory.store import MemoryStore
-from app.memory.tool import MemoryToolExecutor
 from app.obs import bind
 from app.timeutils import local_day_bounds
 
@@ -85,9 +84,21 @@ class ConsolidationResult:
 
 
 class Consolidator:
-    def __init__(self, session: AsyncSession, provider: LLMProvider) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        provider: LLMProvider,
+        settings: Settings | None = None,
+    ) -> None:
+        """`settings` 应当传生效配置（`resolve_settings` 的结果）。
+
+        不传会落到 `.env` 启动快照 —— 那样设置页里改的 `owner_name` 和自定义指令
+        到不了整理任务的 system prompt，而这个偏差没有任何症状：整理照跑，
+        只是模型不知道主人叫什么、也看不到用户手写的规矩。
+        """
         self.session = session
         self.provider = provider
+        self.settings = settings or get_settings()
 
     async def run(self, day: dt.date | None = None) -> ConsolidationResult:
         """Run the job with all model calls tagged as ``consolidate``."""
@@ -275,10 +286,15 @@ class Consolidator:
     ) -> ConsolidationResult:
         from app.memory.paths import INDEX_PATH
 
-        store = MemoryStore(self.session, actor="consolidation")
-        executor = MemoryToolExecutor(store)
-        # 整理的输入是对话摘要，用不上知识库 —— 不注册 kb 工具，提示词里也别提它
-        system = await build_system_prompt(store, include_kb=False, include_timeline=False)
+        # 工具和提示词的装配在 app/agent.py，和聊天共用一份。整理的输入是对话摘要，
+        # 用不上知识库和时间线 —— 由 purpose 决定，不再在这里手写布尔参数。
+        context = await build_agent_context(
+            self.session,
+            settings=self.settings,
+            provider=self.provider,
+            purpose="consolidation",
+        )
+        store, executor, system = context.store, context.executor, context.system
         # 上次留下的索引问题在这里进 prompt。模型只看得到索引本身，看不到「实际有哪些
         # 记忆文件」—— `missing` 这类问题它凭自己永远发现不了，必须由代码算出来告诉它。
         issues = (await self._index_audit()).as_prompt()

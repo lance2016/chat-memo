@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any, Literal
 
 from dotenv import dotenv_values
@@ -16,16 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import ModelProfile, ModelService
+from app.llm.target import (
+    DEFAULT_CAPABILITIES,
+    ModelTarget,
+)
 
-ProtocolName = Literal["anthropic", "openai_compatible"]
-
-DEFAULT_CAPABILITIES: dict[str, bool] = {
-    "streaming": True,
-    "tool_calling": True,
-    "thinking": False,
-    "vision": False,
-    "json_mode": False,
-}
 
 BUILTIN_SERVICES = (
     {
@@ -41,46 +35,6 @@ BUILTIN_SERVICES = (
         "credential_ref": "DEEPSEEK_API_KEY",
     },
 )
-
-
-@dataclass(frozen=True)
-class ModelTarget:
-    """一次请求最终解析出的模型目标。"""
-
-    profile_id: int | None
-    service_slug: str
-    service_name: str
-    protocol: ProtocolName
-    model_id: str
-    display_name: str
-    base_url: str
-    api_key: str
-    capabilities: dict[str, bool]
-
-    def apply(self, settings: Settings) -> Settings:
-        """把目录目标投影到旧 provider 实现能理解的 Settings。
-
-        这是迁移期的兼容层：后续抽出真正的 adapter 后，这里会被移除。
-        """
-        if self.protocol == "anthropic":
-            return settings.model_copy(
-                update={
-                    "provider": "anthropic",
-                    "model": self.model_id,
-                    "anthropic_api_key": self.api_key or settings.anthropic_api_key,
-                }
-            )
-        return settings.model_copy(
-            update={
-                # 当前 DeepSeekProvider 已经是 OpenAI 兼容调用，先复用它承载
-                # DeepSeek、SiliconFlow、OpenRouter 和本地兼容服务。
-                "provider": "deepseek",
-                "deepseek_model": self.model_id,
-                "deepseek_base_url": self.base_url or settings.deepseek_base_url,
-                # 本地 OpenAI 兼容服务可能不需要鉴权；SDK 仍要求传一个非空值。
-                "deepseek_api_key": self.api_key or settings.deepseek_api_key or "not-needed",
-            }
-        )
 
 
 def _secret(ref: str, settings: Settings) -> str:
@@ -178,6 +132,15 @@ def _target_from_rows(
         raise ValueError(
             f"模型服务 {service.name} 未配置凭据 {service.credential_ref}"
         )
+    capabilities = _capabilities(profile, protocol)
+    # 调用参数优先取档案自己的 options；没填就落回该协议的旧全局配置，
+    # 这样老部署升级上来行为不变，而新加的模型可以逐个调。
+    options = profile.options or {}
+    fallback = ModelTarget.from_settings(
+        settings.model_copy(
+            update={"provider": "anthropic" if protocol == "anthropic" else "deepseek"}
+        )
+    )
     return ModelTarget(
         profile_id=profile.id,
         service_slug=service.slug,
@@ -187,7 +150,12 @@ def _target_from_rows(
         display_name=profile.display_name,
         base_url=service.base_url,
         api_key=api_key,
-        capabilities=_capabilities(profile, protocol),
+        capabilities=capabilities,
+        max_tokens=int(options.get("max_tokens") or fallback.max_tokens),
+        thinking_default=bool(
+            options.get("thinking", capabilities.get("thinking", False))
+        ),
+        effort=str(options.get("effort") or fallback.effort),
     )
 
 
@@ -224,11 +192,9 @@ async def resolve_model_target(
             raise ValueError(f"模型档案「{profile.display_name}」已停用")
         return _target_from_rows(service, profile, settings)
 
-    provider = settings.provider
-    legacy_slug = "anthropic" if provider == "anthropic" else "deepseek"
-    legacy_model = legacy_model_id or (
-        settings.model if legacy_slug == "anthropic" else settings.deepseek_model
-    )
+    # 旧配置对应的内置服务与模型，判断只在 from_settings 里做一次。
+    legacy = ModelTarget.from_settings(settings, legacy_model_id)
+    legacy_slug, legacy_model = legacy.service_slug, legacy.model_id
     builtin_pair = (
         await session.execute(
             select(ModelService, ModelProfile)
@@ -243,35 +209,9 @@ async def resolve_model_target(
         service, profile = builtin_pair
         return _target_from_rows(service, profile, settings)
 
-    if provider == "anthropic":
-        model_id = legacy_model_id or settings.model
-        service_name = "Anthropic"
-        protocol: ProtocolName = "anthropic"
-        api_key = _secret("ANTHROPIC_API_KEY", settings)
-        return ModelTarget(
-            profile_id=None,
-            service_slug="anthropic",
-            service_name=service_name,
-            protocol=protocol,
-            model_id=model_id,
-            display_name=f"Claude · {model_id}",
-            base_url="",
-            api_key=api_key,
-            capabilities={**DEFAULT_CAPABILITIES, "thinking": True, "json_mode": True},
-        )
-
-    model_id = legacy_model_id or settings.deepseek_model
-    return ModelTarget(
-        profile_id=None,
-        service_slug="deepseek",
-        service_name="DeepSeek",
-        protocol="openai_compatible",
-        model_id=model_id,
-        display_name=f"DeepSeek · {model_id}",
-        base_url=settings.deepseek_base_url,
-        api_key=_secret("DEEPSEEK_API_KEY", settings),
-        capabilities={**DEFAULT_CAPABILITIES, "thinking": settings.deepseek_thinking},
-    )
+    # 目录里没有对应记录（老部署刚升级、或用户手工删过），退回旧配置。
+    # 分支在 `ModelTarget.from_settings` 里，这里不再重复一遍厂商判断。
+    return ModelTarget.from_settings(settings, legacy_model_id)
 
 
 def _legacy_default_profile_id(
@@ -279,8 +219,8 @@ def _legacy_default_profile_id(
 ) -> int | None:
     if settings.chat_model_profile_id is not None:
         return settings.chat_model_profile_id
-    slug = "anthropic" if settings.provider == "anthropic" else "deepseek"
-    model_id = settings.model if slug == "anthropic" else settings.deepseek_model
+    legacy = ModelTarget.from_settings(settings)
+    slug, model_id = legacy.service_slug, legacy.model_id
     for service, profile in profiles:
         if service.slug == slug and profile.model_id == model_id:
             return profile.id
@@ -307,10 +247,8 @@ async def catalog_payload(
     elif settings.consolidate_model_profile_id is not None:
         default_id = settings.consolidate_model_profile_id
     else:
-        slug = "anthropic" if settings.provider == "anthropic" else "deepseek"
-        legacy_model = settings.consolidate_model or (
-            settings.model if slug == "anthropic" else settings.deepseek_model
-        )
+        legacy = ModelTarget.from_settings(settings, settings.consolidate_model)
+        slug, legacy_model = legacy.service_slug, legacy.model_id
         default_id = next(
             (
                 profile.id

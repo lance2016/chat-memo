@@ -17,19 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.chat.service import ChatService, history_window_stats
 from app.db.models import Conversation, ConversationSummary, Message
+from app.agent import build_agent_context
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
-from app.kb.tool import KbToolExecutor
-from app.llm.composite import CompositeExecutor
 from app.llm.catalog import resolve_model_target
-from app.llm.factory import get_provider
-from app.llm.provider import ToolExecutor
+from app.llm.target import ModelTarget
 from app.llm.title import get_title_client
-from app.memory.prompt import build_system_prompt
-from app.memory.store import MemoryStore
-from app.memory.tool import MemoryToolExecutor
-from app.timeline.store import TimelineStore
-from app.timeline.tool import TimelineToolExecutor
 from app.search import search as run_search
 from app.settings_store import (
     SettingError,
@@ -86,14 +79,14 @@ async def get_runtime_settings(
     try:
         target = await resolve_model_target(session, settings)
     except ValueError:
-        target = None
-    is_anthropic = target.protocol == "anthropic" if target is not None else settings.provider == "anthropic"
+        # 目录没配好也要能打开设置页 —— 退回旧配置推出来的目标，不在这里重复厂商判断。
+        target = ModelTarget.from_settings(settings)
     return {
         **describe(settings, overrides),
         # 兼容前端已有的运行时卡片
-        "provider": target.service_slug if target is not None else settings.provider,
-        "model": target.model_id if target is not None else settings.model if is_anthropic else settings.deepseek_model,
-        "thinking_default": target.capabilities.get("thinking", False) if target is not None else True if is_anthropic else settings.deepseek_thinking,
+        "provider": target.service_slug,
+        "model": target.model_id,
+        "thinking_default": target.thinking_default,
         "thinking_toggle": True,
         # 知识库（Obsidian vault）是否挂载。只读状态位 —— vault_path 是 .env 配置，设置页改不了
         "kb_enabled": bool(settings.vault_path),
@@ -532,40 +525,32 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     settings,
                     profile_id=payload.model_profile_id or conversation.model_profile_id,
                 )
-                if not target.capabilities.get("tool_calling", False):
+                if not target.supports_tools:
                     yield _sse({"type": "error", "message": "当前模型不支持工具调用，无法运行记忆和时间线功能"})
                     return
-                effective_settings = target.apply(settings)
                 if target.profile_id is not None:
                     conversation.model_profile_id = target.profile_id
-                store = MemoryStore(
-                    session, actor="chat", conversation_id=conversation.id
+
+                # 工具、提示词、provider 的装配在 app/agent.py，和每日整理共用一份 ——
+                # 各写一份迟早会长成「提示词讲了某个工具但没注册它」。
+                context = await build_agent_context(
+                    session,
+                    settings=settings,
+                    target=target,
+                    purpose="chat",
+                    conversation_id=conversation.id,
                 )
-                executors: list[ToolExecutor] = [
-                    MemoryToolExecutor(store),
-                    TimelineToolExecutor(
-                        TimelineStore(
-                            session,
-                            actor="chat",
-                            conversation_id=conversation.id,
-                            settings=effective_settings,
-                        )
-                    ),
-                ]
-                if settings.vault_path:
-                    # vault 挂载了才注册 kb 工具；system prompt 的知识库段受同一开关控制
-                    executors.append(KbToolExecutor(session, settings.vault_path, conversation.id))
-                executor: ToolExecutor = CompositeExecutor(*executors)
+                store = context.store
                 service = ChatService(
                     session=session,
-                    provider=get_provider(effective_settings, target=target),
-                    executor=executor,
-                    settings=effective_settings,
+                    provider=context.provider,
+                    executor=context.executor,
+                    settings=settings,
                     model_profile_id=target.profile_id,
                     # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
                     title_client=get_title_client(settings),
                 )
-                system = await build_system_prompt(store, effective_settings)
+                system = context.system
 
                 # The browser gets the ID only as an SSE metadata event. It
                 # never needs Phoenix's API or collector endpoint.

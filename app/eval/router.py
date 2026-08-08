@@ -195,6 +195,7 @@ async def start_run(
             cases,
             provider,
             judge,
+            settings=settings,
             meta={
                 "cases": payload.cases,
                 "model": getattr(provider, "model_name", ""),
