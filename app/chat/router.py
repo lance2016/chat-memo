@@ -15,16 +15,18 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.service import ChatService, history_window_stats
-from app.db.models import Conversation, ConversationSummary, Message
 from app.agent import build_agent_context
+from app.chat.service import ChatService, history_window_stats
 from app.config import get_settings
+from app.db.models import Conversation, ConversationSummary, Message
 from app.db.session import get_session, get_sessionmaker
 from app.llm.catalog import resolve_model_target
 from app.llm.target import ModelTarget
-from app.obs.tracing import apply_tracing
 from app.llm.title import get_title_client
+from app.obs import current_trace_id
+from app.obs.tracing import apply_tracing
 from app.search import search as run_search
+from app.security import require_api_key
 from app.settings_store import (
     SettingError,
     apply,
@@ -32,9 +34,7 @@ from app.settings_store import (
     load_overrides,
     resolve_settings,
 )
-from app.security import require_api_key
 from app.timeutils import local_day_bounds
-from app.obs import current_trace_id
 
 logger = logging.getLogger(__name__)
 

@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from types import MappingProxyType
+from typing import Any
 
-
-_fields: ContextVar[dict[str, str]] = ContextVar("obs_fields", default={})
+# 默认值用不可变映射：ContextVar 的 default 是**所有上下文共享的同一个对象**，
+# 给它一个可变 dict 意味着任何一次就地修改都会永久污染整个进程的默认值。
+# 现在的代码每次都先 `dict(...)` 拷贝再 set，所以安全 —— 但哪天有人写了
+# `current_fields()["x"] = 1` 就会静默出事。改成 MappingProxyType 后那种写法会当场抛错。
+_EMPTY_FIELDS: Mapping[str, str] = MappingProxyType({})
+_fields: ContextVar[Mapping[str, str]] = ContextVar("obs_fields", default=_EMPTY_FIELDS)
 _tracer: Any = None
 
 _OPENINFERENCE_KINDS = {

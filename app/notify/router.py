@@ -29,7 +29,7 @@ class NotifyStatus(BaseModel):
     enabled: bool
     ready: bool
     channels: list[ChannelStatus]
-    recent: list["NotificationOut"]
+    recent: list[NotificationOut]
 
 
 class NotificationOut(BaseModel):

@@ -16,12 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import ModelProfile, ModelService
-from app.settings_store import is_configured, resolve_settings
 from app.llm.target import (
     DEFAULT_CAPABILITIES,
     ModelTarget,
 )
-
+from app.settings_store import is_configured, resolve_settings
 
 BUILTIN_SERVICES = (
     {
@@ -100,7 +99,7 @@ def _builtin_model(settings: Settings, service_slug: str) -> tuple[str, str, str
     return settings.deepseek_model, "DeepSeek", settings.deepseek_base_url
 
 
-async def _get_or_create(session: AsyncSession, model, slug: str, build):
+async def _get_or_create(session: AsyncSession, model, slug: str, **values):
     """按 slug 取，没有就建 —— 并发安全。
 
     原来是裸的 SELECT-then-INSERT，而 `slug` 上有唯一索引。首次访问时前端会同时打
@@ -115,7 +114,9 @@ async def _get_or_create(session: AsyncSession, model, slug: str, build):
         return existing
     try:
         async with session.begin_nested():
-            created = build()
+            # 直接收字段而不是收一个工厂闭包：闭包在 for 里捕获的是循环变量本身，
+            # 现在调用是同步的所以碰巧没事，但谁把调用延后一点就会悄悄拿到最后一轮的值。
+            created = model(slug=slug, **values)
             session.add(created)
             await session.flush()
         return created
@@ -135,14 +136,11 @@ async def ensure_builtin_catalog(
             session,
             ModelService,
             slug,
-            lambda: ModelService(
-                slug=definition["slug"],
-                name=definition["name"],
-                protocol=definition["protocol"],
-                base_url=base_url,
-                credential_ref=definition["credential_ref"],
-                config={"managed_by_runtime": True},
-            ),
+            name=definition["name"],
+            protocol=definition["protocol"],
+            base_url=base_url,
+            credential_ref=definition["credential_ref"],
+            config={"managed_by_runtime": True},
         )
         if (service.config or {}).get("managed_by_runtime", False):
             service.base_url = base_url
@@ -158,14 +156,11 @@ async def ensure_builtin_catalog(
             session,
             ModelProfile,
             profile_slug,
-            lambda: ModelProfile(
-                service_id=service.id,
-                slug=profile_slug,
-                model_id=model_id,
-                display_name=f"{prefix} · {model_id}",
-                capabilities=capabilities,
-                options={"managed_by_runtime": True},
-            ),
+            service_id=service.id,
+            model_id=model_id,
+            display_name=f"{prefix} · {model_id}",
+            capabilities=capabilities,
+            options={"managed_by_runtime": True},
         )
         if (profile.options or {}).get("managed_by_runtime", False):
             profile.model_id = model_id

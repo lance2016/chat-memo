@@ -8,32 +8,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.chat.router import router as chat_router
 from app.asr.router import router as asr_router
+from app.chat.router import router as chat_router
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
-from app.jobs.router import router as jobs_router
-from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
 from app.debug.router import router as debug_router
 from app.eval.router import router as eval_router
-from app.llm.target import ModelTarget
+from app.jobs.router import router as jobs_router
+from app.jobs.scheduler import run_daily_consolidation, run_notification_ticker
 from app.llm.catalog import resolve_model_target
 from app.llm.router import router as model_router
+from app.llm.target import ModelTarget
+from app.logging_setup import setup_logging
 from app.memory.router import router as memory_router
-from app.obs.router import router as obs_router
 from app.notify.router import router as notify_router
+from app.obs.middleware import ObservabilityMiddleware
+from app.obs.router import router as obs_router
+from app.obs.tracing import apply_tracing
 from app.review.router import router as review_router
+from app.security import require_api_key
+from app.settings_store import resolve_settings
 from app.timeline.router import router as timeline_router
 from app.tool_catalog import router as tool_catalog_router
 from app.tts.client import warmup
 from app.tts.router import public as tts_public_router
 from app.tts.router import router as tts_router
 from app.tts.tickets import tickets
-from app.logging_setup import setup_logging
-from app.obs.middleware import ObservabilityMiddleware
-from app.obs.tracing import apply_tracing
-from app.security import require_api_key
-from app.settings_store import resolve_settings
 
 
 async def _sync_tracing() -> None:

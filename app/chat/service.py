@@ -15,8 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import debug
 from app.config import Settings, get_settings
-from app.db.session import get_sessionmaker
 from app.db.models import Conversation, Message
+from app.db.session import get_sessionmaker
 from app.llm.events import (
     AgentEvent,
     AssistantTurn,
@@ -27,10 +27,10 @@ from app.llm.events import (
     ToolResultTurn,
     ToolUse,
 )
-from app.logging_setup import dim, ok_mark
 from app.llm.provider import LLMProvider, ToolExecutor
 from app.llm.target import ModelTarget
 from app.llm.title import TitleClient
+from app.logging_setup import dim, ok_mark
 from app.obs import bind
 
 logger = logging.getLogger(__name__)

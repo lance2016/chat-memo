@@ -21,7 +21,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     # JSONB 在 Postgres 上用原生类型，在 SQLite（测试）上退化为 JSON。
-    type_annotation_map = {dict[str, Any]: JSON().with_variant(JSONB(), "postgresql")}
+
+    # 不是「忘了加 ClassVar」。
+    type_annotation_map = {  # noqa: RUF012
+        dict[str, Any]: JSON().with_variant(JSONB(), "postgresql")
+    }
 
 
 def _now_column() -> Mapped[dt.datetime]:

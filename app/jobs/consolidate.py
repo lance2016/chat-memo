@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent import build_agent_context
+from app.config import Settings, get_settings
 from app.db.models import (
     Conversation,
     ConversationSummary,
@@ -29,8 +31,6 @@ from app.db.models import (
     Message,
     OpenLoop,
 )
-from app.agent import build_agent_context
-from app.config import Settings, get_settings
 from app.jobs.prompts import (
     CONSOLIDATE_ISSUES_TEMPLATE,
     CONSOLIDATE_PROMPT,

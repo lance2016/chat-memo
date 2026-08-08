@@ -66,7 +66,7 @@ class Notifier:
                 delivered.append(channel.name)
             except ChannelError as exc:
                 failures.append(f"{channel.name}: {exc}")
-            except Exception as exc:  # noqa: BLE001 - 通道各自依赖不同的库，兜住以免拖垮 ticker
+            except Exception as exc:
                 logger.exception("通知通道 %s 抛出未预期的异常", channel.name)
                 failures.append(f"{channel.name}: {exc}")
 

@@ -11,9 +11,9 @@ from app.db.models import ModelProfile, ModelService
 from app.db.session import get_session
 from app.llm.catalog import (
     DEFAULT_CAPABILITIES,
-    is_credential_ref,
     catalog_payload,
     ensure_builtin_catalog,
+    is_credential_ref,
     resolve_model_target,
 )
 from app.security import require_api_key

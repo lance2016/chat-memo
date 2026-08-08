@@ -30,6 +30,32 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.14",
+]
+
+[tool.ruff.lint]
+# **显式钉住规则集。** 不钉的话 ruff 的默认集合会随版本变 —— 实测从 0.15 升到
+# 0.16 凭空多出 123 个问题，其中 65 个还是 FastAPI 的标准写法。
+# 一个会随版本抖动的 lint 挡不住任何东西，只会让人学会忽略它。
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "I",      # 导入顺序
+    "B",      # bugbear：真 bug 类，B023 闭包晚绑定就是它抓到的
+    "UP",     # 语法现代化
+    "RUF",
+]
+ignore = [
+    # `session: AsyncSession = Depends(get_session)` 是 FastAPI 的标准写法，
+    # 全项目 65 处。改成 bugbear 想要的样子反而不符合框架惯例。
+    "B008",
+    # 行宽交给人判断。这个仓库注释密度高，硬断行会把成段的说明切碎。
+    "E501",
+    # 「歧义 Unicode 字符」。这三条会把中文全角标点（，。「」）全部报出来 ——
+    # 实测 2554 个。整个仓库的注释和提示词都是中文，这不是歧义，是母语。
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.pytest.ini_options]

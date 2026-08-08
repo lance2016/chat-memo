@@ -144,7 +144,7 @@ async def compose_body(
                 client.complete(system=COPY_SYSTEM, prompt=prompt, max_tokens=120),
                 timeout=settings.notify_timeout,
             )
-    except Exception:  # noqa: BLE001 - 外部服务，什么都可能抛；文案不值得让提醒失败
+    except Exception:
         logger.warning("提醒文案生成失败或超时，退回模板", exc_info=True)
         return fallback_body(item, now)
 

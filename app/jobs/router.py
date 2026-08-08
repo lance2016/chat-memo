@@ -6,13 +6,13 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.settings_store import resolve_settings
 from app.backup import run_backup
 from app.db.session import get_session
 from app.jobs.consolidate import Consolidator
 from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
 from app.security import require_api_key
+from app.settings_store import resolve_settings
 
 router = APIRouter(
     prefix="/api/jobs", tags=["jobs"], dependencies=[Depends(require_api_key)]
