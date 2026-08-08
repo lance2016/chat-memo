@@ -3,7 +3,7 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, ListChecks, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
+import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
 import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
@@ -27,9 +27,13 @@ function displayTool(tool: LiveTool | ToolActivity, t: ReturnType<typeof useI18n
   return (
     <div className={`tool-activity ${running ? "running" : tool.ok ? "" : "failed"}`} key={`${tool.name}-${tool.summary}-${JSON.stringify(tool.input)}`}>
       <span className="tool-activity-icon" aria-hidden="true">{running ? <LoaderCircle size={13} className="spin" /> : tool.ok ? "✓" : "!"}</span>
-      <span className="tool-activity-label">{toolLabel(tool)}</span>
-      <span className="tool-activity-state">{running ? t("chat.tool.processing") : tool.ok ? t("chat.tool.done") : t("chat.tool.attention")}</span>
-      {!running && tool.summary && <span className="tool-summary" title={tool.summary}>{tool.summary}</span>}
+      <div className="tool-activity-body">
+        <div className="tool-activity-head">
+          <span className="tool-activity-label">{toolLabel(tool)}</span>
+          <span className="tool-activity-state">{running ? t("chat.tool.processing") : tool.ok ? t("chat.tool.done") : t("chat.tool.attention")}</span>
+        </div>
+        {!running && tool.summary && <p className="tool-summary">{tool.summary}</p>}
+      </div>
     </div>
   );
 }
@@ -44,8 +48,8 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
   const label = runningCount ? t("chat.tool.runningLabel", { count: tools.length, group: groupName }) : t("chat.tool.doneLabel", { count: tools.length, group: groupName });
   const state = runningCount ? t("chat.tool.runningState", { count: runningCount }) : failedCount ? t("chat.tool.attentionState", { count: failedCount }) : t("chat.tool.done");
 
-  return <details className={`tool-group ${failedCount ? "has-failure" : ""}`} open={runningCount > 0}>
-    <summary><span className="tool-group-icon"><ListChecks size={13} /></span><span className="tool-group-label">{label}</span><span className="tool-group-state">{state}</span><ChevronDown size={13} className="tool-group-chevron" /></summary>
+  return <details className={`tool-group ${failedCount ? "has-failure" : ""}`} open={runningCount > 0 || failedCount > 0}>
+    <summary><span className="tool-group-icon" aria-hidden="true">{runningCount ? <LoaderCircle size={13} className="spin" /> : failedCount ? <TriangleAlert size={13} /> : <Check size={13} />}</span><span className="tool-group-label">{label}</span>{failedCount > 0 && <span className="tool-group-warning"><TriangleAlert size={12} /><span>{state}</span></span>}{runningCount > 0 && <span className="tool-group-state">{state}</span>}<ChevronDown size={13} className="tool-group-chevron" /></summary>
     <div className="tool-group-list">{tools.map((tool) => displayTool(tool, t))}</div>
   </details>;
 }

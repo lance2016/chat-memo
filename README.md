@@ -94,6 +94,7 @@ docker compose exec api pytest -q
 ## 文档
 
 - [开发路线](docs/roadmap.md)：按优先级记录待办、验证方式和暂不实施的事项
+- [后端架构](docs/architecture.md)
 - [内部机制](docs/internals.md)：记忆、工具调用和后台流程的实现说明
 - [前端与 API 契约](docs/frontend-api.md)：前后端接口和模型选择约定
 - [时间线设计](docs/timeline.md)：事项提取、重复规则和通知边界

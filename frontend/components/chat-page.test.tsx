@@ -113,6 +113,45 @@ describe("ChatPage streaming lifecycle", () => {
     finishStream();
   });
 
+  it("edits a user message in place before resending", async () => {
+    mocks.searchParams = "conversation=42";
+    mocks.listConversations.mockResolvedValue([conversation]);
+    mocks.listMessages.mockResolvedValue([
+      {
+        id: 100,
+        role: "user",
+        content: [{ type: "text", text: "原来的问题" }],
+        usage: null,
+        created_at: "2026-08-07T00:00:00Z",
+      },
+      {
+        id: 101,
+        role: "assistant",
+        content: [{ type: "text", text: "原来的回答" }],
+        usage: null,
+        created_at: "2026-08-07T00:00:01Z",
+      },
+    ]);
+    mocks.streamChat.mockResolvedValue(undefined);
+
+    render(<ChatPage />);
+    expect(await screen.findByText("原来的问题")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑重发" }));
+
+    const editor = await screen.findByRole("textbox", { name: "编辑这条消息后重新发送…" });
+    expect(editor).toHaveValue("原来的问题");
+    fireEvent.change(editor, { target: { value: "修改后的问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "重发" }));
+
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledWith(
+      42,
+      "修改后的问题",
+      null,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    ));
+  });
+
   it("aborts the active stream when the page unmounts", async () => {
     let streamSignal: AbortSignal | undefined;
     mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, _onEvent, signal?: AbortSignal) => {

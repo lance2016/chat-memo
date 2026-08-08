@@ -114,6 +114,7 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
   除非差异超过噪声。评测不写真实记忆；`eval-runs/` 和 `evals/` 必须挂进容器，
   否则界面和命令行会各写各的历史。
 
+`docs/architecture.md` 是整体架构（模块、链路、技术栈，含可直接生成图的节点/边清单）；
 `docs/internals.md` 是设计取舍与踩坑清单的权威文档，改任何一个模块前先读对应章节；
 `docs/frontend-api.md` 是前后端契约；`docs/roadmap.md` 是未做事项；
 `docs/evaluation.md` 是记忆质量怎么测（三层指标：机械 / 过程 / 模型裁判）；
