@@ -11,10 +11,12 @@ from typing import Any, Literal
 
 from dotenv import dotenv_values
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.models import ModelProfile, ModelService
+from app.settings_store import resolve_settings
 from app.llm.target import (
     DEFAULT_CAPABILITIES,
     ModelTarget,
@@ -37,13 +39,39 @@ BUILTIN_SERVICES = (
 )
 
 
+# credential_ref 只能指向**外部模型服务的密钥**。
+# 判据是名字形状 + 一份基础设施黑名单，三个来源（Settings / 环境变量 / .env）统一适用。
+CREDENTIAL_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET")
+# 应用自身的基础设施，形状上像密钥但绝不该被当成模型服务凭据发出去
+INTERNAL_REFS = frozenset({"API_KEY", "DATABASE_URL"})
+
+
+def is_credential_ref(ref: str) -> bool:
+    """这个引用名可以被当成模型服务的密钥读取吗。
+
+    **三个来源都要过这一关**。只挡 Settings 是不够的：`.env` 里同样有
+    `DATABASE_URL`，光挡住 `getattr` 那条路，连接串照样会从 dotenv 那条路漏出去。
+    """
+    return (
+        bool(ref)
+        and ref not in INTERNAL_REFS
+        and ref.endswith(CREDENTIAL_SUFFIXES)
+    )
+
+
 def _secret(ref: str, settings: Settings) -> str:
     """读取凭据引用。
 
     容器运行时优先从环境变量取；宿主机直接运行时补读本地 ``.env``。
     绝不把读到的值放入模型目录响应。
+
+    ⚠️ **只认密钥形状的引用名**（见 `is_credential_ref`）。原来任何全大写下划线的
+    名字都合法，于是 `DATABASE_URL` 是个合法引用，会把**带密码的数据库连接串**
+    当成 api key 发到该服务的 `base_url` 指向的第三方，界面上还显示「凭据已配置 ✓」。
+    更常见的无害版本是引用名打错、恰好撞上某个已存在的变量，于是拿到一个错的值
+    而不是干脆报「未配置」。
     """
-    if not ref:
+    if not is_credential_ref(ref):
         return ""
     value = getattr(settings, ref.lower(), "")
     if value:
@@ -63,6 +91,29 @@ def _builtin_model(settings: Settings, service_slug: str) -> tuple[str, str, str
     return settings.deepseek_model, "DeepSeek", settings.deepseek_base_url
 
 
+async def _get_or_create(session: AsyncSession, model, slug: str, build):
+    """按 slug 取，没有就建 —— 并发安全。
+
+    原来是裸的 SELECT-then-INSERT，而 `slug` 上有唯一索引。首次访问时前端会同时打
+    好几个接口（聊天页拉模型目录、设置页拉配置……），几个请求同时发现「没有这条」
+    然后一起 INSERT，**一个成功、其余全 500**。迁移完第一次打开界面就会撞上，
+    第二次之后正常，所以在开发时极容易看不见。
+
+    用 savepoint 兜住冲突：撞了就说明别人刚建好，重新读一次即可。
+    """
+    existing = await session.scalar(select(model).where(model.slug == slug))
+    if existing is not None:
+        return existing
+    try:
+        async with session.begin_nested():
+            created = build()
+            session.add(created)
+            await session.flush()
+        return created
+    except IntegrityError:
+        return await session.scalar(select(model).where(model.slug == slug))
+
+
 async def ensure_builtin_catalog(
     session: AsyncSession, settings: Settings | None = None
 ) -> None:
@@ -70,45 +121,44 @@ async def ensure_builtin_catalog(
     settings = settings or get_settings()
     for definition in BUILTIN_SERVICES:
         slug = definition["slug"]
-        service = await session.scalar(
-            select(ModelService).where(ModelService.slug == slug)
-        )
         model_id, prefix, base_url = _builtin_model(settings, slug)
-        if service is None:
-            service = ModelService(
-                slug=slug,
+        service = await _get_or_create(
+            session,
+            ModelService,
+            slug,
+            lambda: ModelService(
+                slug=definition["slug"],
                 name=definition["name"],
                 protocol=definition["protocol"],
                 base_url=base_url,
                 credential_ref=definition["credential_ref"],
                 config={"managed_by_runtime": True},
-            )
-            session.add(service)
-            await session.flush()
-        elif (service.config or {}).get("managed_by_runtime", False):
+            ),
+        )
+        if (service.config or {}).get("managed_by_runtime", False):
             service.base_url = base_url
             service.credential_ref = definition["credential_ref"]
 
         profile_slug = f"builtin:{slug}"
-        profile = await session.scalar(
-            select(ModelProfile).where(ModelProfile.slug == profile_slug)
-        )
-        if profile is None:
-            capabilities = dict(DEFAULT_CAPABILITIES)
-            if slug == "anthropic":
-                capabilities.update({"thinking": True, "json_mode": True})
-            else:
-                capabilities.update({"thinking": settings.deepseek_thinking})
-            profile = ModelProfile(
+        capabilities = dict(DEFAULT_CAPABILITIES)
+        if slug == "anthropic":
+            capabilities.update({"thinking": True, "json_mode": True})
+        else:
+            capabilities.update({"thinking": settings.deepseek_thinking})
+        profile = await _get_or_create(
+            session,
+            ModelProfile,
+            profile_slug,
+            lambda: ModelProfile(
                 service_id=service.id,
                 slug=profile_slug,
                 model_id=model_id,
                 display_name=f"{prefix} · {model_id}",
                 capabilities=capabilities,
                 options={"managed_by_runtime": True},
-            )
-            session.add(profile)
-        elif (profile.options or {}).get("managed_by_runtime", False):
+            ),
+        )
+        if (profile.options or {}).get("managed_by_runtime", False):
             profile.model_id = model_id
             profile.display_name = f"{prefix} · {model_id}"
 
@@ -167,8 +217,12 @@ async def resolve_model_target(
     purpose: Literal["chat", "consolidation"] = "chat",
     legacy_model_id: str = "",
 ) -> ModelTarget:
-    """解析会话/全局/旧配置，返回一个可执行的模型目标。"""
-    settings = settings or get_settings()
+    """解析会话/全局/旧配置，返回一个可执行的模型目标。
+
+    不传 `settings` 时从**数据库**解析生效配置，而不是退回 `.env` 启动快照 ——
+    默认模型正是存在 `app_settings` 里的，用快照会看不见它。
+    """
+    settings = settings or await resolve_settings(session)
     await ensure_builtin_catalog(session, settings)
 
     if profile_id is None:
@@ -230,7 +284,14 @@ def _legacy_default_profile_id(
 async def catalog_payload(
     session: AsyncSession, settings: Settings | None = None, purpose: str = "chat"
 ) -> dict[str, Any]:
-    settings = settings or get_settings()
+    """模型目录，含「当前默认是哪个」。
+
+    ⚠️ 缺省时必须走 `resolve_settings`（数据库覆盖叠加在 .env 之上），
+    不能退回 `get_settings()` 的启动快照 —— `chat_model_profile_id` 就存在数据库里。
+    用快照的症状是：在界面上换默认模型、保存成功、刷新一下又变回去了
+    （写进去了，但读的是另一个地方）。
+    """
+    settings = settings or await resolve_settings(session)
     await ensure_builtin_catalog(session, settings)
     services_rows = list((await session.execute(select(ModelService).order_by(ModelService.name))).scalars())
     rows = list(

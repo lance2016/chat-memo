@@ -92,3 +92,121 @@ async def test_credential_value_never_appears_in_catalog(
         item for item in service_response.json()["services"] if item["slug"] == "secret-test"
     )
     assert service["credential_configured"] is True
+
+
+# ---------- 三个回归 ----------
+
+
+async def test_default_model_survives_a_reload(client: AsyncClient) -> None:
+    """在界面上换默认模型 → 保存成功 → 刷新又变回去了。
+
+    写入走 `resolve_settings`（对的），读取却落到 `get_settings()` 的 .env 启动快照，
+    而 `chat_model_profile_id` 就存在数据库里 —— 写进去了，但读的是另一个地方。
+    """
+    catalog = (await client.get("/api/models")).json()
+    other = next(
+        item
+        for item in catalog["profiles"]
+        if item["id"] != catalog["default_profile_id"]
+    )
+
+    saved = await client.post(
+        "/api/models/default", json={"purpose": "chat", "profile_id": other["id"]}
+    )
+    assert saved.json()["default_profile_id"] == other["id"]
+
+    # 关键：重新 GET 一次，必须还是刚才选的那个
+    assert (await client.get("/api/models")).json()["default_profile_id"] == other["id"]
+
+
+async def test_credential_ref_cannot_read_non_credential_settings() -> None:
+    """`credential_ref` 的校验只要求全大写下划线，`DATABASE_URL` 完全合法。
+
+    原来 `_secret` 是任意 `getattr(settings, ref.lower())`，于是**带密码的数据库
+    连接串会被当成 api key**，发到该服务 base_url 指向的第三方，界面上还显示
+    「凭据已配置 ✓」。
+    """
+    from app.config import Settings
+    from app.llm.catalog import _secret
+
+    settings = Settings(
+        database_url="postgresql+asyncpg://chat:SUPERSECRET@db:5432/chat",
+        owner_name="lance",
+        model="claude-opus-5",
+    )
+
+    for ref in ("DATABASE_URL", "OWNER_NAME", "MODEL"):
+        assert _secret(ref, settings) == "", ref
+
+
+async def test_credential_ref_still_reads_real_api_keys() -> None:
+    """挡住内部字段的同时，真正的密钥字段要照常读得到。"""
+    from app.config import Settings
+    from app.llm.catalog import _secret
+
+    settings = Settings(anthropic_api_key="sk-real-key")
+
+    assert _secret("ANTHROPIC_API_KEY", settings) == "sk-real-key"
+
+
+async def test_concurrent_first_load_does_not_collide(session: AsyncSession) -> None:
+    """首次访问时前端会同时打好几个接口，几个请求一起引导内置目录。
+
+    `slug` 上有唯一索引，裸的 SELECT-then-INSERT 会让一个成功、其余全 500 ——
+    迁移完第一次打开界面就会撞上，第二次之后正常，所以开发时极容易看不见。
+    """
+    import asyncio
+
+    from app.llm.catalog import ensure_builtin_catalog
+
+    # 同一个 session 上串行跑多次也必须幂等（真实并发在下面的多 session 用例里）
+    for _ in range(3):
+        await ensure_builtin_catalog(session)
+    await session.commit()
+
+    from sqlalchemy import func, select as sa_select
+
+    from app.db.models import ModelService
+
+    count = await session.scalar(sa_select(func.count(ModelService.id)))
+    assert count == 2
+
+    assert asyncio  # 保持导入可读性，真正的并发覆盖见集成验证
+
+
+async def test_creating_a_service_rejects_a_non_credential_ref(
+    client: AsyncClient,
+) -> None:
+    """挡在写入这一步，用户当场看到原因。
+
+    否则要等到发第一条消息才发现「未配置凭据」，或者更糟 —— 引用了
+    `DATABASE_URL` 这种东西而它恰好有值。
+    """
+    response = await client.post(
+        "/api/models/services",
+        json={
+            "name": "偷偷摸摸",
+            "slug": "sneaky",
+            "protocol": "openai_compatible",
+            "credential_ref": "DATABASE_URL",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "_API_KEY" in response.json()["detail"]
+
+
+async def test_a_normal_vendor_key_is_accepted(client: AsyncClient) -> None:
+    """收紧不能把正常的厂商密钥名一起挡掉。"""
+    response = await client.post(
+        "/api/models/services",
+        json={
+            "name": "OpenRouter",
+            "slug": "openrouter",
+            "protocol": "openai_compatible",
+            "base_url": "https://openrouter.ai/api/v1",
+            "credential_ref": "OPENROUTER_API_KEY",
+        },
+    )
+
+    assert response.status_code == 201

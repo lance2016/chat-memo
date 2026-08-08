@@ -11,6 +11,7 @@ from app.db.models import ModelProfile, ModelService
 from app.db.session import get_session
 from app.llm.catalog import (
     DEFAULT_CAPABILITIES,
+    is_credential_ref,
     catalog_payload,
     ensure_builtin_catalog,
     resolve_model_target,
@@ -60,6 +61,21 @@ class DefaultModelRequest(BaseModel):
     profile_id: int | None = None
 
 
+def _check_credential_ref(ref: str) -> None:
+    """凭据引用必须长得像密钥。
+
+    挡在写入这一步，用户当场看到原因；否则要等到发第一条消息才发现「未配置凭据」，
+    或者更糟 —— 引用了 `DATABASE_URL` 这种东西而它恰好有值。
+    """
+    ref = (ref or "").strip()
+    if ref and not is_credential_ref(ref):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"凭据引用 {ref} 不像密钥变量名，应以 _API_KEY / _KEY / _TOKEN / _SECRET 结尾，"
+            "且不能指向应用自身的 API_KEY 或 DATABASE_URL",
+        )
+
+
 @router.get("")
 async def list_models(
     purpose: Literal["chat", "consolidation"] = "chat",
@@ -76,6 +92,7 @@ async def create_service(
     await ensure_builtin_catalog(session)
     if await session.scalar(select(ModelService).where(ModelService.slug == payload.slug)):
         raise HTTPException(status.HTTP_409_CONFLICT, "模型服务 slug 已存在")
+    _check_credential_ref(payload.credential_ref)
     session.add(
         ModelService(
             name=payload.name.strip(),
@@ -99,7 +116,10 @@ async def update_service(
     service = await session.get(ModelService, service_id)
     if service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务不存在")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    if changes.get("credential_ref") is not None:
+        _check_credential_ref(changes["credential_ref"])
+    for key, value in changes.items():
         if isinstance(value, str):
             value = value.strip()
         setattr(service, key, value)
