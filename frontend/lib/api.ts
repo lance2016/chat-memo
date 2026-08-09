@@ -408,8 +408,16 @@ export function createConversation() {
   return request<Conversation>("/api/conversations", { method: "POST" });
 }
 
-export function deleteConversation(id: number) {
-  return request<void>(`/api/conversations/${id}`, { method: "DELETE" });
+export async function deleteConversation(id: number) {
+  try {
+    await request<void>(`/api/conversations/${id}`, { method: "DELETE" });
+  } catch (cause) {
+    // DELETE 幂等：会话已经不在了，就是调用方想要的终态。
+    // 不吞掉 404 的话，任何让列表短暂留着已删条目的时序问题，都会变成
+    // 用户点第二次、然后收到一条无从处理的红色「会话不存在」。
+    if (cause instanceof ApiError && cause.status === 404) return;
+    throw cause;
+  }
 }
 
 export function clearConversations() {

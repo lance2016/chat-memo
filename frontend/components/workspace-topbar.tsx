@@ -15,6 +15,7 @@ import { LanguageControl } from "@/components/language-control";
 import { useI18n } from "@/components/i18n-provider";
 import type { TranslationKey } from "@/lib/i18n";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
+import { useToast } from "@/components/toast";
 
 export type WorkspacePage = "chat" | "memories" | "review" | "timeline" | "settings";
 
@@ -24,7 +25,8 @@ export const selectedConversationChangedEvent = "chat-memo:selected-conversation
 export type WorkspaceConversationChange =
   | { type: "renamed"; conversation: Conversation }
   | { type: "archived"; conversation: Conversation; archived: boolean }
-  | { type: "deleted"; conversationId: number };
+  | { type: "deleted"; conversationId: number }
+  | { type: "cleared" };
 
 export function notifyWorkspaceConversationsChanged(detail?: WorkspaceConversationChange) {
   window.dispatchEvent(detail
@@ -99,6 +101,7 @@ export function WorkspaceProfile() {
 
 export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
   const { t } = useI18n();
+  const toast = useToast();
   const router = useRouter();
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
@@ -111,8 +114,8 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const [renameDraft, setRenameDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [actionError, setActionError] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const recentListRef = useRef<HTMLDivElement>(null);
   const recentListEndRef = useRef<HTMLButtonElement>(null);
   const loadingConversationsRef = useRef(false);
@@ -234,15 +237,31 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
       if (event.target instanceof Element && event.target.closest(".workspace-sidebar-conversation-more")) return;
       setMenuTarget(null);
     };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuTarget(null);
+    // role="menu" 此前只有 Escape 和首项聚焦，方向键完全没实现 ——
+    // 读屏会宣告「菜单」，用户按 ↓ 却毫无反应。
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMenuTarget(null);
+        // 焦点必须回到触发它的 ⋯ 按钮，否则键盘用户被扔回文档开头。
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []);
+      if (!items.length) return;
+      event.preventDefault();
+      const current = items.findIndex((item) => item === document.activeElement);
+      const next = event.key === "Home" ? 0
+        : event.key === "End" ? items.length - 1
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
     };
     document.addEventListener("pointerdown", closeOnPointerDown);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", onKeyDown);
     window.requestAnimationFrame(() => menuRef.current?.querySelector<HTMLButtonElement>("button")?.focus());
     return () => {
       document.removeEventListener("pointerdown", closeOnPointerDown);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", onKeyDown);
     };
   }, [menuTarget]);
 
@@ -250,7 +269,6 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     setMenuTarget(null);
     setRenameDraft(conversation.title);
     setRenameTarget(conversation);
-    setActionError("");
   };
 
   const confirmRename = async () => {
@@ -258,7 +276,6 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     const title = renameDraft.trim();
     if (!title || title === renameTarget.title) { setRenameTarget(null); return; }
     setBusyId(renameTarget.id);
-    setActionError("");
     try {
       const updated = await updateConversation(renameTarget.id, { title });
       setRecentConversations((current) => current.map((conversation) => conversation.id === updated.id ? updated : conversation));
@@ -266,27 +283,38 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
       notifyWorkspaceConversationsChanged({ type: "renamed", conversation: updated });
     } catch (cause) {
       setRenameTarget(null);
-      setActionError(errorMessage(cause, t("workspace.actionFailed")));
+      toast.push({ message: errorMessage(cause, t("workspace.actionFailed")), tone: "danger" });
     } finally {
       setBusyId(null);
     }
+  };
+
+  /** 归档天生可逆（反着调一次就回来了），所以这里给的是真正的撤销，
+   *  不需要像会话删除那样先做软删。 */
+  const applyArchived = async (conversation: Conversation, archived: boolean) => {
+    const updated = await archiveConversation(conversation.id, archived);
+    setMenuTarget(null);
+    setRecentConversations((current) => current.filter((item) => item.id !== conversation.id));
+    notifyWorkspaceConversationsChanged({ type: "archived", conversation: updated, archived });
+    if (currentConversationId() === conversation.id) router.push("/");
+    if (!archived) setShowArchived(false);
+    return updated;
   };
 
   const toggleConversationArchived = async (conversation: Conversation) => {
     if (busyId !== null) return;
     const archived = !showArchived;
     setBusyId(conversation.id);
-    setActionError("");
     try {
-      const updated = await archiveConversation(conversation.id, archived);
-      setMenuTarget(null);
-      setRecentConversations((current) => current.filter((item) => item.id !== conversation.id));
-      notifyWorkspaceConversationsChanged({ type: "archived", conversation: updated, archived });
-      if (currentConversationId() === conversation.id) router.push("/");
-      if (!archived) setShowArchived(false);
+      const updated = await applyArchived(conversation, archived);
+      toast.push({
+        message: archived ? t("workspace.toast.archived", { title: updated.title }) : t("workspace.toast.restored", { title: updated.title }),
+        tone: "success",
+        action: { label: t("toast.undo"), run: () => applyArchived(updated, !archived).then(() => undefined) },
+      });
     } catch (cause) {
       setMenuTarget(null);
-      setActionError(errorMessage(cause, t("workspace.actionFailed")));
+      toast.push({ message: errorMessage(cause, t("workspace.actionFailed")), tone: "danger" });
     } finally {
       setBusyId(null);
     }
@@ -296,16 +324,17 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     if (!deleteTarget || busyId !== null) return;
     const conversation = deleteTarget;
     setBusyId(conversation.id);
-    setActionError("");
     try {
       await deleteConversation(conversation.id);
       setRecentConversations((current) => current.filter((item) => item.id !== conversation.id));
       setDeleteTarget(null);
       notifyWorkspaceConversationsChanged({ type: "deleted", conversationId: conversation.id });
       if (currentConversationId() === conversation.id) router.push("/");
+      // 会话是硬删，给不了撤销 —— 所以确认弹窗留着，这里只报结果。
+      toast.push({ message: t("workspace.toast.deleted", { title: conversation.title }), tone: "success" });
     } catch (cause) {
       setDeleteTarget(null);
-      setActionError(errorMessage(cause, t("workspace.actionFailed")));
+      toast.push({ message: errorMessage(cause, t("workspace.actionFailed")), tone: "danger" });
     } finally {
       setBusyId(null);
     }
@@ -332,6 +361,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
             <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
             <button
               className="workspace-sidebar-conversation-more"
+              ref={menuTarget?.id === conversation.id ? triggerRef : undefined}
               type="button"
               aria-label={t("workspace.conversationActions", { title: conversation.title })}
               aria-haspopup="menu"
@@ -341,7 +371,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
             {menuTarget?.id === conversation.id && <div className="workspace-conversation-menu" role="menu" aria-label={t("workspace.conversationActions", { title: conversation.title })} ref={menuRef}>
               <button type="button" role="menuitem" onClick={() => openRename(conversation)} disabled={busyId !== null}><Pencil size={15} /><span>{t("workspace.rename")}</span></button>
               <button type="button" role="menuitem" onClick={() => void toggleConversationArchived(conversation)} disabled={busyId !== null}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}<span>{showArchived ? t("workspace.restore") : t("workspace.archive")}</span></button>
-              <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setDeleteTarget(conversation); setActionError(""); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
+              <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setDeleteTarget(conversation); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
             </div>}
           </div>)}
           {loadingConversations && recentConversations.length > 0 && <small><LoaderCircle size={12} className="spin" />{t("workspace.loadingConversations")}</small>}
@@ -349,9 +379,8 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
           {conversationLoadError && <><small className="workspace-sidebar-recent-error" role="alert">{conversationLoadError}</small><button className="workspace-sidebar-load-more" type="button" onClick={loadMoreConversations}>{t("workspace.retry")}</button></>}
           {!loadingConversations && !conversationLoadError && hasMoreConversations && <button className="workspace-sidebar-load-more" type="button" ref={recentListEndRef} onClick={loadMoreConversations}>{t("workspace.loadMore")}</button>}
           {!loadingConversations && !conversationLoadError && !hasMoreConversations && recentConversations.length > 0 && <small>{t("workspace.allConversationsLoaded")}</small>}
-          {actionError && <small className="workspace-sidebar-recent-error" role="alert">{actionError}</small>}
         </div>
-        <button className="workspace-sidebar-recent-filter" type="button" onClick={() => { setMenuTarget(null); setActionError(""); setShowArchived((value) => !value); }}>
+        <button className="workspace-sidebar-recent-filter" type="button" onClick={() => { setMenuTarget(null); setShowArchived((value) => !value); }}>
           {showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
           <span>{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</span>
         </button>

@@ -269,3 +269,102 @@ describe("ChatPage streaming lifecycle", () => {
     expect(screen.queryByText("第一段的流式回答")).not.toBeInTheDocument();
   });
 });
+
+describe("ChatPage keyboard and screen-reader affordances", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.searchParams = "";
+    mocks.listConversations.mockResolvedValue([]);
+    mocks.listMessages.mockResolvedValue([]);
+    mocks.createConversation.mockResolvedValue(conversation);
+    mocks.getMemoryStats.mockResolvedValue({ total_memories: 0 });
+    mocks.getModelCatalog.mockResolvedValue({ purpose: "chat", default_profile_id: null, services: [], profiles: [] });
+    mocks.getContextPreview.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
+    mocks.getRuntimeSettings.mockResolvedValue({ web_search_enabled: true });
+    mocks.getConversationContext.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
+    mocks.getTtsStatus.mockResolvedValue({ mode: "off", enabled: false });
+    mocks.stopSpeech.mockResolvedValue({ dropped: 0 });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("walks the model list with arrow keys and commits with Enter", async () => {
+    mocks.getModelCatalog.mockResolvedValue({
+      purpose: "chat",
+      default_profile_id: 1,
+      services: [{ id: 7, name: "Anthropic" }],
+      profiles: [
+        { id: 1, service_id: 7, model_id: "claude-opus-5", is_default: true, available: true },
+        { id: 2, service_id: 7, model_id: "claude-sonnet-5", is_default: false, available: true },
+      ],
+    });
+
+    render(<ChatPage />);
+    const trigger = await screen.findByRole("combobox", { name: "选择聊天模型" });
+    expect(trigger).toHaveTextContent("claude-opus-5");
+
+    // 方向键要能把菜单打开，而不是只有鼠标点得开。
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(await screen.findByRole("listbox")).toBeInTheDocument();
+
+    // 打开时高亮停在当前选中项上，再往下走一格就是第二个模型。
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    const active = trigger.getAttribute("aria-activedescendant");
+    expect(document.getElementById(active ?? "")).toHaveTextContent("claude-sonnet-5");
+
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
+    expect(trigger).toHaveTextContent("claude-sonnet-5");
+  });
+
+  it("closes the model list with Escape without changing the selection", async () => {
+    mocks.getModelCatalog.mockResolvedValue({
+      purpose: "chat",
+      default_profile_id: 1,
+      services: [{ id: 7, name: "Anthropic" }],
+      profiles: [{ id: 1, service_id: 7, model_id: "claude-opus-5", is_default: true, available: true }],
+    });
+
+    render(<ChatPage />);
+    const trigger = await screen.findByRole("combobox", { name: "选择聊天模型" });
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(await screen.findByRole("listbox")).toBeInTheDocument();
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("listbox")).not.toBeInTheDocument());
+    expect(trigger).toHaveTextContent("claude-opus-5");
+  });
+
+  it("aborts the running response when Escape is pressed", async () => {
+    let signal!: AbortSignal;
+    let finishStream!: () => void;
+    mocks.streamChat.mockImplementation(async (_id: unknown, _content: unknown, _profile: unknown, onEvent: (event: unknown) => void, abortSignal: AbortSignal) => {
+      signal = abortSignal;
+      onEvent({ type: "conversation", conversation });
+      await new Promise<void>((resolve) => { finishStream = resolve; });
+    });
+
+    await startConversation();
+    expect(signal.aborted).toBe(false);
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(signal.aborted).toBe(true));
+    finishStream();
+  });
+
+  it("announces the start and the end of a response to screen readers", async () => {
+    let finishStream!: () => void;
+    mocks.streamChat.mockImplementation(async (_id: unknown, _content: unknown, _profile: unknown, onEvent: (event: unknown) => void) => {
+      onEvent({ type: "conversation", conversation });
+      await new Promise<void>((resolve) => { finishStream = resolve; });
+    });
+
+    await startConversation();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("正在生成回答"));
+
+    finishStream();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("回答已完成"));
+  });
+});

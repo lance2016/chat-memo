@@ -5356,3 +5356,335 @@ html[data-theme="light"] .settings-toggle-inline input:checked + .toggle-track {
   .notify-recent-row { grid-template-columns: 1fr; gap: 7px; }
   .notify-recent-meta { display: flex; align-items: center; justify-content: space-between; text-align: left; }
 }
+
+/* ---- 体验优化专项 ---------------------------------------------------------
+ * 这一节统一收口若干「macOS 高标准验收」暴露的问题。放在文件末尾是迫于现状：
+ * 前面 19 轮 pass 让 .composer-wrap / .message-scroll 这类选择器各被定义 7~13 次，
+ * 在中间改等于赌源码顺序。真正的解法是把这个文件拆掉，那是独立一轮的事。
+ * ------------------------------------------------------------------------ */
+
+/* 动效基元。此前 44 处 transition 里只有 11 处用了 cubic-bezier，
+ * 其余是裸写的 .15s ease —— macOS 的手感恰恰来自统一的时长阶梯和单一曲线族。
+ * 新代码一律用这些 token，旧代码逐步收编。 */
+:root {
+  --duration-fast: 140ms;
+  --duration-base: 240ms;
+  --duration-slow: 340ms;
+  --ease-out: cubic-bezier(.22, .8, .24, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+}
+
+/* 读屏专用文本。全项目此前没有这个类，所以流式状态无处播报。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- composer 不再遮挡正文 ------------------------------------------------
+ * 底部留白此前是写死的 152px，而 composer 的高度是变的（textarea 长到 180px、
+ * 附件条整条出现）。高度由 chat-page 的 ResizeObserver 实测后写进 --composer-height，
+ * 这里只负责跟随。回退值对应 composer 的最小高度，用于 JS 还没跑起来的第一帧。 */
+.message-scroll {
+  padding-bottom: calc(var(--composer-height, 152px) + 26px);
+  scroll-padding-bottom: 26px;
+}
+
+.chat-scroll-latest {
+  bottom: calc(var(--composer-height, 128px) + 12px);
+}
+
+/* --- 底部收边从硬切换成渐隐 ---------------------------------------------
+ * 早期的 linear-gradient 遮罩在后续 pass 里被不透明实色覆盖掉了，
+ * 结果消息滚到底部被一条硬边斩断。 */
+.composer-wrap {
+  padding-top: 26px;
+  background: linear-gradient(to bottom, transparent 0, var(--surface-canvas) 24px);
+}
+
+/* --- 拖拽上传的落点反馈 --------------------------------------------------
+ * 此前 onDragOver 只 preventDefault，界面上没有任何变化，
+ * 用户不知道能不能松手。 */
+.composer.is-drop-target,
+.home-capture.is-drop-target {
+  position: relative;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface-primary) 88%, transparent);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+  pointer-events: none;
+  animation: soft-in var(--duration-fast) var(--ease-out) both;
+}
+
+.composer-drop-hint.is-unavailable {
+  color: var(--amber);
+}
+
+/* --- 键盘可达性 ----------------------------------------------------------
+ * 焦点环此前 :focus 48 处 / :focus-visible 25 处混用：鼠标点完残留焦点环，
+ * 键盘 tab 过去反而有些控件看不见。统一到 :focus-visible。 */
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+
+/* 鼠标点击后不留焦点环 —— 这是 macOS 上最容易被察觉的「网页感」来源之一。 */
+:where(button, a, summary, [tabindex]):focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* 键盘高亮的下拉项。方向键移动时靠它指示当前项 —— 之前只有 :hover，
+ * 也就是说键盘用户完全看不到自己走到了哪。 */
+.chat-model-option.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* 触屏上 hover 永不触发，消息操作按钮等于被藏死。 */
+@media (hover: none) {
+  .turn-actions { opacity: 1; }
+}
+
+/* --- 恢复「只有内容区」的换页转场 ----------------------------------------
+ * 早期 page-enter 挂在整个 shell 上（那时 shell 确实含侧栏），持久化 frame
+ * 重构后 2043 行用 animation:none 一刀切掉了 —— 于是换页彻底没有转场。
+ * 现在 shell 已经只是内容面板（侧栏是它的兄弟节点），把转场加回来是安全的。
+ * 挂在 shell 而不是 .workspace-route-content 上：后者是常驻节点，
+ * 动画只会在首次挂载时播一次；shell 才是每次换路由真正重建的那层。 */
+.workspace-route-content > .app-shell,
+.workspace-route-content > .memory-shell,
+.workspace-route-content > .review-shell,
+.workspace-route-content > .settings-shell {
+  animation: page-enter var(--duration-slow) var(--ease-out) both;
+}
+
+/* 流式光标从二值硬闪改成呼吸。steps(2,start) 是跳变，
+ * macOS 的等效元素（终端、Notes）都是淡入淡出。 */
+.streaming-cursor {
+  animation: cursor-breathe 1.15s var(--ease-in-out) infinite;
+}
+
+@keyframes cursor-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .18; }
+}
+
+/* --- 快捷键面板 ⌘/ ------------------------------------------------------- */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(16, 22, 34, .34);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: soft-in var(--duration-fast) var(--ease-out) both;
+}
+
+.shortcuts-dialog {
+  width: min(520px, 100%);
+  max-height: min(640px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface-primary);
+  box-shadow: 0 28px 70px rgba(24, 33, 56, .26);
+  animation: surface-in var(--duration-base) var(--ease-out) both;
+}
+
+.shortcuts-header {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.shortcuts-header-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.shortcuts-header h2 { margin: 0; font-size: 16px; font-weight: 650; }
+.shortcuts-header p { margin: 5px 0 0; color: var(--text-tertiary); font-size: 12px; line-height: 1.6; }
+
+.shortcuts-body { padding: 8px 20px 20px; }
+.shortcuts-group + .shortcuts-group { margin-top: 18px; }
+
+.shortcuts-group-title {
+  padding: 14px 0 8px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.shortcuts-row {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.shortcuts-row + .shortcuts-row { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.shortcuts-keys { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+
+.shortcuts-keys kbd {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font: 600 11px/1 ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+@media (max-width: 720px) {
+  .shortcuts-overlay { place-items: end center; padding: 0; }
+  .shortcuts-dialog { width: 100%; max-height: 82vh; border-radius: 20px 20px 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shortcuts-overlay,
+  .shortcuts-dialog,
+  .composer-drop-hint,
+  .workspace-route-content > .app-shell,
+  .workspace-route-content > .memory-shell,
+  .workspace-route-content > .review-shell,
+  .workspace-route-content > .settings-shell { animation: none; }
+  .streaming-cursor { animation: none; opacity: 1; }
+}
+
+/* ---- 全局轻提示（吐司） --------------------------------------------------
+ * 右下角堆叠，因为主要操作区（composer、保存栏）都在底部 —— 提示出现在
+ * 视线刚离开的地方，而不是要人抬头去右上角找。
+ * ------------------------------------------------------------------------ */
+.toast-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 95;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 10px;
+  width: min(380px, calc(100vw - 40px));
+  pointer-events: none;
+}
+
+.toast {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: start;
+  gap: 10px;
+  padding: 13px 12px 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface-primary) 92%, transparent);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: 0 14px 38px rgba(24, 33, 56, .18), inset 0 1px 0 color-mix(in srgb, #fff 40%, transparent);
+  pointer-events: auto;
+  animation: toast-in var(--duration-base) var(--ease-out) both;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+}
+
+.toast-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--green) 20%, transparent);
+  color: var(--green);
+}
+
+.toast-danger .toast-icon { background: color-mix(in srgb, var(--red) 20%, transparent); color: var(--red); }
+.toast-info .toast-icon { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+
+.toast-copy { min-width: 0; padding-top: 1px; }
+.toast-copy strong { display: block; color: var(--text-primary); font-size: 13px; font-weight: 620; line-height: 1.45; }
+.toast-copy span { display: block; margin-top: 3px; color: var(--text-tertiary); font-size: 11px; line-height: 1.55; }
+
+/* 撤销按钮。它是这条提示存在的理由，所以视觉权重高于关闭。 */
+.toast-action {
+  flex: none;
+  min-height: 26px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+
+.toast-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 20%, transparent); border-color: color-mix(in srgb, var(--accent) 56%, transparent); }
+.toast-action:disabled { opacity: .6; cursor: progress; }
+
+.toast-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-tertiary);
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.toast-close:hover { background: var(--surface-muted); color: var(--text-secondary); }
+
+@media (max-width: 720px) {
+  /* 手机上贴底通栏。右下角的小卡片在窄屏里既难点又挡内容。 */
+  .toast-region { right: 12px; left: 12px; bottom: 12px; width: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}

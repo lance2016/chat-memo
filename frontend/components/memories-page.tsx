@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { diffLines } from "diff";
 import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RefreshCw, FlaskConical, RotateCcw, Save, ShieldCheck, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { deleteMemory, errorMessage, getMemory, getMemoryAudit, getMemoryStats, importMemories, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
+import { deleteMemory, errorMessage, getMemory, getMemoryAudit, getMemoryStats, importMemories, listAllMemoryVersions, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
 import type { Memory, MemoryIndexAudit, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
@@ -13,6 +13,7 @@ import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { EvalPanel } from "@/components/eval-panel";
 import { useI18n } from "@/components/i18n-provider";
+import { useToast } from "@/components/toast";
 
 type MemoryView = "files" | "stats" | "eval";
 
@@ -142,6 +143,7 @@ function MemoryStatsPanel({ stats, audit, auditError, loading, error, onRetry, o
 
 export function MemoriesPage() {
   const { t } = useI18n();
+  const toast = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [nodes, setNodes] = useState<MemoryNode[]>([]);
@@ -155,7 +157,6 @@ export function MemoriesPage() {
   const [loadingTree, setLoadingTree] = useState(true);
   const [loadingFile, setLoadingFile] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [treeError, setTreeError] = useState("");
   const [treeOpen, setTreeOpen] = useState(false);
@@ -209,7 +210,6 @@ export function MemoriesPage() {
     const request = fileRequestsRef.current.begin();
     setLoadingFile(true);
     setError("");
-    setMessage("");
     try {
       const [file, history] = await Promise.all([getMemory(path), listMemoryVersions(path)]);
       if (!fileRequestsRef.current.isCurrent(request)) return;
@@ -261,22 +261,23 @@ export function MemoriesPage() {
 
   const save = async () => {
     if (!memory || saving) return;
-    setSaving(true); setError(""); setMessage("");
+    setSaving(true); setError("");
     try {
       const saved = await saveMemory(memory.path, content);
       setMemory(saved);
       setContent(saved.content);
       const history = await listMemoryVersions(saved.path);
       setVersions(history); setNewerId(history[0]?.id ?? null); setOlderId(history[1]?.id ?? history[0]?.id ?? null);
-      setMessage("已保存，版本记录标记为手动编辑");
-    } catch (cause) { setError(errorMessage(cause, "保存失败")); } finally { setSaving(false); }
+      toast.push({ message: t("memories.toast.saved"), description: t("memories.toast.savedHint"), tone: "success" });
+    } catch (cause) {
+      toast.push({ message: errorMessage(cause, "保存失败"), tone: "danger" });
+    } finally { setSaving(false); }
   };
 
   const importFile = async (file: File) => {
     if (importing) return;
     setImporting(true);
     setError("");
-    setMessage("");
     try {
       const result = await importMemories(file);
       const updated = await loadTree();
@@ -289,17 +290,56 @@ export function MemoriesPage() {
       } else {
         syncTreeSelection(updated);
       }
-      const skipped = result.skipped ? `，跳过 ${result.skipped} 个重复文件` : "";
-      setMessage(`已导入 ${result.imported} 份记忆${skipped}`);
+      toast.push({
+        message: t("memories.toast.imported", { count: result.imported }),
+        description: result.skipped ? t("memories.toast.importedSkipped", { count: result.skipped }) : undefined,
+        tone: "success",
+      });
     } catch (cause) {
-      setError(errorMessage(cause, "导入记忆失败"));
+      toast.push({ message: errorMessage(cause, "导入记忆失败"), tone: "danger" });
     } finally {
       setImporting(false);
       if (importInputRef.current) importInputRef.current.value = "";
     }
   };
 
+  /** 删除动作自己产生的 operation=deleted 快照，就是撤销的句柄。
+   *
+   * 走全局版本流而不是按路径逐个查：删一个目录可能是几十个文件，
+   * 那样就是几十个请求。刚删的快照必然排在这个倒序流的最前面。
+   */
+  const findDeletedVersions = async (paths: string[]) => {
+    if (!paths.length) return [];
+    const versions = await listAllMemoryVersions({ limit: Math.min(500, Math.max(100, paths.length * 3)) });
+    const wanted = new Set(paths);
+    const newest = new Map<string, number>();
+    for (const version of versions) {
+      if (version.operation !== "deleted" || !wanted.has(version.path)) continue;
+      if (!newest.has(version.path)) newest.set(version.path, version.id);
+    }
+    return [...newest.values()];
+  };
+
+  const restoreDeleted = async (versionIds: number[]) => {
+    const restored = await Promise.all(versionIds.map((id) => restoreMemoryVersion(id)));
+    const updated = await loadTree();
+    const first = restored[0];
+    if (first) {
+      setSelectedPath(first.path);
+      if (!showStats) router.push(`/memories?path=${encodeURIComponent(first.path)}`);
+      await loadFile(first.path);
+    } else {
+      syncTreeSelection(updated);
+    }
+    if (view === "stats") void loadStats();
+    toast.push({ message: t("memories.toast.restored", { count: restored.length }), tone: "success" });
+  };
+
   const removePath = async (path: string, isDirectory = false) => {
+    // 受影响的文件必须在删除**之前**从当前树上取，删完树里就没有了。
+    const affected = isDirectory
+      ? nodes.filter((node) => !node.is_dir && node.path.startsWith(`${path}/`)).map((node) => node.path)
+      : [path];
     try {
       await deleteMemory(path);
       const updated = await loadTree();
@@ -307,12 +347,37 @@ export function MemoriesPage() {
       const next = updated.find((node) => !node.is_dir && node.path === "/memories/MEMORY.md") ?? updated.find((node) => !node.is_dir);
       if (next) { setSelectedPath(next.path); if (!showStats) router.push(`/memories?path=${encodeURIComponent(next.path)}`); } else setSelectedPath("");
       if (view === "stats") void loadStats();
-      setMessage(isDirectory ? "已递归删除目录" : "已删除记忆");
+
+      // 取不到快照就退化成普通提示，不给一个点了不管用的撤销按钮。
+      const restorable = await findDeletedVersions(affected).catch(() => [] as number[]);
+      toast.push({
+        message: isDirectory
+          ? t("memories.toast.deletedDirectory", { name: memoryLabel(path) })
+          : t("memories.toast.deleted", { name: memoryLabel(path) }),
+        description: isDirectory
+          ? t("memories.toast.deletedDirectoryHint", { count: affected.length })
+          : t("memories.toast.deletedHint"),
+        tone: "success",
+        action: restorable.length ? { label: t("toast.undo"), run: () => restoreDeleted(restorable) } : undefined,
+      });
       return true;
     } catch (cause) {
-      setError(errorMessage(cause, "删除失败"));
+      toast.push({ message: errorMessage(cause, "删除失败"), tone: "danger" });
       return false;
     }
+  };
+
+  /** 单个文件直接删，后悔权交给吐司上的撤销 —— 不再用弹窗打断。
+   *
+   * 唯一的例外是「当前文件有未保存的编辑」：那些字从没进过版本历史，
+   * 撤销把文件找回来也找不回它们，所以这一种仍然要问一次。
+   */
+  const requestDeleteFile = (path: string) => {
+    if (hasChanges && path === memory?.path) {
+      setDeleteTarget({ path, isDirectory: false });
+      return;
+    }
+    void removePath(path);
   };
 
   const confirmDelete = async () => {
@@ -336,16 +401,15 @@ export function MemoriesPage() {
     if (!selected || !memory || restoring) return;
     setRestoring(true);
     setError("");
-    setMessage("");
     try {
       const restored = await restoreMemoryVersion(selected.id);
       setSelectedPath(restored.path);
       await Promise.all([loadTree(), loadFile(restored.path)]);
       setTab("preview");
-      setMessage(`已恢复 ${formatTime(selected.created_at)} 的版本，并新增一条手动历史记录`);
+      toast.push({ message: `已恢复 ${formatTime(selected.created_at)} 的版本`, description: "已新增一条手动历史记录", tone: "success" });
       setRestoreTarget(null);
     } catch (cause) {
-      setError(errorMessage(cause, "恢复版本失败"));
+      toast.push({ message: errorMessage(cause, "恢复版本失败"), tone: "danger" });
     } finally {
       setRestoring(false);
     }
@@ -355,8 +419,8 @@ export function MemoriesPage() {
   const deleteFileCount = deleteTarget?.isDirectory ? nodes.filter((node) => !node.is_dir && node.path.startsWith(`${deleteTarget.path}/`)).length : 0;
   const deletingCurrentWithChanges = hasChanges && deleteTarget !== null && (deleteTarget.path === memory?.path || deleteTarget.isDirectory && memory?.path.startsWith(`${deleteTarget.path}/`));
   const deleteWarning = [
-    deleteTarget?.isDirectory ? `该目录下的 ${deleteFileCount} 个记忆文件会被一起删除。` : "该文件会立即从长期记忆中移除。",
-    deletingCurrentWithChanges ? "当前未保存的编辑也会丢失。" : "",
+    deleteTarget?.isDirectory ? `该目录下的 ${deleteFileCount} 个记忆文件会被一起删除。` : "",
+    deletingCurrentWithChanges ? "当前未保存的编辑不在版本历史里，撤销也找不回来。" : "",
   ].filter(Boolean).join(" ");
   const older = versions.find((version) => version.id === olderId);
   const newer = versions.find((version) => version.id === newerId);
@@ -391,22 +455,22 @@ export function MemoriesPage() {
             <span className="memory-mobile-context memory-toolbar-context">{view === "eval" ? t("memories.evaluation") : view === "stats" ? t("memories.analytics") : memory ? memoryLabel(memory.path) : t("memories.files")}</span>
           </div>
           <div className="memory-main-view-switcher memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={view === "files" ? "active" : ""} role="tab" aria-selected={view === "files"} onClick={() => switchView("files")}><FileText size={13} />{t("memories.files")}</button><button className={view === "stats" ? "active" : ""} role="tab" aria-selected={view === "stats"} onClick={() => switchView("stats")}><BarChart3 size={13} />{t("memories.analytics")}</button><button className={view === "eval" ? "active" : ""} role="tab" aria-selected={view === "eval"} onClick={() => switchView("eval")}><FlaskConical size={13} />{t("memories.evaluation")}</button></div>
-          <div className="editor-actions"><input ref={importInputRef} className="memory-import-input" type="file" accept=".md,.markdown,.txt,.text,.json,.jsonl,.ndjson" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); }} /><button className="ghost-button memory-import-action" type="button" onClick={() => importInputRef.current?.click()} disabled={importing}><Upload size={13} />{importing ? "导入中…" : "导入记忆"}</button>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
+          <div className="editor-actions"><input ref={importInputRef} className="memory-import-input" type="file" accept=".md,.markdown,.txt,.text,.json,.jsonl,.ndjson" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); }} /><button className="ghost-button memory-import-action" type="button" onClick={() => importInputRef.current?.click()} disabled={importing}><Upload size={13} />{importing ? "导入中…" : "导入记忆"}</button>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => requestDeleteFile(memory.path)}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
         </header>
-        {view === "eval" ? <EvalPanel /> : view === "stats" ? <MemoryStatsPanel stats={stats} audit={audit} auditError={auditError} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={(path) => setDeleteTarget({ path, isDirectory: false })} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
+        {view === "eval" ? <EvalPanel /> : view === "stats" ? <MemoryStatsPanel stats={stats} audit={audit} auditError={auditError} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={requestDeleteFile} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
           <div className="editor-area">{loadingFile ? <div className="centered-empty">打开文件中…</div> : tab === "edit" ? <textarea className="editor-textarea" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /> : <div className="preview assistant-content"><Markdown>{content}</Markdown></div>}</div>
           <section className="versions-panel"><div className="versions-head"><span><History size={14} style={{ verticalAlign: "-3px", marginRight: 5 }} />版本历史（{versions.length}）</span><div className="version-selectors">{versions.length > 0 && <><select aria-label="较旧版本" value={olderId ?? ""} onChange={(event) => setOlderId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><select aria-label="较新版本" value={newerId ?? ""} onChange={(event) => setNewerId(Number(event.target.value))}>{versions.map((version) => <option key={version.id} value={version.id}>{formatTime(version.created_at)} · {actorLabel(version.actor)}</option>)}</select><button className="ghost-button" onClick={requestRestore} disabled={!older || restoring}><RotateCcw size={12} />{restoring ? "恢复中…" : "恢复"}</button></>}</div></div>
             {older && newer && older.id !== newer.id && <DiffView before={older.content} after={newer.content} />}
             <div className="version-list">{versions.length ? versions.map((version) => <div className="version-row" key={version.id}><span className={`actor-badge actor-${version.actor}`}>{actorLabel(version.actor)}</span><button onClick={() => { setOlderId(version.id); setTab("preview"); }}>{version.operation} · {formatTime(version.created_at)}</button></div>) : <span className="topbar-meta">暂无版本记录</span>}</div>
           </section>
-          {(message || error) && <div className={`editor-notice ${error ? "danger-text" : ""}`}>{error || message}</div>}
+          {error && <div className="editor-notice danger-text">{error}</div>}
         </>}
       </main>
       </div>
       <ConfirmDialog
         open={deleteTarget !== null}
-        title={deleteTarget?.isDirectory ? "递归删除这个目录？" : "删除这份记忆？"}
-        description={deleteTarget?.isDirectory ? "目录本身以及目录中的全部记忆文件都会从当前记忆树中移除。" : "助手后续将无法再读取这份记忆。历史版本仍会保留，可从每日回顾中恢复。"}
+        title={deleteTarget?.isDirectory ? "递归删除这个目录？" : "放弃未保存的编辑并删除？"}
+        description={deleteTarget?.isDirectory ? "目录本身以及目录中的全部记忆文件都会从当前记忆树中移除。删除后可以在提示条上撤销。" : "文件本身可以撤销找回，但这次还没保存的修改会随之丢失。"}
         subject={deleteTarget?.path}
         warning={deleteWarning}
         confirmLabel={deleteTarget?.isDirectory ? `删除目录及 ${deleteFileCount} 个文件` : "删除记忆文件"}

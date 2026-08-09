@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listConversations, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, deleteConversation, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listConversations, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -198,5 +198,24 @@ describe("parseSseEventLine", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(transcribeAudio(new Blob(["audio"], { type: "audio/mp4" }))).rejects.toThrow("ASR 模型还没有加载完成");
+  });
+});
+
+describe("deleteConversation", () => {
+  it("treats a 404 as success so a second delete never surfaces an error", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "会话不存在" }), { status: 404, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 会话已经不在了，正是调用方想要的终态 —— 不该抛。
+    await expect(deleteConversation(7)).resolves.toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("still propagates real failures", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "服务器错误" }), { status: 500, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(deleteConversation(7)).rejects.toThrow("服务器错误");
+    vi.unstubAllGlobals();
   });
 });

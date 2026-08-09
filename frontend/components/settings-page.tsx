@@ -12,6 +12,7 @@ import { ObservabilityCard } from "@/components/observability-card";
 import { SkillsPanel } from "@/components/skills-panel";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
+import { useToast } from "@/components/toast";
 import { notifyWorkspaceConversationsChanged } from "@/components/workspace-topbar";
 
 type SettingsSectionKey = "general" | "assistant" | "model" | "skills" | "review" | "timeline" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
@@ -357,6 +358,7 @@ function EnvStatusList({ rows, fallback }: { rows: EnvFieldStatus[]; fallback: s
 
 export function SettingsPage() {
   const { t } = useI18n();
+  const toast = useToast();
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("general");
   const [runtime, setRuntime] = useState<RuntimeSettings | null>(null);
   const [draftValues, setDraftValues] = useState<Record<string, unknown>>({});
@@ -365,7 +367,6 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [runtimeMessage, setRuntimeMessage] = useState("");
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [backupLoading, setBackupLoading] = useState(false);
   const [backup, setBackup] = useState<BackupResult | null>(null);
@@ -562,7 +563,6 @@ export function SettingsPage() {
     if (!runtime || !changedKeys.length || saving) return;
     setSaving(true);
     setError("");
-    setRuntimeMessage("");
     try {
       const changes = Object.fromEntries(changedKeys.map((key) => [key, pendingResets.has(key) ? null : draftValues[key]]));
       const updated = await updateRuntimeSettings(changes);
@@ -572,16 +572,15 @@ export function SettingsPage() {
       void refreshTtsStatus();
       void refreshAsrStatus();
       if (debugFields.length > 0) void refreshDebugRequests();
-      setRuntimeMessage("设置已保存，已立即生效");
+      toast.push({ message: "设置已保存", description: "已立即生效，无需重启", tone: "success" });
     } catch (cause) {
-      setError(errorMessage(cause, "无法保存后端设置"));
+      toast.push({ message: errorMessage(cause, "无法保存后端设置"), tone: "danger" });
     } finally {
       setSaving(false);
     }
   };
 
   const changeRuntimeField = (field: RuntimeSettingField, value: unknown) => {
-    setRuntimeMessage("");
     setPendingResets((current) => {
       if (!current.has(field.key)) return current;
       const next = new Set(current);
@@ -616,7 +615,6 @@ export function SettingsPage() {
   };
 
   const toggleRuntimeReset = (field: RuntimeSettingField) => {
-    setRuntimeMessage("");
     setPendingResets((current) => {
       const next = new Set(current);
       if (next.has(field.key)) next.delete(field.key);
@@ -628,7 +626,6 @@ export function SettingsPage() {
   const discardRuntimeChanges = () => {
     setDraftValues(runtime?.values ?? {});
     setPendingResets(new Set());
-    setRuntimeMessage("");
   };
 
   const runBackup = async () => {
@@ -737,7 +734,7 @@ export function SettingsPage() {
       const result = await clearConversations();
       setClearConversationsPending(false);
       setClearConversationsMessage(`已清空 ${result.deleted_conversations} 段对话、${result.deleted_messages} 条消息`);
-      notifyWorkspaceConversationsChanged();
+      notifyWorkspaceConversationsChanged({ type: "cleared" });
     } catch (cause) {
       setError(errorMessage(cause, "清空对话失败"));
     } finally {
@@ -776,7 +773,6 @@ export function SettingsPage() {
   return <div className="settings-shell">
     <main className="settings-content settings-content-refined">
       {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />{t("settings.retry")}</button></div>}
-      {runtimeMessage && <div className="settings-success"><Check size={14} />{runtimeMessage}</div>}
 
       <div className="settings-layout settings-layout-aligned">
         <aside className="settings-section-nav settings-nav-rail" aria-label={t("settings.navLabel")}>

@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
 import { GlobalSearch } from "@/components/global-search";
+import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
 import { ThemeProvider } from "@/components/theme-provider";
 import { WorkspaceFrame } from "@/components/workspace-frame";
 import { I18nProvider } from "@/components/i18n-provider";
+import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,7 +32,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: themeBootstrap }} /></head>
-      <body><I18nProvider><ThemeProvider><WorkspaceFrame>{children}</WorkspaceFrame><GlobalSearch /></ThemeProvider></I18nProvider></body>
+      <body><I18nProvider><ThemeProvider><ToastProvider><WorkspaceFrame>{children}</WorkspaceFrame><GlobalSearch /><KeyboardShortcuts /></ToastProvider></ThemeProvider></I18nProvider></body>
     </html>
   );
 }

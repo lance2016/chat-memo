@@ -99,8 +99,10 @@ function greeting(t: ReturnType<typeof useI18n>["t"]) {
 }
 
 function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCatalog | null; value: number | null; disabled: boolean; onChange: (value: number | null) => void }) {
+  const { t } = useI18n();
   const pickerRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const menuId = useId();
 
   useDismissOnOutside(pickerRef, open, () => setOpen(false));
@@ -109,32 +111,101 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
     if (disabled) setOpen(false);
   }, [disabled]);
 
+  // 扁平化的可选项顺序，和下面按服务分组的渲染顺序**必须一致** ——
+  // 方向键走的是这个数组，高亮靠 index 对上 DOM id。
+  const options = useMemo(() => {
+    if (!catalog) return [] as { id: number | null; disabled: boolean }[];
+    const flat: { id: number | null; disabled: boolean }[] = [{ id: null, disabled: false }];
+    for (const service of catalog.services) {
+      for (const profile of catalog.profiles.filter((item) => item.service_id === service.id)) {
+        flat.push({ id: profile.id, disabled: !profile.available && profile.id !== value });
+      }
+    }
+    return flat;
+  }, [catalog, value]);
+
+  const optionId = (index: number) => `${menuId}-option-${index}`;
+
+  useEffect(() => {
+    if (!open) return;
+    document.getElementById(optionId(activeIndex))?.scrollIntoView({ block: "nearest" });
+    // optionId 只依赖 menuId，稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, open, menuId]);
+
   if (!catalog) return null;
   const defaultProfile = catalog.profiles.find((profile) => profile.id === catalog.default_profile_id || profile.is_default);
   const selectedProfile = catalog.profiles.find((profile) => profile.id === value);
-  const selectedLabel = selectedProfile?.model_id ?? defaultProfile?.model_id ?? "跟随默认模型";
+  const selectedLabel = selectedProfile?.model_id ?? defaultProfile?.model_id ?? t("chat.model.followDefault");
 
   const choose = (next: number | null) => {
     onChange(next);
     setOpen(false);
   };
 
+  const openMenu = () => {
+    const selectedIndex = options.findIndex((option) => option.id === value);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    setOpen(true);
+  };
+
+  // 跳过不可用项，绕一圈都没有可用的就原地不动。
+  const step = (from: number, delta: number) => {
+    let next = from;
+    for (let moved = 0; moved < options.length; moved += 1) {
+      next = (next + delta + options.length) % options.length;
+      if (!options[next].disabled) return next;
+    }
+    return from;
+  };
+
+  const onTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+    if (!open) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    switch (event.key) {
+      case "ArrowDown": event.preventDefault(); setActiveIndex((current) => step(current, 1)); break;
+      case "ArrowUp": event.preventDefault(); setActiveIndex((current) => step(current, -1)); break;
+      case "Home": event.preventDefault(); setActiveIndex(step(options.length - 1, 1)); break;
+      case "End": event.preventDefault(); setActiveIndex(step(0, -1)); break;
+      case "Enter":
+      case " ": {
+        event.preventDefault();
+        const option = options[activeIndex];
+        if (option && !option.disabled) choose(option.id);
+        break;
+      }
+      case "Escape": event.preventDefault(); setOpen(false); break;
+      case "Tab": setOpen(false); break;
+      default: break;
+    }
+  };
+
+  // 渲染时和 options 同步推进的游标，保证 DOM id 和方向键索引一一对应。
+  let cursor = 0;
+
   return <div className="chat-model-picker" ref={pickerRef}>
-    <span>模型</span>
-    <button className="chat-model-trigger" type="button" role="combobox" aria-label="选择聊天模型" aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}>
+    <span>{t("chat.model.label")}</span>
+    <button className="chat-model-trigger" type="button" role="combobox" aria-label={t("chat.model.select")} aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} aria-activedescendant={open ? optionId(activeIndex) : undefined} disabled={disabled} onClick={() => open ? setOpen(false) : openMenu()} onKeyDown={onTriggerKeyDown}>
       <span>{selectedLabel}</span><ChevronDown size={14} aria-hidden="true" />
     </button>
-    {open && <div className="chat-model-menu" id={menuId} role="listbox" aria-label="聊天模型列表">
-      <button className={`chat-model-option ${value === null ? "is-selected" : ""}`} type="button" role="option" aria-selected={value === null} onClick={() => choose(null)}>
-        <span className="chat-model-option-copy"><strong>默认</strong><small>{defaultProfile?.model_id ?? "跟随默认模型"}</small></span>
+    {open && <div className="chat-model-menu" id={menuId} role="listbox" aria-label={t("chat.model.list")}>
+      {(() => { const index = cursor++; return <button className={`chat-model-option ${value === null ? "is-selected" : ""} ${activeIndex === index ? "is-active" : ""}`} id={optionId(index)} type="button" role="option" aria-selected={value === null} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(null)}>
+        <span className="chat-model-option-copy"><strong>{t("chat.model.default")}</strong><small>{defaultProfile?.model_id ?? t("chat.model.followDefault")}</small></span>
         {value === null && <Check size={14} aria-hidden="true" />}
-      </button>
+      </button>; })()}
       {catalog.services.map((service) => <div className="chat-model-group" key={service.id}>
         <div className="chat-model-group-label">{service.name}</div>
         {catalog.profiles.filter((profile) => profile.service_id === service.id).map((profile) => {
           const unavailable = !profile.available && profile.id !== value;
-          return <button className={`chat-model-option ${profile.id === value ? "is-selected" : ""}`} type="button" role="option" aria-selected={profile.id === value} disabled={unavailable} key={profile.id} onClick={() => choose(profile.id)}>
-            <span className="chat-model-option-copy"><strong>{profile.model_id}</strong>{profile.is_default && <small>默认</small>}{unavailable && <small>不可用</small>}</span>
+          const index = cursor++;
+          return <button className={`chat-model-option ${profile.id === value ? "is-selected" : ""} ${activeIndex === index ? "is-active" : ""}`} id={optionId(index)} type="button" role="option" aria-selected={profile.id === value} disabled={unavailable} key={profile.id} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(profile.id)}>
+            <span className="chat-model-option-copy"><strong>{profile.model_id}</strong>{profile.is_default && <small>{t("chat.model.default")}</small>}{unavailable && <small>{t("chat.model.unavailable")}</small>}</span>
             {profile.id === value && <Check size={14} aria-hidden="true" />}
           </button>;
         })}
@@ -145,6 +216,21 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
 
 type DisplayAttachment = TurnAttachment & { previewUrl?: string };
 type ComposerAttachment = AttachmentMeta & { previewUrl?: string };
+type DropTargetProps = {
+  onDragEnter: (event: React.DragEvent) => void;
+  onDragOver: (event: React.DragEvent) => void;
+  onDragLeave: (event: React.DragEvent) => void;
+  onDrop: (event: React.DragEvent) => void;
+};
+
+/** 拖拽悬停时盖在输入框上的提示。没有它用户不知道能不能松手。 */
+function DropHint({ available }: { available: boolean }) {
+  const { t } = useI18n();
+  return <div className={`composer-drop-hint ${available ? "" : "is-unavailable"}`} aria-hidden="true">
+    <ImagePlus size={18} />
+    <span>{available ? t("chat.attachment.dropHere") : t("chat.attachment.unavailable")}</span>
+  </div>;
+}
 
 function AttachmentThumb({ id, filename, previewUrl, onRemove }: { id: number; filename: string; previewUrl?: string; onRemove?: () => void }) {
   const { t } = useI18n();
@@ -267,7 +353,7 @@ function ComposerToolMenu({ enabled, available, disabled, onChange, onPickImage,
   </div>;
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange, attachments, uploading, visionAvailable, onPickImage, onRemoveAttachment, onPasteFiles, onDropFiles, context }: {
+function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange, attachments, uploading, visionAvailable, onPickImage, onRemoveAttachment, onPasteFiles, dropTargetProps, dragActive, context }: {
   conversations: Conversation[];
   input: string;
   memoryCount: number | null;
@@ -292,7 +378,8 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   onPickImage: () => void;
   onRemoveAttachment: (id: number) => void;
   onPasteFiles: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
-  onDropFiles: (event: React.DragEvent) => void;
+  dropTargetProps: DropTargetProps;
+  dragActive: boolean;
   context: ConversationContext | null;
 }) {
   const { locale, t } = useI18n();
@@ -308,7 +395,8 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
       </section>
 
       {backgroundResponseTitle && <button type="button" className="home-background-stream" onClick={onReturnToResponse}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: backgroundResponseTitle })}</span><ArrowRight size={13} /></button>}
-      <form className="home-capture" onSubmit={onSubmit} onDragOver={(event) => event.preventDefault()} onDrop={onDropFiles}>
+      <form className={`home-capture ${dragActive ? "is-drop-target" : ""}`} onSubmit={onSubmit} {...dropTargetProps}>
+        {dragActive && <DropHint available={visionAvailable} />}
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} onPaste={onPasteFiles} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
         <ComposerAttachments items={attachments} uploading={uploading} onRemove={onRemoveAttachment} />
         <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} onPickImage={onPickImage} imageAvailable={visionAvailable} /><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div></div><div className="home-capture-actions"><ContextIndicator context={context} /><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={(!input.trim() && attachments.length === 0) || sending || uploading > 0} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
@@ -432,7 +520,7 @@ function ContextIndicator({ context }: { context: ConversationContext | null }) 
   const colors = ["mint", "amber", "violet", "cyan", "blue"];
   const usedPercent = window ? Math.min(100, total / window * 100) : 0;
   return <details className="chat-context-indicator" ref={contextRef} open={open}>
-    <summary aria-label={t("chat.context.label")} aria-expanded={open} onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}><Gauge size={13} /><span>{t("chat.context.label")}</span><b>{window ? `${compact(total)} / ${compact(window)}` : `约 ${compact(total)}`}</b></summary>
+    <summary aria-label={t("chat.context.label")} aria-expanded={open} onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}><Gauge size={13} /><span>{t("chat.context.label")}</span><b>{window ? `${compact(total)} / ${compact(window)}` : t("chat.context.approx", { value: compact(total) })}</b></summary>
     <div className="chat-context-popover">
       <div className="chat-context-heading"><div><strong>{t("chat.context.title")}</strong><span>{context.model_name || context.model_id || "—"}</span></div><span className="chat-context-estimate">{context.estimated ? t("chat.context.estimated") : t("chat.context.measured")}</span></div>
       <div className="chat-context-total"><strong>{compact(total)}</strong><span>{window ? `/ ${compact(window)} ${t("chat.context.tokensUnit")}` : t("chat.context.unknownWindow")}</span></div>
@@ -492,6 +580,8 @@ export function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const mainPanelRef = useRef<HTMLElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -520,6 +610,8 @@ export function ChatPage() {
   const touchStartYRef = useRef<number | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<number | null>(null);
   const [awayFromBottom, setAwayFromBottom] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] = useState<number | null>(null);
@@ -571,7 +663,27 @@ export function ChatPage() {
     const syncConversationChange = (event: Event) => {
       const change = (event as CustomEvent<WorkspaceConversationChange>).detail;
       if (!change) return;
-      if (change.type === "renamed") {
+      if (change.type === "cleared") {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        messageRequestsRef.current.invalidate();
+        conversationRouteRequestsRef.current.invalidate();
+        setConversations([]);
+        setArchivedConversations([]);
+        updateSelectedId(null);
+        notifyWorkspaceSelectedConversationChanged(null);
+        setApiMessages([]);
+        setTurns([]);
+        setConversationContext(null);
+        setPendingUser("");
+        setPendingAttachments([]);
+        setDraft({ text: "", thinking: "", tools: [] });
+        setEditingTarget(null);
+        setEditDraft("");
+        setEditAttachments([]);
+        setError("");
+        router.replace("/");
+      } else if (change.type === "renamed") {
         setConversations((current) => current.map((item) => item.id === change.conversation.id ? change.conversation : item));
         setArchivedConversations((current) => current.map((item) => item.id === change.conversation.id ? change.conversation : item));
       } else if (change.type === "archived") {
@@ -589,7 +701,7 @@ export function ChatPage() {
     };
     window.addEventListener(conversationsChangedEvent, syncConversationChange);
     return () => window.removeEventListener(conversationsChangedEvent, syncConversationChange);
-  }, []);
+  }, [router, updateSelectedId]);
 
   useEffect(() => {
     let active = true;
@@ -749,6 +861,31 @@ export function ChatPage() {
       programmaticScrollTimerRef.current = null;
     }, 80);
   }, [draft, pendingUser, preferences.autoScroll, turns]);
+
+  // composer 的高度是变的：textarea 会长到 180px，附件条会整条出现/消失。
+  // message-scroll 的底部留白必须**等于实测高度**，写死 152px 的话，输入两行
+  // 或贴一张图，最后一条消息就被压在 composer 底下（用户看不到自己刚发的话）。
+  useLayoutEffect(() => {
+    const panel = mainPanelRef.current;
+    if (!panel) return;
+    const wrap = composerWrapRef.current;
+    if (!wrap) {
+      panel.style.removeProperty("--composer-height");
+      return;
+    }
+    const sync = () => {
+      panel.style.setProperty("--composer-height", `${Math.ceil(wrap.getBoundingClientRect().height)}px`);
+      // 留白变大会把内容顶上去一截。贴着底看的时候要跟着走，
+      // 否则每多打一行字，正文就往上溜一行。
+      const element = scrollRef.current;
+      if (element && preferences.autoScroll && shouldAutoScroll.current) element.scrollTop = element.scrollHeight;
+    };
+    sync();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(sync);
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, [preferences.autoScroll, selectedId]);
 
   const handleMessageScroll = (element: HTMLDivElement) => {
     const distance = Math.max(0, element.scrollHeight - element.scrollTop - element.clientHeight);
@@ -1095,12 +1232,45 @@ export function ChatPage() {
     }
   };
 
+  // dragenter/dragleave 在每个子元素边界上都会各触发一次，所以要计数而不是
+  // 置布尔 —— 用布尔的话鼠标从 textarea 划到按钮上高亮就会闪一下。
+  const dragCarriesFiles = (event: React.DragEvent) => event.dataTransfer.types.includes("Files");
+
+  const onDragEnterFiles = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  };
+
+  const onDragOverFiles = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    event.preventDefault();
+    // 看不了图的模型就直接显示「禁止」光标，别让用户拖完才发现不支持。
+    event.dataTransfer.dropEffect = visionAvailable ? "copy" : "none";
+  };
+
+  const onDragLeaveFiles = (event: React.DragEvent) => {
+    if (!dragCarriesFiles(event)) return;
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  };
+
   const onDropFiles = (event: React.DragEvent) => {
+    dragDepthRef.current = 0;
+    setDragActive(false);
     const files = Array.from(event.dataTransfer.files);
     if (files.some((file) => file.type.startsWith("image/"))) {
       event.preventDefault();
       void addAttachments(files);
     }
+  };
+
+  const dropTargetProps = {
+    onDragEnter: onDragEnterFiles,
+    onDragOver: onDragOverFiles,
+    onDragLeave: onDragLeaveFiles,
+    onDrop: onDropFiles,
   };
 
   const send = async (contentOverride?: string, targetIdOverride?: number, conversationIdOverride?: number, attachmentsOverride?: TurnAttachment[]) => {
@@ -1192,6 +1362,21 @@ export function ChatPage() {
     abortRef.current?.abort();
     stopTtsPlayback();
   };
+
+  // Esc 停止生成。此前必须用鼠标点方块按钮，而 Esc 是 macOS 上「让它停下」
+  // 的肌肉记忆。abort 之后 send() 的 catch 分支会顺带停掉 TTS。
+  useEffect(() => {
+    if (!sending) return;
+    const onEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Esc 在这个应用里还负责关浮层和退出编辑，更「近」的意图优先。
+      if (editingTarget !== null) return;
+      if (document.querySelector(".search-dialog, .confirm-dialog, .shortcuts-dialog, .chat-model-menu, .composer-tool-menu, .workspace-conversation-menu")) return;
+      abortRef.current?.abort();
+    };
+    window.addEventListener("keydown", onEscape);
+    return () => window.removeEventListener("keydown", onEscape);
+  }, [editingTarget, sending]);
   const startHomeConversation = (event: FormEvent) => {
     event.preventDefault();
     const content = input.trim();
@@ -1235,6 +1420,17 @@ export function ChatPage() {
     void send(editDraft, editingTarget, undefined, editAttachments);
   };
 
+  // 读屏此前对流式生成完全静默：发出去之后没有任何声音，直到用户自己去翻正文。
+  // 只在「开始」和「结束」两个节点播报，逐 token 播报等于噪音。
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const wasStreamingRef = useRef(false);
+  useEffect(() => {
+    const streaming = sending && streamConversationId === selectedId;
+    if (streaming && !wasStreamingRef.current) setLiveAnnouncement(t("chat.status.responding"));
+    else if (!streaming && wasStreamingRef.current) setLiveAnnouncement(t("chat.status.done"));
+    wasStreamingRef.current = streaming;
+  }, [selectedId, sending, streamConversationId, t]);
+
   const streamConversation = useMemo(() => conversations.find((item) => item.id === streamConversationId), [conversations, streamConversationId]);
   const streamBelongsToSelection = streamConversationId !== null && streamConversationId === selectedId;
   const selectedTraceId = selectedId === null ? undefined : traceIds[selectedId];
@@ -1259,8 +1455,8 @@ export function ChatPage() {
 
   return (
     <div className="app-shell">
-      <main className="main-panel">
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} attachments={attachments} uploading={uploading} visionAvailable={visionAvailable} onPickImage={pickImage} onRemoveAttachment={removeAttachment} onPasteFiles={onPasteFiles} onDropFiles={onDropFiles} context={conversationContext} /> : <>
+      <main className="main-panel" ref={mainPanelRef}>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} attachments={attachments} uploading={uploading} visionAvailable={visionAvailable} onPickImage={pickImage} onRemoveAttachment={removeAttachment} onPasteFiles={onPasteFiles} dropTargetProps={dropTargetProps} dragActive={dragActive} context={conversationContext} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
               <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
@@ -1273,9 +1469,10 @@ export function ChatPage() {
             {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId, undefined, previousUser.attachments ?? []) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={turnKey(turn, index)} />; })}
           </div>
           {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
-          <div className="composer-wrap">
-            {error && <div className="error-banner">{error}</div>}
-            <form className="composer" onSubmit={onSubmit} onDragOver={(event) => event.preventDefault()} onDrop={onDropFiles}>
+          <div className="composer-wrap" ref={composerWrapRef}>
+            {error && <div className="error-banner" role="alert">{error}</div>}
+            <form className={`composer ${dragActive ? "is-drop-target" : ""}`} onSubmit={onSubmit} {...dropTargetProps}>
+              {dragActive && <DropHint available={visionAvailable} />}
               <ComposerAttachments items={attachments} uploading={uploading} onRemove={removeAttachment} />
               <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} onPaste={onPasteFiles} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
               <div className="composer-bottom">
@@ -1297,6 +1494,7 @@ export function ChatPage() {
         {/* 两个 composer 共用这一个。value 每次清掉，否则连着选同一张图不会触发 change */}
         <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void addAttachments(files); }} />
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
+        <p className="sr-only" role="status" aria-live="polite">{liveAnnouncement}</p>
       </main>
     </div>
   );
