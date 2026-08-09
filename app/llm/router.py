@@ -47,12 +47,14 @@ class ProfileCreate(BaseModel):
     model_id: str = Field(min_length=1, max_length=240)
     display_name: str | None = Field(default=None, max_length=160)
     capabilities: dict[str, bool] = Field(default_factory=dict)
+    context_window_tokens: int | None = Field(default=None, ge=16_384, le=2_000_000)
 
 
 class ProfilePatch(BaseModel):
     model_id: str | None = Field(default=None, min_length=1, max_length=240)
     display_name: str | None = Field(default=None, max_length=160)
     capabilities: dict[str, bool] | None = None
+    context_window_tokens: int | None = Field(default=None, ge=16_384, le=2_000_000)
     enabled: bool | None = None
 
 
@@ -188,6 +190,9 @@ async def create_profile(
     capabilities = {**DEFAULT_CAPABILITIES, **payload.capabilities}
     if service.protocol == "anthropic":
         capabilities.update({"thinking": True, "json_mode": True})
+    options: dict[str, Any] = {"managed_by_runtime": False}
+    if payload.context_window_tokens is not None:
+        options["context_window_tokens"] = payload.context_window_tokens
     session.add(
         ModelProfile(
             service_id=service.id,
@@ -195,7 +200,7 @@ async def create_profile(
             model_id=payload.model_id.strip(),
             display_name=(payload.display_name or payload.model_id).strip(),
             capabilities=capabilities,
-            options={"managed_by_runtime": False},
+            options=options,
         )
     )
     await session.flush()
@@ -211,9 +216,17 @@ async def update_profile(
     profile = await session.get(ModelProfile, profile_id)
     if profile is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型档案不存在")
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    changes = payload.model_dump(exclude_unset=True)
+    context_window_tokens = changes.pop("context_window_tokens", None)
+    for key, value in changes.items():
         setattr(profile, key, value.strip() if isinstance(value, str) else value)
-    profile.options = {**(profile.options or {}), "managed_by_runtime": False}
+    options = {**(profile.options or {}), "managed_by_runtime": False}
+    if "context_window_tokens" in payload.model_fields_set:
+        if context_window_tokens is None:
+            options.pop("context_window_tokens", None)
+        else:
+            options["context_window_tokens"] = context_window_tokens
+    profile.options = options
     await session.flush()
     return await catalog_payload(session)
 

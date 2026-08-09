@@ -500,13 +500,25 @@ class Consolidator:
 
         opened = 0
         existing = {loop.text.strip() for loop in pending}
+        candidate_sources = {
+            candidate.strip(): take.conversation_id
+            for take in takes
+            for candidate in take.open_loops
+            if candidate.strip()
+        }
         for text in data.get("new_loops") or []:
             text = str(text).strip()
             if not text or text in existing:
                 continue
             existing.add(text)
             self.session.add(
-                OpenLoop(text=text, opened_on=day, status="open", actor="consolidation")
+                OpenLoop(
+                    text=text,
+                    opened_on=day,
+                    status="open",
+                    actor="consolidation",
+                    source_conversation_id=candidate_sources.get(text),
+                )
             )
             opened += 1
 

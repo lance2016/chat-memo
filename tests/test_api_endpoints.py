@@ -30,6 +30,59 @@ async def seed_conversation(session: AsyncSession, title: str = "测试") -> Con
     return conversation
 
 
+async def test_clear_all_conversations_keeps_memory_data(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    first = await seed_conversation(session, "一")
+    second = await seed_conversation(session, "二")
+    session.add_all(
+        [
+            Message(conversation_id=first.id, role="user", content=[], search_text="A"),
+            Message(conversation_id=second.id, role="user", content=[], search_text="B"),
+            ConversationSummary(conversation_id=first.id, summary="摘要", up_to_message_id=1),
+        ]
+    )
+    await MemoryStore(session, actor="manual").create("/memories/keep.md", "保留")
+    await session.commit()
+
+    response = await client.delete("/api/conversations")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deleted_conversations": 2,
+        "deleted_messages": 2,
+        "deleted_summaries": 1,
+    }
+    assert (await client.get("/api/conversations")).json() == []
+    assert (await client.get("/api/memories/keep.md")).json()["content"] == "保留"
+
+
+async def test_import_memory_json_is_isolated_and_idempotent(
+    client: AsyncClient,
+) -> None:
+    payload = '{"memories": [{"title": "偏好", "content": "喜欢清晰的列表"}, {"name": "项目", "text": "正在做导入"}]}'.encode()
+
+    first = await client.post(
+        "/api/memories/import",
+        files={"file": ("claude-export.json", payload, "application/json")},
+    )
+    assert first.status_code == 200
+    assert first.json()["format"] == "json"
+    assert first.json()["imported"] == 2
+    assert all(path.startswith("/memories/imports/") for path in first.json()["paths"])
+    index = await client.get("/api/memories/MEMORY.md")
+    assert index.status_code == 200
+    assert "外部导入，待整理" in index.json()["content"]
+
+    second = await client.post(
+        "/api/memories/import",
+        files={"file": ("claude-export.json", payload, "application/json")},
+    )
+    assert second.status_code == 200
+    assert second.json()["imported"] == 0
+    assert second.json()["skipped"] == 2
+
+
 # ---------- 工具目录 ----------
 
 
@@ -40,9 +93,10 @@ async def test_tool_catalog_exposes_names_descriptions_and_schemas(
     assert response.status_code == 200
     body = response.json()
 
-    assert body["total"] == 11
+    assert body["total"] == 12
     assert {tool["name"] for tool in body["tools"]} == {
         "memory",
+        "image_ask",
         "timeline_list",
         "timeline_create",
         "timeline_update",
@@ -228,6 +282,33 @@ async def test_unarchive_restores(client: AsyncClient, session: AsyncSession) ->
         f"/api/conversations/{conversation.id}/archive", params={"archived": False}
     )
     assert len((await client.get("/api/conversations")).json()) == 1
+
+
+async def test_conversations_support_pagination(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    base = dt.datetime(2026, 8, 1, tzinfo=dt.UTC)
+    session.add_all(
+        [
+            Conversation(
+                title=f"会话 {index}",
+                created_at=base + dt.timedelta(minutes=index),
+                updated_at=base + dt.timedelta(minutes=index),
+            )
+            for index in range(5)
+        ]
+    )
+    await session.commit()
+
+    first_page = (
+        await client.get("/api/conversations", params={"limit": 2, "offset": 0})
+    ).json()
+    second_page = (
+        await client.get("/api/conversations", params={"limit": 2, "offset": 2})
+    ).json()
+
+    assert [item["title"] for item in first_page] == ["会话 4", "会话 3"]
+    assert [item["title"] for item in second_page] == ["会话 2", "会话 1"]
 
 
 # ---------- 会话摘要 ----------

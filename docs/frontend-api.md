@@ -34,6 +34,22 @@ POST /api/models/default
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
 
+### 第 10 批 · 图片附件 ✅
+
+| 变化 | 前端行为 |
+|---|---|
+| 新增 `POST /api/attachments` / `GET /api/attachments/{id}` | 输入框支持选文件、拖入、粘贴截图 |
+| `POST /api/chat` 新增 `attachment_ids`，`content` **可以为空** | 只贴图不打字是合法消息 |
+| 消息 content 新增 `attachment_ref` 块 | `toTurns` 必须留住它，否则刷新后图片消失 |
+| `GET /api/settings` 新增 `vision_enabled` | 两条路都不通时禁用上传入口并说明原因 |
+| `POST /api/jobs/backup` 新增 `attachment_files` / `attachment_bytes` | 备份结果里显示新增了几个附件 |
+| 新增 `image_ask` 模型工具 | 工具目录多一个「看图」分类 |
+
+⚠️ **`<img src>` 不能直接写接口地址** —— 那是浏览器自己发的 GET，带不了 `X-API-Key`。
+要 authed fetch 一次再 `createObjectURL`（`lib/api.ts` 的 `attachmentObjectUrl` 按 id 缓存）。
+
+设计取舍见 [internals.md](internals.md#图片能力在-target-上不在厂商名上)。
+
 ### 第 9 批 · Agent Skills ✅
 
 | 变化 | 前端行为 |
@@ -297,10 +313,10 @@ POST /api/conversations
 ### 列表
 
 ```http
-GET /api/conversations?limit=50
+GET /api/conversations?limit=20&offset=0
 ```
 
-返回上面那种对象的数组，**按 `updated_at` 倒序**。发消息会更新 `updated_at`，所以聊过的会话会自动冒到顶部——收到 SSE `done` 后重新拉一次列表即可。
+返回上面那种对象的数组，**按 `updated_at` 倒序**。`limit` 最大为 200，`offset` 用于分页；发消息会更新 `updated_at`，所以聊过的会话会自动冒到顶部——收到 SSE `done` 后重新拉一次列表即可。侧边栏可以先取一页，滚动到底部再用 `offset` 取下一页，避免历史会话多时一次性加载全部记录。
 
 ### 删除
 
@@ -401,6 +417,19 @@ Content-Type: application/json
 
 {"conversation_id": 3, "content": "记住：我用 uv 管理 Python 依赖，从不用 pip"}
 ```
+
+带图片时先把每张图 `POST /api/attachments`（multipart，字段名 `file`）拿到 id，
+再把 id 放进 `attachment_ids`：
+
+```json
+{"conversation_id": 3, "content": "这个报错怎么解决", "attachment_ids": [7]}
+```
+
+`content` 和 `attachment_ids` **不能同时为空**，但任意一个为空都合法 ——
+只贴一张图不配文字是正常用法。
+
+⚠️ 当前模型看不了图、又没配视觉模型档案时，服务端回一个 `error` 事件而不是
+静默把图丢掉。前端可以先看 `GET /api/settings` 的 `vision_enabled` 提前禁用入口。
 
 响应是 `text/event-stream`，每个事件一行 `data: {...}`，事件之间空一行。
 
@@ -580,11 +609,28 @@ Anthropic 是 `input_tokens`）。要展示的话用 [`/api/usage`](#用量统�
 
 照 `role` 直接渲染的话，用户会看到两条自己从没发过的消息，内容是「已创建 /memories/...」。
 
+### ⚠️ 规整是有损的，附件必须显式留住
+
+`toTurns` 只保留它认识的块，其余一律丢弃 —— 这对 `tool_use` 之类是对的，
+但用户消息里的 `attachment_ref` 必须显式接住：
+
+```json
+{"id": 12, "role": "user", "content": [
+  {"type": "attachment_ref", "id": 7, "kind": "image", "filename": "err.png"},
+  {"type": "text", "text": "这个报错怎么解决"}
+]}
+```
+
+漏掉的症状很好认：发送时图片显示正常（那是本地的乐观渲染），
+**刷新一次页面就没了** —— 因为权威历史里的那个块被丢掉了。
+
+图片正文用 `GET /api/attachments/{id}` 取，记得走 authed fetch 换 blob URL。
+
 ### 规整规则
 
 ```ts
 export type Turn =
-  | { kind: "user"; text: string }
+  | { kind: "user"; text: string; attachments?: { id: number; filename: string }[] }
   | { kind: "assistant"; text: string; thinking: string; tools: ToolActivity[] };
 
 export function toTurns(messages: ApiMessage[]): Turn[] {
@@ -1853,6 +1899,8 @@ export interface SettingField {
   provider: string;
   /** 🆕 第 5 批。界面分区："" = 模型与整理，"tts" = 语音，"debug" = 调试 */
   group: string;
+  /** true = values 中永远返回空串；前端只能用密码输入一次性替换，不得回显原值 */
+  secret?: boolean;
 }
 
 /** 🆕 第 5 批 */

@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 _active: tuple[str, str, bool] | None = None
 
 CAPTURE_ENV = "OPENINFERENCE_CAPTURE_MESSAGE_CONTENT"
+# Keep text and tool content visible in Phoenix while preventing provider
+# instrumentors from copying the actual image bytes into message attributes.
+HIDE_INPUT_IMAGES_ENV = "OPENINFERENCE_HIDE_INPUT_IMAGES"
 
 
 def _otlp_http_endpoint(endpoint: str) -> str:
@@ -107,6 +110,7 @@ def apply_tracing(settings: Settings) -> bool:
         # 应用自建的 span 和 SDK 埋点的 span 要一致：正文记不记由同一个开关决定。
         # 用 setdefault 会让设置页里关掉之后无法再打开（环境变量已存在），所以直接赋值。
         os.environ[CAPTURE_ENV] = "true" if capture else "false"
+        os.environ[HIDE_INPUT_IMAGES_ENV] = "true"
         provider = register(
             project_name=project,
             endpoint=_otlp_http_endpoint(endpoint),

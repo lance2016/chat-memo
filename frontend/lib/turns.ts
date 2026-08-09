@@ -33,9 +33,22 @@ export function toTurns(messages: ApiMessage[]): Turn[] {
     }
 
     if (message.role === "user") {
+      // 附件引用必须在这里留住：这个函数是有损的（只保下面认识的块），
+      // 漏掉它的症状是刷新一次页面，贴过的图就从气泡里消失了。
+      const attachments = blocks
+        .filter((block): block is Extract<ContentBlock, { type: "attachment_ref" }> => block.type === "attachment_ref")
+        .map((block) => ({
+          id: block.id,
+          filename: block.filename,
+          ...(block.mime ? { mime: block.mime } : {}),
+          ...(typeof block.bytes === "number" ? { bytes: block.bytes } : {}),
+          ...(typeof block.width === "number" ? { width: block.width } : {}),
+          ...(typeof block.height === "number" ? { height: block.height } : {}),
+        }));
       turns.push({
         kind: "user",
         text: blocks.filter((block): block is Extract<ContentBlock, { type: "text" }> => block.type === "text").map((block) => block.text).join("\n"),
+        ...(attachments.length > 0 ? { attachments } : {}),
         messageId: message.id,
       });
       continue;

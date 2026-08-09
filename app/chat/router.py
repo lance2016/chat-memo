@@ -10,17 +10,31 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import select
+from pydantic import BaseModel, Field, model_validator
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import or_, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import build_agent_context
-from app.chat.service import ChatService, history_window_stats
+from app.attachments.hydrate import AttachmentHydrator
+from app.chat.service import (
+    ChatService,
+    context_breakdown,
+    history_window_stats,
+    sanitize_history,
+    trim_history,
+)
 from app.config import get_settings
-from app.db.models import Conversation, ConversationSummary, Message, live_message
+from app.db.models import (
+    Attachment,
+    Conversation,
+    ConversationSummary,
+    Message,
+    live_message,
+)
 from app.db.session import get_session, get_sessionmaker
-from app.llm.catalog import resolve_model_target
+from app.llm.catalog import resolve_model_target, resolve_vision_target
 from app.llm.target import ModelTarget
 from app.llm.title import get_title_client
 from app.obs import current_trace_id
@@ -44,11 +58,21 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 
 class ChatRequest(BaseModel):
     conversation_id: int | None = None
-    content: str = Field(min_length=1)
+    # 不再要求 min_length=1：只贴一张图不配文字是正常用法。
+    # 「不能两边都空」交给下面的校验器 —— 那才是真正的约束。
+    content: str = ""
     # 选择器传入的模型。保存到会话后，后续消息默认继续使用它。
     model_profile_id: int | None = None
     # 只影响这一轮；默认关闭，避免模型在用户没有明确要求时访问外网。
     web_search: bool = False
+    # 先上传拿到 id，发送时才挂到消息上。
+    attachment_ids: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _not_empty(self) -> ChatRequest:
+        if not self.content.strip() and not self.attachment_ids:
+            raise ValueError("消息不能为空")
+        return self
 
 
 class ConversationOut(BaseModel):
@@ -96,6 +120,10 @@ async def get_runtime_settings(
         "kb_enabled": bool(settings.vault_path),
         # 只返回能力状态，不返回 Tavily Key 本身。
         "web_search_enabled": is_configured(settings.tavily_api_key),
+        # 能不能贴图。两条路任意一条通就行：聊天模型自己能看图，
+        # 或者配了视觉模型档案来做转描述。前端拿它决定上传入口是否可用。
+        "vision_enabled": target.supports_vision
+        or settings.vision_model_profile_id is not None,
     }
 
 
@@ -145,7 +173,7 @@ class MessageOut(BaseModel):
 @router.get("/conversations/{conversation_id}/context")
 async def get_conversation_context(
     conversation_id: int, session: AsyncSession = Depends(get_session)
-) -> dict[str, int]:
+) -> dict[str, Any]:
     conversation = await session.get(Conversation, conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
@@ -159,14 +187,130 @@ async def get_conversation_context(
     )
     messages = [{"role": row.role, "content": row.content} for row in rows]
     stats = history_window_stats(messages, settings.history_max_chars)
+    retained = sanitize_history(trim_history(messages, settings.history_max_chars))
     last_usage = next((row.usage for row in reversed(rows) if row.usage), {}) or {}
-    stats["prompt_tokens"] = int(
+    exact_prompt_tokens = int(
         last_usage.get("prompt_tokens", last_usage.get("input_tokens", 0)) or 0
     )
-    stats["cached_tokens"] = int(
+    cached_tokens = int(
         last_usage.get("prompt_cache_hit_tokens", last_usage.get("cache_read_input_tokens", 0)) or 0
     )
-    return stats
+    try:
+        target = await resolve_model_target(
+            session, settings, profile_id=conversation.model_profile_id
+        )
+    except ValueError:
+        # The context meter should still be usable while a model credential is
+        # being fixed. The legacy target carries the current model metadata but
+        # does not invent a context-window size.
+        target = ModelTarget.from_settings(settings)
+
+    try:
+        agent_context = await build_agent_context(
+            session,
+            settings=settings,
+            target=target,
+            purpose="chat",
+            conversation_id=conversation_id,
+        )
+        system = agent_context.system
+        definitions = (
+            agent_context.executor.anthropic_definitions
+            if target.protocol == "anthropic"
+            else agent_context.executor.openai_definitions
+        )
+        toolkits = list(agent_context.toolkits)
+    except Exception:
+        # A diagnostics panel must not make an otherwise usable conversation
+        # fail because an optional toolkit is temporarily unavailable.
+        logger.exception("组装上下文用量面板失败")
+        system = ""
+        definitions = []
+        toolkits = []
+
+    breakdown = context_breakdown(system, definitions, retained)
+    estimated_prompt_tokens = sum(int(item.get("tokens", 0)) for item in breakdown)
+    if exact_prompt_tokens and estimated_prompt_tokens:
+        # The provider gives an exact aggregate, while the category tokenizer
+        # is only approximate. Scale categories to that aggregate so the UI
+        # never presents a breakdown whose sum is larger than its headline.
+        scaled_total = 0
+        for item in breakdown[:-1]:
+            scaled = round(int(item.get("tokens", 0)) * exact_prompt_tokens / estimated_prompt_tokens)
+            item["tokens"] = scaled
+            scaled_total += scaled
+        if breakdown:
+            breakdown[-1]["tokens"] = max(0, exact_prompt_tokens - scaled_total)
+    prompt_tokens = exact_prompt_tokens or estimated_prompt_tokens
+    window = target.context_window_tokens
+    return {
+        **stats,
+        "prompt_tokens": prompt_tokens,
+        "exact_prompt_tokens": exact_prompt_tokens,
+        "estimated_prompt_tokens": estimated_prompt_tokens,
+        "cached_tokens": cached_tokens,
+        "estimated": exact_prompt_tokens == 0,
+        "model_id": target.model_id,
+        "model_name": target.display_name,
+        "context_window_tokens": window,
+        "max_output_tokens": target.max_tokens,
+        "remaining_tokens": max(window - prompt_tokens, 0) if window else None,
+        "used_percent": round(prompt_tokens / window * 100, 1) if window else None,
+        "breakdown": breakdown,
+        "toolkits": toolkits,
+    }
+
+
+@router.get("/context")
+async def get_context_preview(session: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Context baseline for the empty composer.
+
+    A new conversation has no messages yet, but system prompt and tool schemas
+    still consume input space. Showing that baseline keeps the context control
+    discoverable on the home screen instead of only after the first message.
+    """
+    settings = await resolve_settings(session)
+    try:
+        target = await resolve_model_target(session, settings)
+    except ValueError:
+        target = ModelTarget.from_settings(settings)
+    try:
+        agent_context = await build_agent_context(
+            session, settings=settings, target=target, purpose="chat"
+        )
+        system = agent_context.system
+        definitions = (
+            agent_context.executor.anthropic_definitions
+            if target.protocol == "anthropic"
+            else agent_context.executor.openai_definitions
+        )
+        toolkits = list(agent_context.toolkits)
+    except Exception:
+        logger.exception("组装空会话上下文用量面板失败")
+        system, definitions, toolkits = "", [], []
+    breakdown = context_breakdown(system, definitions, [])
+    estimated = sum(int(item.get("tokens", 0)) for item in breakdown)
+    window = target.context_window_tokens
+    return {
+        "history_chars": 0,
+        "history_budget_chars": settings.history_max_chars,
+        "retained_messages": 0,
+        "retained_turns": 0,
+        "trimmed_messages": 0,
+        "prompt_tokens": estimated,
+        "exact_prompt_tokens": 0,
+        "estimated_prompt_tokens": estimated,
+        "cached_tokens": 0,
+        "estimated": True,
+        "model_id": target.model_id,
+        "model_name": target.display_name,
+        "context_window_tokens": window,
+        "max_output_tokens": target.max_tokens,
+        "remaining_tokens": max(window - estimated, 0) if window else None,
+        "used_percent": round(estimated / window * 100, 1) if window else None,
+        "breakdown": breakdown,
+        "toolkits": toolkits,
+    }
 
 
 class SummaryOut(BaseModel):
@@ -187,6 +331,12 @@ class DailyUsageOut(BaseModel):
 
 class TruncateOut(BaseModel):
     deleted: int
+
+
+class ConversationClearOut(BaseModel):
+    deleted_conversations: int
+    deleted_messages: int
+    deleted_summaries: int
 
 
 class ConversationHitOut(BaseModel):
@@ -234,6 +384,7 @@ async def create_conversation(
 async def list_conversations(
     limit: int = 50,
     archived: bool = False,
+    offset: int = 0,
     session: AsyncSession = Depends(get_session),
 ) -> list[Conversation]:
     """默认只返回未归档的；archived=true 返回归档的那批。"""
@@ -246,9 +397,58 @@ async def list_conversations(
         select(Conversation)
         .where(condition)
         .order_by(Conversation.updated_at.desc())
+        .offset(max(offset, 0))
         .limit(min(limit, 200))
     )
     return list((await session.execute(stmt)).scalars())
+
+
+@router.delete("/conversations", response_model=ConversationClearOut)
+async def clear_conversations(
+    session: AsyncSession = Depends(get_session),
+) -> ConversationClearOut:
+    """一次清掉全部会话及其摘要，供开发期清理测试数据。
+
+    长期记忆、每日回顾、关注事项和时间线是独立的用户数据，故意保留；否则一个
+    看似清空对话的按钮会把已经沉淀的内容也一起抹掉。
+    """
+    conversation_ids = list(
+        (await session.execute(select(Conversation.id))).scalars()
+    )
+    if not conversation_ids:
+        return ConversationClearOut(
+            deleted_conversations=0, deleted_messages=0, deleted_summaries=0
+        )
+
+    message_ids = list(
+        (
+            await session.execute(
+                select(Message.id).where(Message.conversation_id.in_(conversation_ids))
+            )
+        ).scalars()
+    )
+    # 这些表没有都配置 ORM relationship，显式删掉能保证 SQLite 和 Postgres 的
+    # 行为一致；附件正文是内容寻址共享文件，不能因为删行而误删磁盘文件。
+    attachment_conditions = [Attachment.conversation_id.in_(conversation_ids)]
+    if message_ids:
+        attachment_conditions.append(Attachment.message_id.in_(message_ids))
+    await session.execute(sa_delete(Attachment).where(or_(*attachment_conditions)))
+    summary_result = await session.execute(
+        sa_delete(ConversationSummary).where(
+            ConversationSummary.conversation_id.in_(conversation_ids)
+        )
+    )
+    message_result = await session.execute(
+        sa_delete(Message).where(Message.conversation_id.in_(conversation_ids))
+    )
+    conversation_result = await session.execute(
+        sa_delete(Conversation).where(Conversation.id.in_(conversation_ids))
+    )
+    return ConversationClearOut(
+        deleted_conversations=conversation_result.rowcount or 0,
+        deleted_messages=message_result.rowcount or 0,
+        deleted_summaries=summary_result.rowcount or 0,
+    )
 
 
 @router.patch("/conversations/{conversation_id}", response_model=ConversationOut)
@@ -554,6 +754,23 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                 if target.profile_id is not None:
                     conversation.model_profile_id = target.profile_id
 
+                # 看图的能力从 target 上问，不问厂商名 —— 换成 Claude 之后
+                # vision_target 根本不会被用到，这条链路自动退场。
+                vision_target = (
+                    None
+                    if target.supports_vision
+                    else await resolve_vision_target(session, settings)
+                )
+                if (
+                    payload.attachment_ids
+                    and not target.supports_vision
+                    and vision_target is None
+                ):
+                    # 明确报错而不是把图悄悄丢掉。静默丢弃的症状是模型答非所问，
+                    # 而用户根本不会想到是图没发出去。
+                    yield _sse({"type": "error", "message": "当前模型看不了图片，请在设置页配置一个视觉模型档案，或换用支持视觉的聊天模型"})
+                    return
+
                 # 工具、提示词、provider 的装配在 app/agent.py，和每日整理共用一份 ——
                 # 各写一份迟早会长成「提示词讲了某个工具但没注册它」。
                 context = await build_agent_context(
@@ -572,6 +789,12 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     model_profile_id=target.profile_id,
                     # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
                     title_client=get_title_client(settings),
+                    hydrator=AttachmentHydrator(
+                        session,
+                        settings,
+                        target=target,
+                        vision_target=vision_target,
+                    ),
                 )
                 system = context.system
 
@@ -582,7 +805,10 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     yield _sse({"type": "trace", "trace_id": trace_id})
 
                 async for event in service.stream_reply(
-                    conversation=conversation, system=system, user_text=payload.content
+                    conversation=conversation,
+                    system=system,
+                    user_text=payload.content,
+                    attachment_ids=payload.attachment_ids,
                 ):
                     yield _sse(_to_payload(event))
             except Exception as exc:

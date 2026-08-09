@@ -27,6 +27,29 @@ describe("toTurns", () => {
     expect(toTurns(messages)).toEqual([]);
   });
 
+  it("keeps attachment refs on the user turn", () => {
+    // 这个函数是有损的（只留它认识的块）。附件不显式保留的话，
+    // 刷新一次页面贴过的图就从气泡里消失了。
+    const messages: ApiMessage[] = [{
+      id: 7,
+      role: "user",
+      content: [
+        { type: "attachment_ref", id: 3, kind: "image", filename: "err.png" },
+        { type: "text", text: "这是什么" },
+      ],
+      usage: null,
+      created_at: "",
+    }];
+    expect(toTurns(messages)).toEqual([
+      { kind: "user", text: "这是什么", attachments: [{ id: 3, filename: "err.png" }], messageId: 7 },
+    ]);
+  });
+
+  it("omits attachments entirely when a user message has none", () => {
+    const messages: ApiMessage[] = [{ id: 8, role: "user", content: [{ type: "text", text: "只有文字" }], usage: null, created_at: "" }];
+    expect(toTurns(messages)).toEqual([{ kind: "user", text: "只有文字", messageId: 8 }]);
+  });
+
   it("keeps an interrupted assistant response visible", () => {
     const messages: ApiMessage[] = [{ id: 4, role: "assistant", content: [{ type: "text", text: "已经生成的部分" }], usage: { interrupted: true }, created_at: "" }];
     expect(toTurns(messages)).toMatchObject([{ kind: "assistant", text: "已经生成的部分", usage: { interrupted: true } }]);

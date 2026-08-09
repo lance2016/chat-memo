@@ -113,6 +113,9 @@ class BackupOut(BaseModel):
     dump_bytes: int
     memory_files: int
     memory_dir: str
+    # 附件正文是磁盘上的，不在 dump 里。回显出来才看得见它确实被备份了。
+    attachment_files: int = 0
+    attachment_bytes: int = 0
     created_at: str
     detail: str
     # 本次轮换掉的旧备份。不回显的话「留最近 N 份」这个设置是完全不可见的

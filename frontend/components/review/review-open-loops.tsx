@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Check, CircleDashed, Plus, Undo2, X } from "lucide-react";
+import { useRef, useState } from "react";
+import Link from "next/link";
+import { ArrowUpRight, Check, CircleDashed, MessageSquare, Plus, Undo2, X } from "lucide-react";
 import type { OpenLoop } from "@/lib/types";
 import { useI18n } from "@/components/i18n-provider";
+import { useDismissDetailsOnOutside } from "@/lib/use-dismiss-on-outside";
 
 function daysBetween(from: string, to: string) {
   const start = new Date(`${from}T12:00:00`).getTime();
@@ -23,6 +25,8 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
   const [draft, setDraft] = useState("");
   const [composing, setComposing] = useState(false);
   const [busy, setBusy] = useState<number | "new" | null>(null);
+  const settledRef = useRef<HTMLDetailsElement>(null);
+  useDismissDetailsOnOutside(settledRef);
 
   const run = async (key: number | "new", task: () => Promise<void>) => {
     if (busy !== null) return;
@@ -54,6 +58,7 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
     <button className="loop-check" onClick={() => void run(loop.id, () => actions.onClose(loop))} disabled={busy !== null} aria-label={t("review.followUps.markHandled")}><Check size={13} /></button>
     <span className="loop-text">{loop.text}</span>
     {age !== undefined && <span className="loop-age">{t("review.followUps.watchedDays", { days: age })}</span>}
+    <Link className="loop-open" href={loop.source_conversation_id ? `/?conversation=${loop.source_conversation_id}` : "/"} aria-label={t("review.followUps.openConversation")} title={t("review.followUps.openConversation")}><MessageSquare size={12} /><span>{t("review.followUps.openConversationShort")}</span><ArrowUpRight size={11} /></Link>
     <button className="loop-drop" onClick={() => void run(loop.id, () => actions.onDrop(loop))} disabled={busy !== null} aria-label={t("review.followUps.stopWatching")}><X size={13} /></button>
   </li>;
 
@@ -93,7 +98,7 @@ export function ReviewOpenLoops({ loops, day, error, ...actions }: { loops: Open
         <button className="ghost-button loop-compose-toggle" type="button" onClick={() => setComposing((value) => !value)}>{composing ? <X size={12} /> : <Plus size={12} />}{composing ? t("review.followUps.collapse") : t("review.followUps.addOne")}</button>
       </div>}
 
-      {settled.length > 0 && <details className="loop-group loop-group-settled">
+      {settled.length > 0 && <details ref={settledRef} className="loop-group loop-group-settled">
         <summary><h3>{t("review.followUps.settledToday")}</h3><span>{settled.length}</span></summary>
         <ul>{settled.map((loop) => <li key={loop.id} className="loop-row loop-done">
           <span className="loop-check loop-check-done" aria-hidden="true"><Check size={13} /></span>

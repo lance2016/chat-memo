@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # 新模型目录的全局默认。为空时兼容旧的 provider/model 配置。
     chat_model_profile_id: int | None = None
     consolidate_model_profile_id: int | None = None
+    # 聊天模型看不了图时，图交给它转成描述。和聊天模型正交：换聊天模型不该动这个。
+    # 为空 = 只有聊天模型自己支持视觉时才能贴图。
+    vision_model_profile_id: int | None = None
 
     anthropic_api_key: str = ""
     model: str = "claude-opus-5"
@@ -140,6 +143,16 @@ class Settings(BaseSettings):
     # 技能总开关。装了一堆技能但想临时看看「不带技能时模型怎么答」时用；
     # 也是出问题时的第一道止血阀（某个技能的说明把模型带偏了）。
     skills_enabled: bool = True
+
+    # ---- 附件 ----
+    # 附件目录（compose 把 ./attachments 可写挂到 /attachments）。和技能一样必须可写。
+    # 正文落磁盘而不是进数据库：pg_dump 是备份主路径，blob 塞进去会被 14 份轮换乘一遍。
+    # 是挂载点，所以只能改 .env。
+    attachments_path: str = "attachments"
+    # 单张图的上限。浏览器截图通常几百 KB，10MB 已经很宽松了；
+    # 真正的约束在模型侧（Anthropic 单图 5MB、多数 OpenAI 兼容服务更小），
+    # 所以这里只是防异常客户端撑爆 API 内存，不是「能发多大」的答案。
+    attachment_max_bytes: int = 10 * 1024 * 1024
 
     # Obsidian vault 的挂载点（compose 把宿主机 VAULT_PATH 只读挂到 /vault 并注入本值）。
     # 留空 = 不启用知识库工具。基础设施配置，只能改 .env —— 挂载点本来就要改 compose 才能变。

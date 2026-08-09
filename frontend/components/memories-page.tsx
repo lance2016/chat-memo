@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { diffLines } from "diff";
-import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RefreshCw, FlaskConical, RotateCcw, Save, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
+import { Activity, BarChart3, ChevronDown, ChevronRight, File, FileText, Folder, FolderOpen, History, Menu, RefreshCw, FlaskConical, RotateCcw, Save, ShieldCheck, Trash2, TriangleAlert, Upload } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { deleteMemory, errorMessage, getMemory, getMemoryAudit, getMemoryStats, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
+import { deleteMemory, errorMessage, getMemory, getMemoryAudit, getMemoryStats, importMemories, listMemoryNodes, listMemoryVersions, restoreMemoryVersion, saveMemory } from "@/lib/api";
 import { buildMemoryTree, type MemoryTreeEntry } from "@/lib/tree";
 import type { Memory, MemoryIndexAudit, MemoryNode, MemoryStats, MemoryVersion } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
@@ -17,7 +17,7 @@ import { useI18n } from "@/components/i18n-provider";
 type MemoryView = "files" | "stats" | "eval";
 
 function actorLabel(actor: MemoryVersion["actor"]) {
-  return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
+  return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : actor === "ingest" ? "导入" : "手动编辑";
 }
 
 function formatTime(value: string) {
@@ -29,7 +29,19 @@ function formatDate(value: string) {
 }
 
 function actorLabelFromName(actor: string) {
-  return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : "手动编辑";
+  return actor === "chat" ? "聊天" : actor === "consolidation" ? "每日整理" : actor === "ingest" ? "导入" : "手动编辑";
+}
+
+function percent(value: number) {
+  return `${Math.round(value)}%`;
+}
+
+function activityLevel(total: number, max: number) {
+  if (!total) return 0;
+  if (total >= max * 0.75) return 4;
+  if (total >= max * 0.5) return 3;
+  if (total >= max * 0.25) return 2;
+  return 1;
 }
 
 function memoryLabel(path: string) {
@@ -105,17 +117,23 @@ function MemoryStatsPanel({ stats, audit, auditError, loading, error, onRetry, o
   if (!stats) return <div className="centered-empty stats-empty"><div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法读取记忆活动" : "暂无记忆使用率数据"}</strong>{error && <span>{error}</span>}{error && <button className="ghost-button" onClick={onRetry}><RefreshCw size={12} />重试</button>}</div></div>;
 
   const maxReads = Math.max(...stats.top.map((item) => item.reads), 1);
-  const maxDaily = Math.max(...stats.daily.flatMap((item) => [item.reads, item.writes]), 1);
   const maxActor = Math.max(...stats.by_actor.flatMap((item) => [item.reads, item.writes]), 1);
-  const activeDays = stats.daily.filter((item) => item.reads + item.writes > 0).slice(-14);
+  const activeDayCount = stats.daily.filter((item) => item.reads + item.writes > 0).length;
+  const deepReadCount = Math.max(stats.total_memories - stats.never_read, 0);
+  const readCoverage = stats.total_memories ? deepReadCount / stats.total_memories * 100 : 0;
+  const hitRate = stats.total_reads ? Math.max(0, 1 - stats.missed_reads / stats.total_reads) * 100 : null;
+  const peakDay = stats.daily.reduce((best, item) => item.reads + item.writes > best.reads + best.writes ? item : best, stats.daily[0] ?? { day: "", reads: 0, writes: 0 });
+  const heatmapMax = Math.max(...stats.daily.map((item) => item.reads + item.writes), 1);
+  const focusItems = stats.unused.slice(0, 3);
 
   return <div className="memory-stats-panel">
-    <div className="stats-context-bar"><span>仅统计模型主动读取和更新，不含索引摘要注入</span><strong>近 30 天</strong></div>
-    <div className="memory-stat-cards"><div><span>记忆文件</span><strong>{stats.total_memories}</strong></div><div><span>主动读取</span><strong>{stats.total_reads}</strong></div><div><span>写入次数</span><strong>{stats.total_writes}</strong></div><div className={stats.missed_reads ? "stat-warning" : ""}><span>未命中读取</span><strong>{stats.missed_reads}</strong></div></div>
+    <div className="stats-heading"><div><span className="card-kicker">MEMORY SIGNALS</span><h1>记忆有效性</h1><p>把“存了多少”变成“真正被用上多少”。以下数据只统计模型主动读取和更新，不含每轮自动注入的索引摘要。</p></div><span className="stats-period">近 30 天</span></div>
+    <div className="memory-stat-cards"><div><span>记忆文件</span><strong>{stats.total_memories}</strong><small>当前总量</small></div><div><span>已展开细节</span><strong>{percent(readCoverage)}</strong><small>{deepReadCount} / {stats.total_memories || 0} 份</small></div><div><span>活跃日期</span><strong>{activeDayCount}</strong><small>近 30 天有读写</small></div><div className={stats.missed_reads ? "stat-warning" : ""}><span>读取命中率</span><strong>{hitRate === null ? "—" : percent(hitRate)}</strong><small>{stats.missed_reads ? `未命中 ${stats.missed_reads} 次` : "没有发现未命中"}</small></div></div>
+    <section className="memory-insight-card"><div className="insight-copy"><span className="card-kicker">WHAT TO DO NEXT</span><h2>下一步建议</h2><p>{audit?.ok ? "索引结构正常，现在最值得处理的是那些内容较长、却从未被展开过的记忆。" : audit ? `索引还有 ${audit.issue_count} 项问题，先修复它们，模型才能稳定找到全部记忆。` : "正在检查索引一致性…"}</p></div><div className="insight-metrics"><div><span>最活跃日</span><strong>{peakDay.day ? formatDate(peakDay.day) : "—"}</strong><small>{peakDay.reads + peakDay.writes} 次活动</small></div><div><span>主动读取</span><strong>{stats.total_reads}</strong><small>写入 {stats.total_writes} 次</small></div></div><div className="insight-focus">{focusItems.length ? focusItems.map((item) => <button className="insight-focus-row" key={item.path} onClick={() => onOpenFile(item.path)}><span><strong>{memoryLabel(item.path)}</strong><small>{item.content_chars.toLocaleString()} 字 · {item.idle_days === null ? "从未展开" : `闲置 ${item.idle_days} 天`}</small></span><ChevronRight size={14} /></button>) : <div className="insight-focus-empty"><ShieldCheck size={15} />所有记忆都至少被展开过一次</div>}</div></section>
     <div className="memory-stats-grid">
       <IndexAuditCard audit={audit} error={auditError} onOpenFile={onOpenFile} />
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">MOST USED</span><h2>经常使用的记忆</h2></div><Activity size={16} /></div>{stats.top.length ? <div className="stat-list">{stats.top.map((item) => <button className="stat-row stat-row-button" key={item.path} onClick={() => onOpenFile(item.path)}><span className="stat-row-label" title={item.path}><strong>{memoryLabel(item.path)}</strong><small>{item.path.replace("/memories/", "")}</small></span><i><b style={{ width: `${Math.max(4, item.reads / maxReads * 100)}%` }} /></i><em>{item.reads}</em></button>)}</div> : <div className="stats-card-empty">还没有记忆读取记录。</div>}</section>
-      <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">ACTIVE DAYS</span><h2>发生读写的日期</h2></div><span className="legend"><i className="legend-read" />读 <i className="legend-write" />写</span></div>{activeDays.length ? <div className="daily-bars">{activeDays.map((item) => <div className="daily-bar-row" key={item.day}><span>{formatDate(item.day)}</span><i><b className="bar-read" style={{ width: `${Math.max(item.reads ? 5 : 0, item.reads / maxDaily * 100)}%` }} /><b className="bar-write" style={{ width: `${Math.max(item.writes ? 5 : 0, item.writes / maxDaily * 100)}%` }} /></i><em>{item.reads + item.writes}</em></div>)}</div> : <div className="stats-card-empty">近 30 天没有发生记忆读写。</div>}</section>
+      <section className="memory-stat-card activity-card"><div className="stats-card-heading"><div><span className="card-kicker">ACTIVITY MAP</span><h2>近 30 天活动</h2></div><span className="legend"><i className="legend-read" />读 <i className="legend-write" />写</span></div>{stats.daily.length ? <><div className="activity-summary"><span>{activeDayCount} 天有活动</span><strong>{peakDay.day ? `${formatDate(peakDay.day)} 最活跃` : "暂无活动"}</strong></div><div className="activity-heatmap" role="grid" aria-label="近 30 天记忆活动">{stats.daily.map((item) => { const total = item.reads + item.writes; return <div className={`activity-cell level-${activityLevel(total, heatmapMax)}`} key={item.day} title={`${formatDate(item.day)} · 读 ${item.reads} · 写 ${item.writes}`} aria-label={`${formatDate(item.day)}，读 ${item.reads} 次，写 ${item.writes} 次`}><i style={{ width: `${item.reads ? Math.max(10, item.reads / Math.max(item.reads, item.writes, 1) * 100) : 0}%` }} /><b style={{ width: `${item.writes ? Math.max(10, item.writes / Math.max(item.reads, item.writes, 1) * 100) : 0}%` }} /></div>; })}</div><div className="activity-range"><span>{stats.daily[0] ? formatDate(stats.daily[0].day) : ""}</span><span>{stats.daily.at(-1) ? formatDate(stats.daily.at(-1)!.day) : ""}</span></div></> : <div className="stats-card-empty">近 30 天没有发生记忆读写。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">BY ACTOR</span><h2>变更来源</h2></div></div>{stats.by_actor.length ? <div className="stat-list">{stats.by_actor.map((item) => <div className="actor-stat-row" key={item.actor}><span className={`actor-badge actor-${item.actor}`}>{actorLabelFromName(item.actor)}</span><i><b style={{ width: `${Math.max(item.reads ? 4 : 0, item.reads / maxActor * 100)}%` }} /></i><em>读 {item.reads} · 写 {item.writes}</em></div>)}</div> : <div className="stats-card-empty">暂无来源统计。</div>}</section>
       <section className="memory-stat-card"><div className="stats-card-heading"><div><span className="card-kicker">NO DEEP READ</span><h2>尚未展开细节</h2></div><span className="count-pill">{stats.never_read}</span></div>{stats.unused.length ? <div className="stat-list">{stats.unused.map((item) => <div className="unused-row" key={item.path}><button className="stat-row-button" onClick={() => onOpenFile(item.path)}><strong title={item.path}>{memoryLabel(item.path)}</strong><span>{item.content_chars.toLocaleString()} 字符 · {item.idle_days === null ? "从未展开" : `闲置 ${item.idle_days} 天`}</span></button><button className="icon-button" title="删除记忆" aria-label={`删除${memoryLabel(item.path)}`} onClick={() => onDelete(item.path)}><Trash2 size={13} /></button></div>)}</div> : <div className="stats-card-empty">所有记忆都至少展开过一次。</div>}</section>
     </div>
@@ -155,6 +173,8 @@ export function MemoriesPage() {
   const [restoring, setRestoring] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ path: string; isDirectory: boolean } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [restoreTarget, setRestoreTarget] = useState<MemoryVersion | null>(null);
   const fileRequestsRef = useRef(new LatestRequest());
   const statsRequestsRef = useRef(new LatestRequest());
@@ -252,6 +272,33 @@ export function MemoriesPage() {
     } catch (cause) { setError(errorMessage(cause, "保存失败")); } finally { setSaving(false); }
   };
 
+  const importFile = async (file: File) => {
+    if (importing) return;
+    setImporting(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await importMemories(file);
+      const updated = await loadTree();
+      const firstPath = result.paths[0];
+      if (firstPath) {
+        setView("files");
+        setSelectedPath(firstPath);
+        router.push(`/memories?path=${encodeURIComponent(firstPath)}`);
+        await loadFile(firstPath);
+      } else {
+        syncTreeSelection(updated);
+      }
+      const skipped = result.skipped ? `，跳过 ${result.skipped} 个重复文件` : "";
+      setMessage(`已导入 ${result.imported} 份记忆${skipped}`);
+    } catch (cause) {
+      setError(errorMessage(cause, "导入记忆失败"));
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
+  };
+
   const removePath = async (path: string, isDirectory = false) => {
     try {
       await deleteMemory(path);
@@ -341,9 +388,10 @@ export function MemoriesPage() {
           <div className="memory-editor-primary">
             <button className="icon-button mobile-menu" aria-label={t("memories.openTree")} onClick={() => setTreeOpen(true)}><Menu size={19} /></button>
             {!showStats && memory && <><div className="editor-tabs" role="tablist" aria-label={t("memories.view")}><button className={`editor-tab ${tab === "edit" ? "active" : ""}`} role="tab" aria-selected={tab === "edit"} onClick={() => setTab("edit")}>{t("memories.edit")}</button><button className={`editor-tab ${tab === "preview" ? "active" : ""}`} role="tab" aria-selected={tab === "preview"} onClick={() => setTab("preview")}>{t("memories.preview")}</button></div>{hasChanges && <span className="memory-unsaved-indicator" role="status" title={t("memories.unsaved")}><i />{t("memories.unsaved")}</span>}</>}
-            {(showStats || !memory) && <span className="memory-mobile-context">{view === "eval" ? t("memories.evaluation") : view === "stats" ? t("memories.analytics") : t("memories.files")}</span>}
+            <span className="memory-mobile-context memory-toolbar-context">{view === "eval" ? t("memories.evaluation") : view === "stats" ? t("memories.analytics") : memory ? memoryLabel(memory.path) : t("memories.files")}</span>
           </div>
-          <div className="editor-actions"><div className="memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={view === "files" ? "active" : ""} role="tab" aria-selected={view === "files"} onClick={() => switchView("files")}><FileText size={13} />{t("memories.files")}</button><button className={view === "stats" ? "active" : ""} role="tab" aria-selected={view === "stats"} onClick={() => switchView("stats")}><BarChart3 size={13} />{t("memories.analytics")}</button><button className={view === "eval" ? "active" : ""} role="tab" aria-selected={view === "eval"} onClick={() => switchView("eval")}><FlaskConical size={13} />{t("memories.evaluation")}</button></div>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
+          <div className="memory-main-view-switcher memory-view-switcher" role="tablist" aria-label={t("memories.view")}><button className={view === "files" ? "active" : ""} role="tab" aria-selected={view === "files"} onClick={() => switchView("files")}><FileText size={13} />{t("memories.files")}</button><button className={view === "stats" ? "active" : ""} role="tab" aria-selected={view === "stats"} onClick={() => switchView("stats")}><BarChart3 size={13} />{t("memories.analytics")}</button><button className={view === "eval" ? "active" : ""} role="tab" aria-selected={view === "eval"} onClick={() => switchView("eval")}><FlaskConical size={13} />{t("memories.evaluation")}</button></div>
+          <div className="editor-actions"><input ref={importInputRef} className="memory-import-input" type="file" accept=".md,.markdown,.txt,.text,.json,.jsonl,.ndjson" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); }} /><button className="ghost-button memory-import-action" type="button" onClick={() => importInputRef.current?.click()} disabled={importing}><Upload size={13} />{importing ? "导入中…" : "导入记忆"}</button>{!showStats && memory && <><button className="icon-button memory-delete-action" title={t("memories.delete")} aria-label={t("memories.delete")} onClick={() => setDeleteTarget({ path: memory.path, isDirectory: false })}><Trash2 size={15} /></button><button className="primary-button memory-save-action" disabled={!hasChanges || saving} onClick={() => void save()}><Save size={13} />{saving ? t("memories.saving") : t("memories.save")}</button></>}</div>
         </header>
         {view === "eval" ? <EvalPanel /> : view === "stats" ? <MemoryStatsPanel stats={stats} audit={audit} auditError={auditError} loading={loadingStats} error={error} onRetry={() => void loadStats()} onOpenFile={openStatsFile} onDelete={(path) => setDeleteTarget({ path, isDirectory: false })} /> : !memory ? <div className="centered-empty">{loadingFile ? "打开文件中…" : <div className="centered-state">{error && <TriangleAlert size={20} />}<strong>{error ? "无法打开记忆文件" : "选择一份长期记忆"}</strong><span>{error || "从左侧目录选择文件，查看内容与完整版本历史。"}</span>{error && selectedPath && <button className="ghost-button" onClick={() => void loadFile(selectedPath)}><RefreshCw size={12} />重试</button>}</div>}</div> : <>
           <div className="editor-area">{loadingFile ? <div className="centered-empty">打开文件中…</div> : tab === "edit" ? <textarea className="editor-textarea" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} /> : <div className="preview assistant-content"><Markdown>{content}</Markdown></div>}</div>

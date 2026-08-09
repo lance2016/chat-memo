@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createConversation: vi.fn(),
   getMemoryStats: vi.fn(),
   getModelCatalog: vi.fn(),
+  getContextPreview: vi.fn(),
   getRuntimeSettings: vi.fn(),
   getConversationContext: vi.fn(),
   getTtsStatus: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("@/lib/api", () => ({
   errorMessage: (_cause: unknown, fallback: string) => fallback,
   getMemoryStats: mocks.getMemoryStats,
   getModelCatalog: mocks.getModelCatalog,
+  getContextPreview: mocks.getContextPreview,
   getRuntimeSettings: mocks.getRuntimeSettings,
   getConversationContext: mocks.getConversationContext,
   getNextSpeech: vi.fn(),
@@ -92,6 +94,7 @@ describe("ChatPage streaming lifecycle", () => {
     mocks.createConversation.mockResolvedValue(conversation);
     mocks.getMemoryStats.mockResolvedValue({ total_memories: 0 });
     mocks.getModelCatalog.mockResolvedValue({ purpose: "chat", default_profile_id: null, services: [], profiles: [] });
+    mocks.getContextPreview.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
     mocks.getRuntimeSettings.mockResolvedValue({ web_search_enabled: true });
     mocks.getConversationContext.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
     mocks.getTtsStatus.mockResolvedValue({ mode: "off", enabled: false });
@@ -134,7 +137,36 @@ describe("ChatPage streaming lifecycle", () => {
       expect.any(Function),
       expect.any(AbortSignal),
       true,
+      [],
     ));
+  });
+
+  it("keeps image upload inside the tool menu", async () => {
+    mocks.getRuntimeSettings.mockResolvedValue({ web_search_enabled: true, vision_enabled: true });
+
+    render(<ChatPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "添加工具" }));
+    expect(await screen.findByRole("menuitem", { name: /添加图片/ })).toBeInTheDocument();
+  });
+
+  it("closes floating menus and context usage when clicking blank space", async () => {
+    render(<ChatPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "添加工具" }));
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    const contextSummary = await waitFor(() => {
+      const summary = document.querySelector(".chat-context-indicator > summary");
+      if (!summary) throw new Error("context summary not ready");
+      return summary;
+    });
+    fireEvent.click(contextSummary);
+    expect(screen.getByText("上下文用量")).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(contextSummary.closest("details")).not.toHaveAttribute("open");
   });
 
   it("edits a user message in place before resending", async () => {
@@ -174,6 +206,7 @@ describe("ChatPage streaming lifecycle", () => {
       expect.any(Function),
       expect.any(AbortSignal),
       false,
+      [],
     ));
   });
 

@@ -90,6 +90,8 @@ services:
       VAULT_PATH: ${VAULT_PATH:+/vault}
       # 技能目录。和 vault 不同，这个是**可写**挂载 —— 安装技能就是往里解压目录。
       SKILLS_PATH: /skills
+      # 附件正文（图片）落这里，不进数据库。同样是可写挂载。
+      ATTACHMENTS_PATH: /attachments
     # Docker Desktop 自带这个域名，Linux 上要显式映射到网关才解析得了
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -121,6 +123,9 @@ services:
       # 技能装在宿主机目录里，容器重建不会丢，也能直接用编辑器改 SKILL.md。
       # 必须可写：安装 = 下载 zip 后往这里解压。
       - ${SKILLS_HOST_DIR:-./skills}:/skills
+      # 附件正文。放宿主机而不是匿名卷：容器重建不会丢，也能直接翻看。
+      # 备份由 app/backup.py 增量复制到 /backups/attachments（内容寻址，已有就跳过）。
+      - ${ATTACHMENTS_HOST_DIR:-./attachments}:/attachments
       - ${HOME}/.cache/huggingface/hub:/hf-cache:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]

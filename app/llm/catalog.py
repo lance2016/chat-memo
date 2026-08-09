@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Literal
 
@@ -21,6 +22,12 @@ from app.llm.target import (
     ModelTarget,
 )
 from app.settings_store import is_configured, resolve_settings
+
+logger = logging.getLogger(__name__)
+
+# 「解析哪个模型档案」的用途。比 `app.agent.Purpose`（决定带哪些工具）多一个
+# `vision` —— 看图那次调用不跑 agent loop，没有工具可言，所以两者不该是同一个类型。
+TargetPurpose = Literal["chat", "consolidation", "vision"]
 
 BUILTIN_SERVICES = (
     {
@@ -149,9 +156,11 @@ async def ensure_builtin_catalog(
         profile_slug = f"builtin:{slug}"
         capabilities = dict(DEFAULT_CAPABILITIES)
         if slug == "anthropic":
-            capabilities.update({"thinking": True, "json_mode": True})
+            capabilities.update({"thinking": True, "json_mode": True, "vision": True})
         else:
-            capabilities.update({"thinking": settings.deepseek_thinking})
+            # 同 target.from_settings：这里是「会不会思考」，不是「默认要不要思考」。
+            # 后者由 options/thinking_default 承载。
+            capabilities.update({"thinking": True})
         profile = await _get_or_create(
             session,
             ModelProfile,
@@ -165,12 +174,18 @@ async def ensure_builtin_catalog(
         if (profile.options or {}).get("managed_by_runtime", False):
             profile.model_id = model_id
             profile.display_name = f"{prefix} · {model_id}"
+            # ⚠️ 能力也要跟着代码走，不能只同步名字。`_capabilities` 是「协议默认
+            # 打底、档案存的值覆盖在上面」，所以内置档案里一个过期的 `vision: false`
+            # 会**永久压住**新加的能力 —— 加 vision 时就是这么发现的：代码里写了
+            # Claude 支持视觉，界面上却一直显示不支持，因为那行是旧版本建的。
+            # 用户自己加的档案不走这里，他们的勾选不受影响。
+            profile.capabilities = capabilities
 
 
 def _capabilities(profile: ModelProfile, protocol: str) -> dict[str, bool]:
     result = dict(DEFAULT_CAPABILITIES)
     if protocol == "anthropic":
-        result.update({"thinking": True, "json_mode": True})
+        result.update({"thinking": True, "json_mode": True, "vision": True})
     result.update({key: bool(value) for key, value in (profile.capabilities or {}).items()})
     return result
 
@@ -206,11 +221,46 @@ def _target_from_rows(
         api_key=api_key,
         capabilities=capabilities,
         max_tokens=int(options.get("max_tokens") or fallback.max_tokens),
-        thinking_default=bool(
-            options.get("thinking", capabilities.get("thinking", False))
+        context_window_tokens=(
+            int(options["context_window_tokens"])
+            if options.get("context_window_tokens")
+            else None
         ),
+        # ⚠️ 兜底取 `fallback`（旧全局配置）而**不是** `capabilities` ——
+        # 能力是「会不会思考」，档案没写偏好时该跟随用户的全局默认。
+        # 拿能力当偏好用的后果：设置页里关掉的思考会自己变回开着。
+        thinking_default=bool(options.get("thinking", fallback.thinking_default)),
         effort=str(options.get("effort") or fallback.effort),
     )
+
+
+def _default_profile_id(settings: Settings, purpose: TargetPurpose) -> int | None:
+    return {
+        "chat": settings.chat_model_profile_id,
+        "consolidation": settings.consolidate_model_profile_id,
+        "vision": settings.vision_model_profile_id,
+    }[purpose]
+
+
+async def resolve_vision_target(
+    session: AsyncSession, settings: Settings | None = None
+) -> ModelTarget | None:
+    """解析「看图专用」的模型目标。没配就是 None。
+
+    和另外两个用途不同，这里**没有兜底**：聊天模型看不了图正是要用它的原因，
+    退回去只会把图静默丢掉。调用方拿到 None 要给出「去设置页配一个」的明确提示。
+
+    配了但停用/凭据缺失时同样返回 None 并记一条日志 —— 一次带图的对话不该
+    因为一个可选功能没配好而整轮失败。
+    """
+    settings = settings or await resolve_settings(session)
+    if settings.vision_model_profile_id is None:
+        return None
+    try:
+        return await resolve_model_target(session, settings, purpose="vision")
+    except ValueError as exc:
+        logger.warning("视觉模型档案不可用：%s", exc)
+        return None
 
 
 async def resolve_model_target(
@@ -218,23 +268,22 @@ async def resolve_model_target(
     settings: Settings | None = None,
     *,
     profile_id: int | None = None,
-    purpose: Literal["chat", "consolidation"] = "chat",
+    purpose: TargetPurpose = "chat",
     legacy_model_id: str = "",
 ) -> ModelTarget:
     """解析会话/全局/旧配置，返回一个可执行的模型目标。
 
     不传 `settings` 时从**数据库**解析生效配置，而不是退回 `.env` 启动快照 ——
     默认模型正是存在 `app_settings` 里的，用快照会看不见它。
+
+    ⚠️ `purpose="vision"` 没配档案时**不会**退回聊天模型 —— 那正是它存在的场景
+    （聊天模型看不了图）。用 `resolve_vision_target` 拿一个可能为 None 的结果。
     """
     settings = settings or await resolve_settings(session)
     await ensure_builtin_catalog(session, settings)
 
     if profile_id is None:
-        profile_id = (
-            settings.chat_model_profile_id
-            if purpose == "chat"
-            else settings.consolidate_model_profile_id
-        )
+        profile_id = _default_profile_id(settings, purpose)
 
     if profile_id is not None:
         row = await session.execute(
@@ -351,6 +400,11 @@ async def catalog_payload(
                 "available": available,
                 "reason": reason,
                 "capabilities": capabilities,
+                "context_window_tokens": (
+                    int(profile.options["context_window_tokens"])
+                    if (profile.options or {}).get("context_window_tokens")
+                    else None
+                ),
                 "is_default": profile.id == default_id,
             }
         )

@@ -252,3 +252,45 @@ def test_unknown_protocol_is_rejected_with_the_options() -> None:
 
     with pytest.raises(ValueError, match="未知的模型协议"):
         get_provider(Settings(), target=target)
+
+
+async def test_no_disable_param_for_a_model_that_cannot_think() -> None:
+    """**不思考的模型不需要被关掉思考。**
+
+    `thinking` 是 DeepSeek 的方言，而这条协议下挂着一整类兼容服务。
+    硅基流动上的 Qwen3-VL-Instruct 收到它直接 400
+    （`current model does not support parameter enable_thinking`），
+    一个纯粹多余的参数把整次看图调用打死了。
+    """
+    from app.llm.target import DEFAULT_CAPABILITIES, ModelTarget
+
+    recorder = RecordingCompletions()
+    client = AsyncOpenAI(api_key="test", base_url="http://localhost")
+    client.chat.completions = recorder  # type: ignore[assignment]
+    target = ModelTarget(
+        protocol="openai_compatible",
+        model_id="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        display_name="Qwen3-VL",
+        api_key="test",
+        capabilities={**DEFAULT_CAPABILITIES, "vision": True, "thinking": False},
+    )
+    provider = DeepSeekProvider(settings=Settings(deepseek_api_key="test"), target=target, client=client)
+
+    await drain(provider, thinking=False)
+    assert "extra_body" not in recorder.calls[0]
+
+
+def test_thinking_capability_is_not_the_users_on_off_preference() -> None:
+    """能力是「会不会思考」，偏好是「这次要不要思考」，两者一度共用同一个值。
+
+    混在一起会出两种故障：provider 靠能力判断发不发方言参数时，
+    「用户关了思考」被读成「模型不会思考」；反过来把能力当偏好用，
+    设置页里关掉的思考会自己变回开着。
+    """
+    from app.llm.target import ModelTarget
+
+    off = ModelTarget.from_settings(
+        Settings(provider="deepseek", deepseek_api_key="k", deepseek_thinking=False)
+    )
+    assert off.capabilities["thinking"] is True
+    assert off.thinking_default is False

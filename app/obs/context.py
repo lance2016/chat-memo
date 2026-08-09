@@ -113,10 +113,83 @@ def set_current_span_attributes(**attributes: Any) -> None:
     _set_span_attributes(attributes)
 
 
-def _json_attribute(value: Any) -> str:
-    """Serialize an LLM payload for Phoenix's standard input/output fields."""
+def add_current_span_event(name: str, **attributes: Any) -> None:
+    """Add a small, structured decision/event record to the active span.
 
+    Attributes are deliberately limited to scalar values so this stays
+    compatible with OpenTelemetry exporters and remains useful in Phoenix's
+    Events panel instead of becoming an opaque JSON blob.
+    """
+
+    span = _current_span()
+    if span is None or not span.is_recording():
+        return
+    event_attributes = {
+        key: value
+        for key, value in attributes.items()
+        if value is not None and isinstance(value, (str, bool, int, float))
+    }
+    span.add_event(name, attributes=event_attributes)
+
+
+def _json_attribute(value: Any) -> str:
+    """Serialize an LLM payload for Phoenix's standard input/output fields.
+
+    Image blocks have already been hydrated by the time they reach a provider,
+    so serializing the payload directly would put the complete base64 image in
+    Phoenix. Keep the useful shape of the request, but replace the binary
+    field with a small, human-readable placeholder at this boundary.
+    """
+
+    value = _sanitize_media_for_observability(value)
     return json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def _image_placeholder(media_type: Any, encoded_length: int) -> str:
+    """Return a compact description without retaining image bytes."""
+
+    mime = str(media_type or "image/*")
+    # Base64 expands binary data by roughly 4/3. The estimate is only a UI
+    # hint; it must never be used as a source of truth for accounting.
+    size_kib = max(1, round(encoded_length * 3 / 4 / 1024))
+    return f"[image data omitted: {mime}, about {size_kib} KiB]"
+
+
+def _sanitize_media_for_observability(value: Any) -> Any:
+    """Copy a payload while replacing base64 image data with placeholders.
+
+    This handles both native Anthropic image blocks and the OpenAI-compatible
+    ``data:image/...;base64,...`` URL shape. It intentionally returns a copy:
+    the original object is the request sent to the model and must stay intact.
+    """
+
+    if isinstance(value, Mapping):
+        copied = {
+            key: _sanitize_media_for_observability(item)
+            for key, item in value.items()
+        }
+        source = value.get("source")
+        if (
+            isinstance(source, Mapping)
+            and source.get("type") == "base64"
+            and isinstance(source.get("data"), str)
+        ):
+            sanitized_source = dict(copied.get("source", {}))
+            sanitized_source["data"] = _image_placeholder(
+                source.get("media_type"), len(source["data"])
+            )
+            copied["source"] = sanitized_source
+        return copied
+    if isinstance(value, list):
+        return [_sanitize_media_for_observability(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_media_for_observability(item) for item in value)
+    if isinstance(value, str) and value.startswith("data:image/"):
+        header, _, encoded = value.partition(",")
+        if ";base64" in header:
+            media_type = header[5:].split(";", 1)[0]
+            return _image_placeholder(media_type, len(encoded))
+    return value
 
 
 def _capture_llm_content(*, output: bool = False) -> bool:

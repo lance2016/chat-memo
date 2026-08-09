@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, Package, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
-import { apiBaseLabel, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { apiBaseLabel, clearConversations, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { AsrStatus, EnvFieldStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
@@ -12,8 +12,9 @@ import { ObservabilityCard } from "@/components/observability-card";
 import { SkillsPanel } from "@/components/skills-panel";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
+import { notifyWorkspaceConversationsChanged } from "@/components/workspace-topbar";
 
-type SettingsSectionKey = "general" | "assistant" | "model" | "skills" | "review" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
+type SettingsSectionKey = "general" | "assistant" | "model" | "skills" | "review" | "timeline" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
 
 const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
   { key: "general", icon: SlidersHorizontal },
@@ -21,6 +22,7 @@ const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 
   { key: "model", icon: BrainCircuit },
   { key: "skills", icon: Package },
   { key: "review", icon: Clock3 },
+  { key: "timeline", icon: CalendarClock },
   { key: "notify", icon: BellRing },
   { key: "voice", icon: Headphones },
   { key: "voiceInput", icon: Mic2 },
@@ -28,11 +30,20 @@ const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 
   { key: "advanced", icon: Bug },
 ];
 
+const settingsSectionGroups: Array<{ label: string; keys: SettingsSectionKey[] }> = [
+  { label: "个性化", keys: ["general", "assistant"] },
+  { label: "功能", keys: ["model", "skills", "review", "timeline", "notify", "voice", "voiceInput"] },
+  { label: "系统", keys: ["system", "advanced"] },
+];
+
 const reviewFieldKeys = new Set(["consolidate_model", "consolidate_auto", "consolidate_hour"]);
+const systemFieldKeys = new Set(["backup_auto", "backup_keep"]);
 const modelPrimaryFieldKeys = new Set(["provider", "model", "deepseek_model", "effort", "deepseek_thinking"]);
 const ttsPrimaryFieldKeys = new Set(["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"]);
-// 「怎么送到手机」和「什么时候响」分两屏 —— 配 Bark 是一次性动作，调提前量是长期反复调的。
-const notifyChannelFieldKeys = new Set(["notify_enabled", "notify_channels", "bark_server", "bark_key", "bark_sound", "bark_icon", "notify_public_base_url"]);
+const asrPrimaryFieldKeys = new Set(["asr_model", "asr_language"]);
+// 用户真正需要的通知设置只有总开关、设备 key 和提醒规则；通道注册表、图标和提示音暂不暴露。
+const notifyTimingFieldKeys = new Set(["notify_briefing", "notify_briefing_hour", "notify_all_day_hour", "notify_default_lead_minutes", "notify_catchup_hours", "notify_smart_copy", "notify_timeout"]);
+const timelinePrimaryFieldKeys = new Set(["notify_default_lead_minutes", "notify_all_day_hour", "notify_briefing", "notify_briefing_hour", "notify_public_base_url"]);
 
 const fieldHelp: Record<string, string> = {
   owner_name: "助手在对话中对你的称呼",
@@ -52,6 +63,7 @@ const fieldHelp: Record<string, string> = {
   tts_mode: "关闭、手动播放或回答完成后自动播放",
   history_max_chars: "限制每轮发给模型的历史长度，避免长会话撞到上下文窗口",
   notify_timeout: "推送通道和提醒文案模型调用的最长等待时间",
+  bark_key: "已配置的 key 不会回传；重新输入即可替换，恢复默认可清除。",
   tts_model: "选择本地语音服务已加载或当前配置的模型",
   tts_voice: "可选音色会随语音模型自动更新",
   tts_lang_code: "语音合成的主要语言",
@@ -140,12 +152,12 @@ function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, t
   return <div className={`runtime-setting-row ${pendingReset ? "pending-reset" : ""}`}>
     <div className="runtime-setting-label"><strong>{field.label}</strong><span>{fieldHelp[field.key] ?? (field.provider ? `仅用于 ${field.provider}` : "保存后立即生效")}</span></div>
     <div className={`runtime-setting-control ${multiline ? "multiline" : ""}`}>
-      {field.kind === "bool" && <label className="runtime-checkbox"><input type="checkbox" checked={value === true} disabled={controlDisabled} onChange={(event) => onChange(event.target.checked)} /><span>{value === true ? "开启" : "关闭"}</span></label>}
+      {field.kind === "bool" && <label className="runtime-checkbox"><input type="checkbox" aria-label={field.label} checked={value === true} disabled={controlDisabled} onChange={(event) => onChange(event.target.checked)} /><span>{value === true ? "开启" : "关闭"}</span></label>}
       {field.kind === "enum" && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{choices.map((choice) => { const option = providerChoices.find((item) => item.value === choice); return <option key={choice} value={choice} disabled={option ? !option.available : false}>{settingChoiceLabels[choice] ?? choice}{option && !option.available ? "（不可用）" : ""}</option>; })}</select>}
       {field.kind === "int" && field.key !== "tts_speed_percent" && <input className="runtime-input" type="number" value={stringValue} min={field.minimum ?? undefined} max={field.maximum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value === "" ? "" : Number(event.target.value))} />}
       {field.kind === "int" && field.key === "tts_speed_percent" && <div className="tts-speed-control"><input type="range" value={stringValue} min={field.minimum ?? 50} max={field.maximum ?? 200} step={5} disabled={controlDisabled} onChange={(event) => onChange(Number(event.target.value))} /><output>{stringValue}%</output></div>}
       {multiline && <textarea className={`runtime-textarea ${field.key === "custom_instructions" ? "runtime-textarea-tall" : ""}`} value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} placeholder={field.key === "custom_instructions" ? "例如：回答控制在三句话以内，代码优先给 diff。" : "例如：用温柔、自然、亲切的语气说话"} />}
-      {field.kind === "str" && field.key !== "tts_instruct" && !isTtsModel && !isTtsVoice && !isAsrModel && <input className="runtime-input runtime-input-wide" type="text" value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} />}
+      {field.kind === "str" && field.key !== "tts_instruct" && !isTtsModel && !isTtsVoice && !isAsrModel && <input className="runtime-input runtime-input-wide" type={field.secret ? "password" : "text"} autoComplete={field.secret ? "new-password" : undefined} placeholder={field.secret && source ? "已配置，输入新 key 可替换" : undefined} value={stringValue} maxLength={field.maximum ?? undefined} minLength={field.minimum ?? undefined} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)} />}
       {field.kind === "str" && (isTtsModel || isTtsVoice || isAsrModel) && <select className="runtime-select" value={stringValue} disabled={controlDisabled} onChange={(event) => onChange(event.target.value)}>{isTtsVoice && !stringValue && <option value="">默认音色</option>}{choices.map((choice) => { const cached = isAsrModel ? asrStatus?.cached_models?.find((item) => item.id === choice) : ttsStatus?.cached_models?.find((item) => item.id === choice); const loaded = isAsrModel ? asrStatus?.models.includes(choice) : ttsStatus?.models.includes(choice); const modelSuffix = isTtsModel || isAsrModel ? [cached ? `已缓存 ${formatModelSize(cached.size_bytes)}` : "", loaded ? "已加载" : ""].filter(Boolean).join(" · ") : ""; return <option key={choice} value={choice}>{isTtsVoice && voiceLabels[choice] ? `${choice} · ${voiceLabels[choice]}` : `${choice}${modelSuffix ? ` · ${modelSuffix}` : ""}`}</option>; })}</select>}
       {isTtsVoice && ttsVoicesLoading && <span className="runtime-inline-status"><RefreshCw size={11} className="spin" />读取音色</span>}
       <span className={`runtime-source ${source === "db" ? "modified" : ""} ${pendingReset ? "pending" : ""}`}>{pendingReset ? "待恢复默认" : source === "db" ? "已覆盖默认" : source === "env" ? "环境覆盖" : "代码默认"}</span>
@@ -208,6 +220,8 @@ function ModelServicesPanel() {
   const [profileServiceId, setProfileServiceId] = useState<number | "">("");
   const [modelId, setModelId] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [contextWindow, setContextWindow] = useState("");
+  const [contextDrafts, setContextDrafts] = useState<Record<number, string>>({});
 
   const refresh = async () => {
     setLoading(true);
@@ -251,9 +265,18 @@ function ModelServicesPanel() {
 
   const addProfile = async () => {
     if (!profileServiceId || !modelId.trim()) return;
-    await mutate(() => createModelProfile({ service_id: Number(profileServiceId), model_id: modelId.trim(), display_name: displayName.trim() || modelId.trim() }));
+    const parsedContext = Number(contextWindow);
+    await mutate(() => createModelProfile({ service_id: Number(profileServiceId), model_id: modelId.trim(), display_name: displayName.trim() || modelId.trim(), ...(Number.isFinite(parsedContext) && parsedContext >= 16_384 ? { context_window_tokens: parsedContext } : {}) }));
     setModelId("");
     setDisplayName("");
+    setContextWindow("");
+  };
+
+  const saveContextWindow = async (profile: ModelCatalog["profiles"][number], value: string) => {
+    const trimmed = value.trim();
+    const parsed = trimmed ? Number(trimmed) : null;
+    if (parsed !== null && (!Number.isFinite(parsed) || parsed < 16_384 || parsed > 2_000_000)) return;
+    await mutate(() => updateModelProfile(profile.id, { context_window_tokens: parsed }));
   };
 
   return <SettingsVisualGroup icon={BrainCircuit} title="模型服务与模型" description="服务连接只保存凭据引用，具体模型可添加多个并在聊天页快速切换" tone="accent" className="model-services-group">
@@ -261,7 +284,7 @@ function ModelServicesPanel() {
       <div className="model-profile-list">
         {(catalog?.profiles ?? []).map((profile) => <div className={`model-profile-row ${profile.is_default || consolidationCatalog?.default_profile_id === profile.id ? "is-default" : ""}`} key={profile.id}>
           <div className="model-profile-main"><strong>{profile.display_name}</strong><span>{profile.service_name} · {profile.model_id}</span></div>
-          <div className="model-profile-meta"><span className={profile.available ? "value-success" : "value-warning"}>{profile.available ? "可用" : profile.reason || "不可用"}</span><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("chat", profile.id))}>{profile.is_default ? "聊天默认" : "设为聊天默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("consolidation", profile.id), "consolidation")}>{consolidationCatalog?.default_profile_id === profile.id ? "整理默认" : "设为整理默认"}</button><button className="icon-button" type="button" disabled={busy} title={profile.enabled ? "停用模型" : "启用模型"} onClick={() => void mutate(() => updateModelProfile(profile.id, { enabled: !profile.enabled }))}>{profile.enabled ? <Check size={13} /> : <RotateCcw size={13} />}</button></div>
+          <div className="model-profile-meta"><span className={profile.available ? "value-success" : "value-warning"}>{profile.available ? "可用" : profile.reason || "不可用"}</span><label className="model-context-capacity" title="输入和输出合计的上下文窗口；未知时不会伪造数值"><span>上下文</span><input className="runtime-input" type="number" min={16384} max={2000000} step={1024} placeholder="未配置" value={contextDrafts[profile.id] ?? (profile.context_window_tokens ? String(profile.context_window_tokens) : "")} onChange={(event) => setContextDrafts((current) => ({ ...current, [profile.id]: event.target.value }))} onBlur={(event) => { const value = event.target.value; void saveContextWindow(profile, value); }} /></label><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("chat", profile.id))}>{profile.is_default ? "聊天默认" : "设为聊天默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("consolidation", profile.id), "consolidation")}>{consolidationCatalog?.default_profile_id === profile.id ? "整理默认" : "设为整理默认"}</button><button className="icon-button" type="button" disabled={busy} title={profile.enabled ? "停用模型" : "启用模型"} onClick={() => void mutate(() => updateModelProfile(profile.id, { enabled: !profile.enabled }))}>{profile.enabled ? <Check size={13} /> : <RotateCcw size={13} />}</button></div>
         </div>)}
         {!catalog?.profiles.length && <div className="settings-empty">还没有模型档案。</div>}
       </div>
@@ -285,6 +308,7 @@ function ModelServicesPanel() {
           <select className="runtime-select" value={profileServiceId} onChange={(event) => setProfileServiceId(event.target.value ? Number(event.target.value) : "")}><option value="">选择模型服务</option>{(catalog?.services ?? []).map((service) => <option value={service.id} key={service.id}>{service.name}</option>)}</select>
           <input className="runtime-input" value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder="模型 ID，例如 qwen/qwen3-32b" />
           <input className="runtime-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="显示名称（可选）" />
+          <input className="runtime-input" type="number" min={16384} max={2000000} step={1024} value={contextWindow} onChange={(event) => setContextWindow(event.target.value)} placeholder="上下文窗口 tokens（可选）" />
           <button className="ghost-button" type="button" disabled={busy || !profileServiceId || !modelId.trim()} onClick={() => void addProfile()}>添加模型</button>
         </div>
       </details>
@@ -303,29 +327,32 @@ function ModelServicesPanel() {
 function EnvStatusList({ rows, fallback }: { rows: EnvFieldStatus[]; fallback: string[] }) {
   if (!rows.length) {
     // 后端还没升级时退回旧的平铺列表，别让这一块整个消失
-    return fallback.length ? <div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{fallback.map((key) => <code key={key}>{key}</code>)}</div></div> : null;
+    return fallback.length ? <details className="settings-disclosure settings-env-disclosure"><summary><span><strong>环境配置</strong><small>仅用于排查连接问题，修改后需重启后端</small></span><ChevronRight size={13} /></summary><div className="settings-env-only"><div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>修改后需要重启后端</strong></div><div className="settings-env-only-list">{fallback.map((key) => <code key={key}>{key}</code>)}</div></div></details> : null;
   }
   const secrets = rows.filter((row) => row.kind === "secret");
   const plain = rows.filter((row) => row.kind !== "secret");
-  return <div className="settings-env-only">
-    <div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>改这些要重启后端</strong></div>
-    <div className="env-status-grid">
-      {secrets.map((row) => <div className={`env-status-row ${row.configured ? "" : row.note ? "env-status-warn" : ""}`} key={row.key}>
-        <span className="env-status-label"><strong>{row.label}</strong><code>{row.env}</code></span>
-        <span className={`env-status-pill ${row.configured ? "ok" : ""}`}>{row.configured ? "已配置" : "未配置"}</span>
-        {row.note && <span className="env-status-note">{row.note}</span>}
-      </div>)}
-    </div>
-    <details className="settings-disclosure env-status-plain">
-      <summary><span><strong>其余环境配置</strong><small>地址、日志和上限，共 {plain.length} 项</small></span><ChevronRight size={13} /></summary>
+  return <details className="settings-disclosure settings-env-disclosure">
+    <summary><span><strong>环境配置</strong><small>密钥只显示是否配置；地址和日志等共 {rows.length} 项</small></span><ChevronRight size={13} /></summary>
+    <div className="settings-env-only">
+      <div className="settings-env-only-heading"><span className="settings-scope-badge">仅环境变量</span><strong>改这些要重启后端</strong></div>
       <div className="env-status-grid">
-        {plain.map((row) => <div className="env-status-row" key={row.key}>
+        {secrets.map((row) => <div className={`env-status-row ${row.configured ? "" : row.note ? "env-status-warn" : ""}`} key={row.key}>
           <span className="env-status-label"><strong>{row.label}</strong><code>{row.env}</code></span>
-          <span className="env-status-value">{row.value || "—"}</span>
+          <span className={`env-status-pill ${row.configured ? "ok" : ""}`}>{row.configured ? "已配置" : "未配置"}</span>
+          {row.note && <span className="env-status-note">{row.note}</span>}
         </div>)}
       </div>
-    </details>
-  </div>;
+      <details className="settings-disclosure env-status-plain">
+        <summary><span><strong>其余环境配置</strong><small>地址、日志和上限，共 {plain.length} 项</small></span><ChevronRight size={13} /></summary>
+        <div className="env-status-grid">
+          {plain.map((row) => <div className="env-status-row" key={row.key}>
+            <span className="env-status-label"><strong>{row.label}</strong><code>{row.env}</code></span>
+            <span className="env-status-value">{row.value || "—"}</span>
+          </div>)}
+        </div>
+      </details>
+    </div>
+  </details>;
 }
 
 export function SettingsPage() {
@@ -370,6 +397,9 @@ export function SettingsPage() {
   const [debugCopied, setDebugCopied] = useState<"prompt" | "payload" | null>(null);
   const [clearDebugPending, setClearDebugPending] = useState(false);
   const [clearingDebug, setClearingDebug] = useState(false);
+  const [clearConversationsPending, setClearConversationsPending] = useState(false);
+  const [clearingConversations, setClearingConversations] = useState(false);
+  const [clearConversationsMessage, setClearConversationsMessage] = useState("");
 
   const loadRuntime = useCallback(async () => {
     setLoading(true);
@@ -407,7 +437,7 @@ export function SettingsPage() {
     try {
       setNotifyStatus(await getNotifyStatus());
     } catch {
-      // 状态读不到不该挡住整个设置页；面板会显示成「还没有推送记录」。
+      // 状态读不到不该挡住整个设置页；设置页仍可编辑本地配置。
       setNotifyStatus(null);
     }
   }, []);
@@ -479,7 +509,7 @@ export function SettingsPage() {
   const activeProvider = typeof draftValues.provider === "string" ? draftValues.provider : runtime?.provider;
   const activeFields = useMemo(() => runtime?.fields?.filter((field) => !field.provider || field.provider === activeProvider) ?? [], [activeProvider, runtime]);
   const ungroupedFields = useMemo(() => activeFields.filter((field) => (field.group ?? "") === ""), [activeFields]);
-  const modelFields = useMemo(() => ungroupedFields.filter((field) => !reviewFieldKeys.has(field.key)), [ungroupedFields]);
+  const modelFields = useMemo(() => ungroupedFields.filter((field) => !reviewFieldKeys.has(field.key) && !systemFieldKeys.has(field.key)), [ungroupedFields]);
   const modelPrimaryFields = useMemo(() => modelFields.filter((field) => modelPrimaryFieldKeys.has(field.key)), [modelFields]);
   const modelAdvancedFields = useMemo(() => modelFields.filter((field) => !modelPrimaryFieldKeys.has(field.key)), [modelFields]);
   const reviewFields = useMemo(() => ungroupedFields.filter((field) => reviewFieldKeys.has(field.key)), [ungroupedFields]);
@@ -488,12 +518,18 @@ export function SettingsPage() {
   const promptFields = useMemo(() => activeFields.filter((field) => field.group === "prompt"), [activeFields]);
   const ttsFields = useMemo(() => activeFields.filter((field) => field.group === "tts"), [activeFields]);
   const asrFields = useMemo(() => activeFields.filter((field) => field.group === "asr"), [activeFields]);
+  const systemFields = useMemo(() => ungroupedFields.filter((field) => systemFieldKeys.has(field.key)), [ungroupedFields]);
   const ttsModeFields = useMemo(() => ttsFields.filter((field) => field.key === "tts_mode"), [ttsFields]);
   const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => field.key !== "tts_mode" && ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
   const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
+  const asrPrimaryFields = useMemo(() => asrFields.filter((field) => asrPrimaryFieldKeys.has(field.key)), [asrFields]);
+  const asrAdvancedFields = useMemo(() => asrFields.filter((field) => !asrPrimaryFieldKeys.has(field.key)), [asrFields]);
   const notifyFields = useMemo(() => activeFields.filter((field) => field.group === "notify"), [activeFields]);
-  const notifyChannelFields = useMemo(() => notifyFields.filter((field) => notifyChannelFieldKeys.has(field.key)), [notifyFields]);
-  const notifyTimingFields = useMemo(() => notifyFields.filter((field) => !notifyChannelFieldKeys.has(field.key)), [notifyFields]);
+  const notifyEnabledFields = useMemo(() => notifyFields.filter((field) => field.key === "notify_enabled"), [notifyFields]);
+  const notifyDeliveryFields = useMemo(() => notifyFields.filter((field) => field.key === "bark_key"), [notifyFields]);
+  const timelineFields = useMemo(() => notifyFields.filter((field) => notifyTimingFieldKeys.has(field.key) || field.key === "notify_public_base_url"), [notifyFields]);
+  const timelinePrimaryFields = useMemo(() => timelineFields.filter((field) => timelinePrimaryFieldKeys.has(field.key)), [timelineFields]);
+  const timelineAdvancedFields = useMemo(() => timelineFields.filter((field) => !timelinePrimaryFieldKeys.has(field.key)), [timelineFields]);
   const skillFields = useMemo(() => activeFields.filter((field) => field.group === "skills"), [activeFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
   const changedKeys = useMemo(() => Array.from(new Set([
@@ -505,6 +541,7 @@ export function SettingsPage() {
   const connectionLabel = health?.status === "ok" ? "已连接" : health ? health.status : "未知";
   const thinkingDefault = runtime ? runtime.thinking_default ? "开启" : "关闭" : "—";
   const ttsMode = draftValues.tts_mode === "manual" || draftValues.tts_mode === "auto" ? draftValues.tts_mode : "off";
+  const notifyEnabled = typeof draftValues.notify_enabled === "boolean" ? draftValues.notify_enabled : notifyStatus?.enabled ?? false;
   const ttsPresentation = ttsStatusPresentation(ttsStatus, ttsStatusLoading);
   const selectedTtsModel = typeof draftValues.tts_model === "string" ? draftValues.tts_model : ttsStatus?.model ?? "";
   const selectedCachedModel = ttsStatus?.cached_models?.find((item) => item.id === selectedTtsModel);
@@ -692,6 +729,22 @@ export function SettingsPage() {
     }
   };
 
+  const clearAllConversations = async () => {
+    if (clearingConversations) return;
+    setClearingConversations(true);
+    setClearConversationsMessage("");
+    try {
+      const result = await clearConversations();
+      setClearConversationsPending(false);
+      setClearConversationsMessage(`已清空 ${result.deleted_conversations} 段对话、${result.deleted_messages} 条消息`);
+      notifyWorkspaceConversationsChanged();
+    } catch (cause) {
+      setError(errorMessage(cause, "清空对话失败"));
+    } finally {
+      setClearingConversations(false);
+    }
+  };
+
   const copyDebugText = async (text: string, target: "prompt" | "payload") => {
     try {
       await navigator.clipboard.writeText(text);
@@ -727,7 +780,15 @@ export function SettingsPage() {
 
       <div className="settings-layout settings-layout-aligned">
         <aside className="settings-section-nav settings-nav-rail" aria-label={t("settings.navLabel")}>
-          {settingsSections.map(({ key, icon: Icon }) => <button className={activeSection === key ? "active" : ""} type="button" aria-current={activeSection === key ? "page" : undefined} key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>)}
+          {settingsSectionGroups.map((group) => <div className="settings-nav-group" key={group.label}>
+            <span className="settings-nav-group-label">{group.label}</span>
+            {group.keys.map((key) => {
+              const section = settingsSections.find((item) => item.key === key);
+              if (!section) return null;
+              const Icon = section.icon;
+              return <button className={activeSection === key ? "active" : ""} type="button" aria-current={activeSection === key ? "page" : undefined} key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>;
+            })}
+          </div>)}
         </aside>
 
         <div className="settings-section-content settings-detail-column">
@@ -751,7 +812,7 @@ export function SettingsPage() {
 
           {activeSection === "assistant" && <section className="settings-card settings-panel-card">
             <div className="settings-card-heading"><div><span className="card-kicker">ASSISTANT</span><h2>助手规则</h2><p>设置称呼，以及助手每次对话都应遵循的工作方式。</p></div><UserRound size={17} /></div>
-            <SettingsVisualGroup icon={UserRound} title="称呼与固定指令" description="长期有效的回答规则，不用于保存事实和计划" tone="violet" action={<button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 Prompt"}</button>}>
+            <SettingsVisualGroup icon={UserRound} title="称呼与固定指令" description="长期有效的回答规则，不用于保存事实和计划" tone="violet">
               {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取设置…</div> : promptFields.length ? renderRuntimeFields(promptFields) : <div className="settings-empty">当前后端没有提供人格配置。</div>}
               <div className="prompt-boundary-note">事实、偏好和计划请交给长期记忆。</div>
             </SettingsVisualGroup>
@@ -761,8 +822,14 @@ export function SettingsPage() {
             <div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>选择日常对话模型和思考方式。</p></div><Activity size={17} /></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? <>
               <SettingsVisualGroup icon={BrainCircuit} title="日常模型" description="模型厂商、具体模型与默认推理方式" tone="accent">{modelPrimaryFields.length ? renderRuntimeFields(modelPrimaryFields) : <div className="settings-empty">当前没有日常模型字段。</div>}</SettingsVisualGroup>
-              <SettingsVisualGroup icon={Gauge} title="回答与工具限制" description="输出上限、标题模型和最大工具次数" tone="warm">{modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}</SettingsVisualGroup>
-              <ModelServicesPanel />
+              <details className="settings-disclosure settings-field-disclosure">
+                <summary><span><strong><Gauge size={14} />回答与工具限制</strong><small>输出上限、标题模型和最大工具次数</small></span><ChevronRight size={14} /></summary>
+                {modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}
+              </details>
+              <details className="settings-disclosure settings-model-management">
+                <summary><span><strong><BrainCircuit size={14} />模型档案与服务</strong><small>只有需要切换模型或添加服务时才打开</small></span><ChevronRight size={14} /></summary>
+                <ModelServicesPanel />
+              </details>
             </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
           </section>}
 
@@ -780,26 +847,52 @@ export function SettingsPage() {
             <div className="settings-card-heading"><div><span className="card-kicker">MEMORY REVIEW</span><h2>记忆整理</h2><p>管理每日整理的时间和使用模型。</p></div><Link className="ghost-button" href="/review" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}>每日回顾<ChevronRight size={13} /></Link></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取整理设置…</div> : reviewFields.length ? <>
               <SettingsVisualGroup icon={CalendarClock} title="自动整理" description="选择是否自动运行及每天的执行时间" tone="accent">{renderRuntimeFields(reviewPrimaryFields)}</SettingsVisualGroup>
-              <SettingsVisualGroup icon={BrainCircuit} title="整理模型" description="留空时沿用日常聊天模型" tone="violet">{reviewAdvancedFields.length ? renderRuntimeFields(reviewAdvancedFields) : <div className="settings-empty">当前没有独立的整理模型配置。</div>}</SettingsVisualGroup>
+              <details className="settings-disclosure settings-field-disclosure">
+                <summary><span><strong><BrainCircuit size={14} />整理模型</strong><small>留空时沿用日常聊天模型</small></span><ChevronRight size={14} /></summary>
+                {reviewAdvancedFields.length ? renderRuntimeFields(reviewAdvancedFields) : <div className="settings-empty">当前没有独立的整理模型配置。</div>}
+              </details>
             </> : <div className="settings-empty">当前后端没有提供整理配置。</div>}
             <div className="settings-card-callout"><Clock3 size={14} /><span>关闭自动整理后，仍可在每日回顾页按需整理。</span></div>
           </section>}
 
-          {activeSection === "notify" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">NOTIFICATIONS</span><h2>手机提醒</h2><p>设置推送通道、提醒提前量和每日简报。</p></div><div className="notify-section-tools"><div className={`tts-status-badge ${notifyStatus?.ready ? "success" : "neutral"}`}><span className="tts-status-dot" />{notifyStatus?.ready ? t("settings.notify.channelReady") : t("settings.notify.channelMissing")}</div><button className="ghost-button" type="button" onClick={() => void runNotifyTest()} disabled={notifyTesting || !notifyStatus?.ready}><Send size={13} />{notifyTesting ? t("settings.notify.testing") : t("settings.notify.test")}</button></div></div>
-            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取通知设置…</div> : notifyFields.length ? <>
-              <SettingsVisualGroup icon={Smartphone} title="推送通道" description="配置手机怎么收到提醒，测通之后再打开总开关" tone="accent">
-                <div className="notify-channel-list">{(notifyStatus?.channels ?? []).map((channel) => <div className={`notify-channel-row ${channel.configured ? "ready" : ""}`} key={channel.name}><span className="notify-channel-dot" /><div><strong>{channel.name}</strong><small>{channel.configured ? t("settings.notify.channelReady") : channel.reason || t("settings.notify.channelMissing")}</small></div><span className="notify-channel-flag">{channel.enabled ? "已启用" : "未启用"}</span></div>)}</div>
-                {renderRuntimeFields(notifyChannelFields)}
-                {notifyMessage && <div className="settings-card-callout"><BellRing size={14} /><span>{notifyMessage}</span></div>}
-                <div className="settings-card-callout"><Smartphone size={14} /><span>手机上安装 Bark 后打开 App 即可看到设备 key。通知跳转地址要填手机访问得到的局域网地址，localhost 点不开。</span></div>
+          {activeSection === "timeline" && <section className="settings-card settings-panel-card timeline-settings-panel">
+            <div className="settings-card-heading"><div><span className="card-kicker">TIMELINE & REMINDERS</span><h2>时间线与提醒</h2><p>管理事项什么时候提醒你，以及每天的简报时间。</p></div><CalendarClock size={17} /></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取时间线设置…</div> : timelineFields.length ? <>
+              <SettingsVisualGroup icon={CalendarClock} title="提醒规则" description="新建事项默认使用的提前量和全天事项提醒时间" tone="accent">
+                {timelinePrimaryFields.length ? renderRuntimeFields(timelinePrimaryFields) : <div className="settings-empty">当前后端没有提供时间线规则配置。</div>}
+                <div className="settings-card-callout"><Clock3 size={14} /><span>会议默认提前 15 分钟，出行和生日提前一天，截止日期提前三天；单条事项可以在时间线编辑页单独调整。</span></div>
               </SettingsVisualGroup>
-              <SettingsVisualGroup icon={CalendarClock} title="提醒时机" description="提前多久叫你、每天几点给简报" tone="violet">
-                {renderRuntimeFields(notifyTimingFields)}
-                <div className="settings-card-callout"><Clock3 size={14} /><span>提前量按类型内置：会议 15 分钟、出行和生日提前一天、截止日期提前三天。单条事项可以在时间线里单独改。</span></div>
+              <details className="settings-disclosure settings-field-disclosure">
+                <summary><span><strong><Gauge size={14} />每日简报与补发</strong><small>简报时间、错过提醒的补发窗口和文案生成</small></span><ChevronRight size={14} /></summary>
+                {timelineAdvancedFields.length ? renderRuntimeFields(timelineAdvancedFields) : <div className="settings-empty">当前没有额外的时间线设置。</div>}
+              </details>
+            </> : <div className="settings-empty">当前后端没有提供时间线设置。</div>}
+          </section>}
+
+          {activeSection === "notify" && <section className="settings-card settings-panel-card notify-settings-panel">
+            <div className="settings-card-heading"><div><span className="card-kicker">NOTIFICATIONS</span><h2>通知通道</h2><p>打开主动通知，配置设备，并用测试发送确认通道真的可用。</p></div><div className={`tts-status-badge ${notifyStatus?.ready ? "success" : "neutral"}`}><span className="tts-status-dot" />{notifyStatus?.ready ? t("settings.notify.channelReady") : t("settings.notify.channelMissing")}</div></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取通知设置…</div> : notifyFields.length ? <>
+              <SettingsVisualGroup icon={BellRing} title="通知总览" description="控制是否发送主动提醒，并检查当前通道是否可以工作" tone="accent" className="notify-overview-group">
+                <div className="notify-overview-grid">
+                  <div className={`notify-toggle-card ${notifyEnabled ? "is-enabled" : ""}`}>
+                    <div className="notify-toggle-card-heading"><span className="notify-overview-icon"><BellRing size={16} /></span><div><strong>{t("settings.notify.enabledLabel")}</strong><small>{notifyEnabled ? t("settings.notify.enabledHint") : t("settings.notify.disabledHint")}</small></div></div>
+                    {notifyEnabledFields.length ? renderRuntimeFields(notifyEnabledFields) : <div className="notify-inline-empty">当前后端没有提供总开关。</div>}
+                  </div>
+                  <div className="notify-quick-card">
+                    <div className="notify-quick-card-heading"><span className="notify-overview-icon"><Smartphone size={16} /></span><div><strong>{t("settings.notify.deliveryLabel")}</strong><small>{notifyStatus?.ready ? t("settings.notify.deliveryReady") : t("settings.notify.deliveryMissing")}</small></div></div>
+                    <div className="notify-channel-summary">{(notifyStatus?.channels ?? []).map((channel) => <span className={channel.configured ? "ready" : ""} key={channel.name}><i />{channel.name}</span>)}</div>
+                    <p className="notify-test-hint">{t("settings.notify.testHint")}</p>
+                    <button className="ghost-button notify-test-button" type="button" onClick={() => void runNotifyTest()} disabled={notifyTesting || !notifyStatus?.ready}><Send size={13} />{notifyTesting ? t("settings.notify.testing") : t("settings.notify.test")}</button>
+                  </div>
+                </div>
+                {notifyMessage && <div className="notify-test-message"><BellRing size={14} /><span>{notifyMessage}</span></div>}
+              </SettingsVisualGroup>
+              <SettingsVisualGroup icon={Smartphone} title="Bark 设备" description="只需粘贴一次设备 key；已保存的 key 不会再次回显" tone="success">
+                <div className="notify-channel-list">{(notifyStatus?.channels ?? []).map((channel) => <div className={`notify-channel-row ${channel.configured ? "ready" : ""}`} key={channel.name}><span className="notify-channel-dot" /><div><strong>{channel.name}</strong><small>{channel.configured ? t("settings.notify.channelReady") : channel.reason || t("settings.notify.channelMissing")}</small></div><span className="notify-channel-flag">{channel.enabled ? "已启用" : "未启用"}</span></div>)}</div>
+                {notifyDeliveryFields.length ? renderRuntimeFields(notifyDeliveryFields) : <div className="settings-empty">当前后端没有提供通道配置。</div>}
+                <div className="settings-card-callout"><Smartphone size={14} /><span>在 Bark App 中复制设备 key 粘贴到这里。保存后只显示“已配置”，需要更换时直接输入新的 key。</span></div>
               </SettingsVisualGroup>
             </> : <div className="settings-empty">当前后端没有提供通知配置。</div>}
-            <div className="notify-recent"><div className="notify-recent-heading"><strong>{t("settings.notify.recent")}</strong><button className="icon-button neutral-hover" type="button" aria-label={t("settings.notify.recent")} onClick={() => void refreshNotifyStatus()}><RefreshCw size={13} /></button></div>{notifyStatus?.recent.length ? <div className="notify-recent-list">{notifyStatus.recent.map((row) => <div className={`notify-recent-row ${row.delivered_at ? "ok" : "failed"}`} key={row.id}><span className="notify-recent-main"><strong>{row.title}</strong><small>{row.body.split("\n")[0]}</small></span><span className="notify-recent-meta"><span>{row.delivered_at ? `${t("settings.notify.delivered")} · ${row.channels}` : `${t("settings.notify.failed")} · ${row.attempts}`}</span><span>{debugTime(row.created_at)}</span></span>{row.error && <span className="notify-recent-error">{row.error}</span>}</div>)}</div> : <div className="debug-empty"><BellRing size={16} /><strong>{t("settings.notify.noRecent")}</strong><span>配好通道后发一条测试通知试试。</span></div>}</div>
           </section>}
 
           {activeSection === "voice" && <section className="settings-card settings-panel-card">
@@ -813,7 +906,10 @@ export function SettingsPage() {
                 <div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
                 {renderRuntimeFields(ttsPrimaryFields)}
               </SettingsVisualGroup>
-              <SettingsVisualGroup icon={Gauge} title="合成与播放" description="语种、格式、流式传输及性能限制" tone="warm">{ttsAdvancedFields.length ? renderRuntimeFields(ttsAdvancedFields) : <div className="settings-empty">当前没有高级合成配置。</div>}</SettingsVisualGroup>
+              <details className="settings-disclosure settings-field-disclosure">
+                <summary><span><strong><Gauge size={14} />高级合成设置</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>
+                {ttsAdvancedFields.length ? renderRuntimeFields(ttsAdvancedFields) : <div className="settings-empty">当前没有高级合成配置。</div>}
+              </details>
             </> : <div className="settings-empty">当前后端没有提供语音配置。</div>}
             {(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}
             <audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} />
@@ -824,7 +920,11 @@ export function SettingsPage() {
             <SettingsVisualGroup icon={Mic2} title="识别设置" description={asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"} tone={asrStatus?.reachable ? "success" : "neutral"} className="settings-voice-input-group">
               {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <>
                 <div className="tts-model-overview"><div><span>本地缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
-                {renderRuntimeFields(asrFields)}
+                {renderRuntimeFields(asrPrimaryFields)}
+                {asrAdvancedFields.length > 0 && <details className="settings-disclosure settings-field-disclosure">
+                  <summary><span><strong><Gauge size={14} />识别高级设置</strong><small>识别长度和请求超时</small></span><ChevronRight size={14} /></summary>
+                  {renderRuntimeFields(asrAdvancedFields)}
+                </details>}
               </> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}
               {(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}
             </SettingsVisualGroup>
@@ -835,7 +935,13 @@ export function SettingsPage() {
             <SettingsVisualGroup icon={HardDriveDownload} title="连接与备份" description="查看当前服务状态并创建数据快照" tone="success">
               <div className="settings-summary-strip"><div><span>连接</span><strong className={health?.status === "ok" ? "value-success" : ""}>{connectionLabel}</strong></div><div><span>当前模型</span><strong>{runtime?.model ?? "—"}</strong></div><div><span>知识库</span><strong>{runtime ? runtime.kb_enabled ? "已挂载" : "未启用" : "—"}</strong></div></div>
               <div className="settings-system-actions"><div><strong>数据备份</strong><span>创建数据库和长期记忆的当前快照。</span></div><button className="ghost-button" onClick={() => void runBackup()} disabled={backupLoading}><HardDriveDownload size={13} />{backupLoading ? "备份中…" : "创建备份"}</button></div>
-              {backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}
+              {backup && <div className="settings-backup-result"><Download size={14} /><span>备份完成：{backup.dump_file} · {backup.memory_files} 个记忆文件 · 新增 {backup.attachment_files} 个附件 · {Math.round(backup.dump_bytes / 1024)} KB</span></div>}
+              {systemFields.length > 0 && <details className="settings-disclosure settings-field-disclosure settings-backup-disclosure">
+                <summary><span><strong><HardDriveDownload size={14} />自动备份</strong><small>备份频率和保留数量</small></span><ChevronRight size={14} /></summary>
+                {renderRuntimeFields(systemFields)}
+              </details>}
+              <div className="settings-system-actions settings-danger-action"><div><strong>清空测试对话</strong><span>永久删除全部会话、消息和会话摘要；长期记忆、每日回顾、时间线和关注事项会保留。</span></div><button className="danger-button" type="button" onClick={() => setClearConversationsPending(true)} disabled={clearingConversations}><Trash2 size={13} />清空对话</button></div>
+              {clearConversationsMessage && <div className="settings-backup-result"><Check size={14} /><span>{clearConversationsMessage}</span></div>}
             </SettingsVisualGroup>
             <SettingsVisualGroup icon={ServerCog} title="运行与环境" description="服务地址、Provider 和需要重启的环境变量" tone="neutral" className="settings-runtime-group">
               <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div>
@@ -845,9 +951,9 @@ export function SettingsPage() {
 
           {activeSection === "advanced" && <section className="settings-card settings-panel-card">
             <div className="settings-card-heading"><div><span className="card-kicker">DEVELOPER</span><h2>开发者</h2><p>只在排查模型工具和请求问题时使用。</p></div><Bug size={17} /></div>
-            <SettingsVisualGroup icon={Bug} title="开发者选项" description="工具定义与可能包含对话原文的请求调试" tone="warm" className="settings-developer-group">
+            <SettingsVisualGroup icon={Bug} title="开发者选项" description="工具定义与可能包含对话原文的请求调试" tone="warm" className="settings-developer-group" action={<button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 System Prompt"}</button>}>
               <div className="settings-developer-stack">
-                <details className="tts-advanced-settings settings-disclosure" open><summary><span><strong>{t("settings.obs.title")}</strong><small>Phoenix 链路追踪：状态、入口和启用方式</small></span><ChevronRight size={14} /></summary><ObservabilityCard /></details>
+                <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>{t("settings.obs.title")}</strong><small>Phoenix 链路追踪：状态、入口和启用方式</small></span><ChevronRight size={14} /></summary><ObservabilityCard /></details>
                 <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>工具目录</strong><small>查看模型可用能力和参数约定</small></span><ChevronRight size={14} /></summary><div className="tool-catalog-card"><ToolCatalog /></div></details>
                 <details className="tts-advanced-settings settings-disclosure settings-danger-zone">
                   <summary><span><strong>请求调试</strong><small>仅排查问题时开启；快照可能包含完整对话</small></span><ChevronRight size={14} /></summary>
@@ -865,5 +971,6 @@ export function SettingsPage() {
     </main>
     {debugDialog && <DebugDialog kind={debugDialog} prompt={debugPrompt} request={debugDetail} loading={debugDialog === "prompt" ? debugPromptLoading : debugDetailLoading} error={debugError} copied={debugCopied} onClose={() => setDebugDialog(null)} onCopy={(text, target) => void copyDebugText(text, target)} />}
     <ConfirmDialog open={clearDebugPending} title="清空调试请求？" description="最近的模型请求快照会从后端内存中全部移除，服务重启后本来也会自动清空。" confirmLabel="清空请求" busy={clearingDebug} onCancel={() => setClearDebugPending(false)} onConfirm={() => void clearDebug()} />
+    <ConfirmDialog open={clearConversationsPending} title="清空全部对话？" description="全部会话、消息和会话摘要都会被永久删除，不能恢复。长期记忆、每日回顾、时间线和关注事项不会删除。" warning="如果只是想清理某一段对话，请使用侧栏里的单独删除。" confirmLabel="永久清空对话" busy={clearingConversations} onCancel={() => setClearConversationsPending(false)} onConfirm={() => void clearAllConversations()} />
   </div>;
 }

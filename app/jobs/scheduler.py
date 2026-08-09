@@ -13,7 +13,7 @@ from app.llm.catalog import resolve_model_target
 from app.llm.factory import get_provider
 from app.notify.service import Notifier
 from app.notify.sweep import sweep
-from app.obs import trace
+from app.obs import add_current_span_event, trace
 from app.obs.context import set_current_span_attributes
 from app.settings_store import resolve_settings
 
@@ -107,25 +107,80 @@ async def run_notification_ticker() -> None:
             with trace("job", "notify.tick", purpose="notify"):
                 async with get_sessionmaker()() as session:
                     settings = await resolve_settings(session)
+                    notifier = Notifier(session, settings)
+                    available_channels = ",".join(
+                        channel.name for channel in notifier.channels
+                    )
                     set_current_span_attributes(
                         **{
                             "notify.enabled": settings.notify_enabled,
                             "notify.channels_configured": settings.notify_channels,
+                            "notify.channels_available": available_channels,
+                            "notify.channel_count": len(notifier.channels),
+                            "notify.tick_interval_seconds": TICK_SECONDS,
+                            "notify.catchup_hours": settings.notify_catchup_hours,
+                            "notify.briefing_enabled": settings.notify_briefing,
+                            "notify.briefing_hour": settings.notify_briefing_hour,
+                            "notify.scan_performed": False,
+                            "notify.sent_count": 0,
                         }
+                    )
+                    add_current_span_event(
+                        "notify.tick.evaluated",
+                        enabled=settings.notify_enabled,
+                        channels_configured=settings.notify_channels,
+                        channels_available=available_channels,
+                        channel_count=len(notifier.channels),
                     )
                     if not settings.notify_enabled:
                         set_current_span_attributes(
-                            **{"notify.skipped": True, "notify.reason": "disabled"}
+                            **{
+                                "notify.skipped": True,
+                                "notify.reason": "disabled",
+                                "notify.decision": "skip",
+                                "notify.reason_detail": "主动通知总开关已关闭，未执行事项扫描",
+                            }
+                        )
+                        add_current_span_event(
+                            "notify.tick.skipped",
+                            reason="disabled",
+                            detail="主动通知总开关已关闭，未执行事项扫描",
                         )
                         continue
-                    notifier = Notifier(session, settings)
                     if not notifier.ready:
                         set_current_span_attributes(
-                            **{"notify.skipped": True, "notify.reason": "no_channel"}
+                            **{
+                                "notify.skipped": True,
+                                "notify.reason": "no_channel",
+                                "notify.decision": "skip",
+                                "notify.reason_detail": "没有配置可用的通知通道，未执行事项扫描",
+                            }
+                        )
+                        add_current_span_event(
+                            "notify.tick.skipped",
+                            reason="no_channel",
+                            detail="没有配置可用的通知通道，未执行事项扫描",
                         )
                         continue
                     count = await sweep(session, settings, notifier)
-                    set_current_span_attributes(**{"notify.sent_count": count})
+                    set_current_span_attributes(
+                        **{
+                            "notify.scan_performed": True,
+                            "notify.sent_count": count,
+                            "notify.decision": "sent" if count else "no_match",
+                            "notify.reason_detail": (
+                                f"扫描完成，实际送达 {count} 条"
+                                if count
+                                else "扫描完成，没有符合条件且需要送达的通知"
+                            ),
+                        }
+                    )
+                    add_current_span_event(
+                        "notify.tick.completed",
+                        scan_performed=True,
+                        sent_count=count,
+                        decision="sent" if count else "no_match",
+                    )
             if count:
                 logger.info("主动通知已推送 %d 条", count)
         except asyncio.CancelledError:

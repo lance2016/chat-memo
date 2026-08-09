@@ -27,8 +27,10 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.attachments.tool import ImageToolExecutor
 from app.config import Settings
 from app.kb.tool import KbToolExecutor
+from app.llm.catalog import resolve_vision_target
 from app.llm.composite import CompositeExecutor
 from app.llm.factory import get_provider
 from app.llm.provider import LLMProvider, ToolExecutor
@@ -61,6 +63,9 @@ class _Deps:
     # 本次可见的技能。要先查数据库和扫磁盘才知道，所以是装配时算好传进来的，
     # 不能让 build 函数自己去查 —— build 是同步的
     skills: tuple[SkillEntry, ...] = ()
+    # 看图用的模型目标。同技能，要查数据库才知道，所以装配时算好传进来。
+    # None = 没配（或聊天模型自己就能看图，那时不需要它）
+    vision_target: ModelTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -78,8 +83,13 @@ class Toolkit:
     build: Callable[[_Deps], ToolExecutor]
     # 哪些用途下启用
     purposes: frozenset[str]
-    # 额外的启用条件（比如知识库要挂载了 vault 才算数）
-    enabled: Callable[[Settings], bool] = lambda _settings: True
+    # 额外的启用条件（比如知识库要挂载了 vault 才算数）。
+    # 第二个参数是本轮的模型目标，`None` 表示「还不知道」—— 人看的工具目录
+    # （`GET /api/tools`）就是这么调的，那里没有具体某一轮的 target。
+    # 依赖 target 的判断在这种情况下应当**放行**，让目录如实列出这个工具存在。
+    enabled: Callable[[Settings, ModelTarget | None], bool] = (
+        lambda _settings, _target: True
+    )
     # 停用时怎么开启。`enabled` 恒真的工具留空
     disabled_hint: str = ""
     # 只在用户从输入框明确打开时注册；默认不消耗搜索额度，也不让模型猜测要不要联网。
@@ -121,7 +131,7 @@ TOOLKITS: tuple[Toolkit, ...] = (
         # 整理任务不带技能：它的输入是当天对话摘要，做的是固定的一件事。
         # 把技能塞进去只会让整理跑偏，而整理写的是长期记忆，跑偏的代价是持久的。
         purposes=frozenset({"chat"}),
-        enabled=lambda settings: bool(settings.skills_path) and settings.skills_enabled,
+        enabled=lambda settings, _target: bool(settings.skills_path) and settings.skills_enabled,
         disabled_hint="未启用：在设置页打开技能，或配置 SKILLS_PATH",
     ),
     Toolkit(
@@ -132,8 +142,25 @@ TOOLKITS: tuple[Toolkit, ...] = (
         ),
         purposes=frozenset({"chat"}),
         # vault 没挂载时整段功能关闭：工具不注册，提示词也不提
-        enabled=lambda settings: bool(settings.vault_path),
+        enabled=lambda settings, _target: bool(settings.vault_path),
         disabled_hint="未启用：设置 VAULT_PATH 并重启后端",
+    ),
+    Toolkit(
+        name="image_ask",
+        label="看图",
+        build=lambda deps: ImageToolExecutor(
+            deps.session,
+            deps.settings,
+            vision_target=deps.vision_target,
+            conversation_id=deps.conversation_id,
+        ),
+        purposes=frozenset({"chat"}),
+        # 两个条件缺一不可：配了视觉档案，**且**聊天模型自己看不了图。
+        # 后者不加的话，Claude 那种原生视觉的模型也会拿到这个工具 —— 图本来就在
+        # 它的上下文里，再调一次工具纯属绕远路。
+        enabled=lambda settings, target: settings.vision_model_profile_id is not None
+        and (target is None or not target.supports_vision),
+        disabled_hint="未启用：在设置页配置视觉模型档案",
     ),
     Toolkit(
         name="web_search",
@@ -143,7 +170,7 @@ TOOLKITS: tuple[Toolkit, ...] = (
             deps.settings.tavily_base_url,
         ),
         purposes=frozenset({"chat"}),
-        enabled=lambda settings: is_configured(settings.tavily_api_key),
+        enabled=lambda settings, _target: is_configured(settings.tavily_api_key),
         disabled_hint="未启用：在 .env 设置 TAVILY_API_KEY 并重启后端",
         request_enabled=True,
     ),
@@ -164,13 +191,17 @@ class AgentContext:
 
 
 def active_toolkits(
-    settings: Settings, purpose: Purpose, *, web_search: bool = False
+    settings: Settings,
+    purpose: Purpose,
+    *,
+    web_search: bool = False,
+    target: ModelTarget | None = None,
 ) -> tuple[Toolkit, ...]:
     return tuple(
         kit
         for kit in TOOLKITS
         if purpose in kit.purposes
-        and kit.enabled(settings)
+        and kit.enabled(settings, target)
         and (not kit.request_enabled or web_search)
     )
 
@@ -196,7 +227,7 @@ def describe_toolkits(
         conversation_id=None,
     )
     return [
-        (kit, kit.enabled(settings), kit.build(deps))
+        (kit, kit.enabled(settings, None), kit.build(deps))
         for kit in TOOLKITS
         if purpose in kit.purposes
     ]
@@ -225,8 +256,13 @@ async def build_agent_context(
     actor = actor or ("chat" if purpose == "chat" else "consolidation")
     store = MemoryStore(session, actor=actor, conversation_id=conversation_id)
 
-    kits = active_toolkits(settings, purpose, web_search=web_search)
+    kits = active_toolkits(settings, purpose, web_search=web_search, target=target)
     names = tuple(kit.name for kit in kits)
+    # 同技能：先查好再传进去，因为 build 是同步的。
+    # 判据已经在 TOOLKITS 那张表里，这里只负责把它需要的东西准备好。
+    vision_target = (
+        await resolve_vision_target(session, settings) if "image_ask" in names else None
+    )
     # 技能清单同时喂给工具（决定 skill_read 认哪些名字）和 system prompt（第 0 层），
     # 必须是同一份：两边分别查一次的话，中间安装一个技能就会出现「提示词里有、
     # 工具却说没这个技能」。
@@ -239,6 +275,7 @@ async def build_agent_context(
         actor=actor,
         conversation_id=conversation_id,
         skills=skills,
+        vision_target=vision_target,
     )
     executor = CompositeExecutor(*(kit.build(deps) for kit in kits))
 

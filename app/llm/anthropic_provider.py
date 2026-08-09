@@ -220,7 +220,7 @@ class AnthropicProvider:
         self,
         *,
         system: str,
-        prompt: str,
+        prompt: str | list[dict[str, Any]],
         max_tokens: int | None = None,
         thinking: bool = True,
     ) -> str:
@@ -228,6 +228,9 @@ class AnthropicProvider:
 
         走 stream + get_final_message 而不是裸 create：max_tokens 较大时
         非流式请求会撞上 SDK 的 HTTP 超时。
+
+        ``prompt`` 传 block 数组时原样送出 —— 内部标准格式就是 Anthropic 的
+        content block，看图那次调用不需要任何翻译。
         """
         payload = {
             "model": self.target.model_id,

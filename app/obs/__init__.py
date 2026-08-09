@@ -6,6 +6,7 @@ without the ``obs`` extra remains a supported configuration.
 """
 
 from app.obs.context import (
+    add_current_span_event,
     bind,
     current_purpose,
     current_session_id,
@@ -16,6 +17,7 @@ from app.obs.context import (
 )
 
 __all__ = [
+    "add_current_span_event",
     "bind",
     "current_purpose",
     "current_session_id",

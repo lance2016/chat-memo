@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listConversations, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -22,6 +22,15 @@ describe("parseSseEventLine", () => {
     await searchAll("76%");
 
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/search?q=76%25&limit=20", expect.objectContaining({ headers: expect.any(Headers) }));
+  });
+
+  it("loads a conversation page with an offset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listConversations(20, false, 40);
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/conversations?limit=20&archived=false&offset=40", expect.objectContaining({ headers: expect.any(Headers) }));
   });
 
   it("updates a conversation without dropping the three-state thinking value", async () => {

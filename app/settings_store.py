@@ -47,6 +47,8 @@ class Field:
     provider: str = ""
     # 界面分区。空 = 模型与整理（历史默认区），"tts" = 语音
     group: str = ""
+    # 机密值只用于一次性写入，描述接口不回传原文。
+    secret: bool = False
 
 
 # 白名单。**不在这里的字段一律拒绝写入**，包括密钥、数据库连接、CORS、日志。
@@ -71,6 +73,8 @@ WRITABLE: tuple[Field, ...] = (
     Field("chat_model_profile_id", "聊天模型档案", "int", minimum=1,
           group="model-routing"),
     Field("consolidate_model_profile_id", "整理模型档案", "int", minimum=1,
+          group="model-routing"),
+    Field("vision_model_profile_id", "视觉模型档案", "int", minimum=1,
           group="model-routing"),
     Field("deepseek_model", "DeepSeek 模型", "str", provider="deepseek"),
     Field("deepseek_max_tokens", "输出上限", "int", minimum=256, maximum=128000,
@@ -100,7 +104,7 @@ WRITABLE: tuple[Field, ...] = (
           group="notify"),
     Field("notify_all_day_hour", "全天事项提醒时间（点）", "int", minimum=0, maximum=23,
           group="notify"),
-    Field("notify_default_lead_minutes", "默认提前量（分钟）", "int", minimum=0,
+    Field("notify_default_lead_minutes", "未分类事项默认提前量（分钟）", "int", minimum=0,
           maximum=10080, group="notify"),
     Field("notify_catchup_hours", "补发窗口（小时）", "int", minimum=1, maximum=168,
           group="notify"),
@@ -112,7 +116,7 @@ WRITABLE: tuple[Field, ...] = (
     Field("bark_server", "Bark 服务器", "str", allow_empty=True, maximum=200,
           group="notify"),
     Field("bark_key", "Bark 设备 key", "str", allow_empty=True, maximum=120,
-          group="notify"),
+          group="notify", secret=True),
     Field("bark_sound", "Bark 提示音", "str", allow_empty=True, maximum=60,
           group="notify"),
     Field("bark_icon", "Bark 图标地址", "str", allow_empty=True, maximum=200,
@@ -171,6 +175,8 @@ ENV_ONLY = (
     "asr_max_bytes",
     # 技能目录同 vault：是个挂载点，容器内外写法不同，改数据库不会让挂载变出来
     "skills_path",
+    "attachments_path",
+    "attachment_max_bytes",
     # 启动期读一次决定要不要建 ticker 任务，改数据库不会生效 —— 放进白名单
     # 只会给出一个「点了没反应」的开关。各任务自己的开关（consolidate_auto /
     # backup_auto / notify_enabled）仍然在设置页，那些是每轮重读的。
@@ -280,7 +286,8 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
     带上 ``options`` 前端就不用硬编码模型清单和能力判断。
     """
     return {
-        "values": {f.key: getattr(settings, f.key) for f in WRITABLE},
+        # secret 字段只返回空串。前端可以根据 sources 判断「已配置」，但永远拿不到原值。
+        "values": {f.key: "" if f.secret else getattr(settings, f.key) for f in WRITABLE},
         # .env 不再是运行时配置的主要入口；兼容旧部署的显式环境值仍准确标记为环境覆盖。
         "sources": {
             f.key: (
@@ -302,6 +309,7 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
                 "maximum": f.maximum,
                 "provider": f.provider,
                 "group": f.group,
+                "secret": f.secret,
             }
             for f in WRITABLE
         ],

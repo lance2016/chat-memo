@@ -1,6 +1,8 @@
 import { ChevronDown, CircleHelp } from "lucide-react";
+import { useRef } from "react";
 import type { DailyUsage } from "@/lib/types";
 import { useI18n } from "@/components/i18n-provider";
+import { useDismissDetailsOnOutside } from "@/lib/use-dismiss-on-outside";
 
 function cacheRate(item: DailyUsage) {
   if (item.input_tokens <= 0) return "—";
@@ -11,7 +13,9 @@ export function ReviewUsageCard({ usage, selectedDay, error }: { usage: DailyUsa
   const { locale, t } = useI18n();
   const selected = usage.find((item) => item.day === selectedDay);
   const maxInput = Math.max(...usage.map((item) => item.input_tokens), 1);
-  return <details className="review-card review-collapsible-card review-usage-card" open={error ? true : undefined}>
+  const cardRef = useRef<HTMLDetailsElement>(null);
+  useDismissDetailsOnOutside(cardRef, !error);
+  return <details ref={cardRef} className="review-card review-collapsible-card review-usage-card" open={error ? true : undefined}>
     <summary className="card-heading review-collapsible-heading">
       <div><span className="card-kicker">{t("review.usage.kicker")}</span><h2>{t("review.usage.title")}</h2></div>
       <span className="review-collapsible-meta"><span className="count-pill">{t("review.usage.range")}</span><ChevronDown size={15} /></span>

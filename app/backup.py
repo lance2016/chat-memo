@@ -95,6 +95,9 @@ class BackupResult:
     memory_files: int
     memory_dir: str
     created_at: str
+    # 本次新复制过去的附件（已经在备份里的不重复算）
+    attachment_files: int = 0
+    attachment_bytes: int = 0
     detail: str = ""
     # 本次轮换掉的旧备份
     pruned: list[str] = field(default_factory=list)
@@ -109,6 +112,12 @@ async def run_backup(
 
     memory_dir = BACKUP_DIR / "memories"
     count = await export_memories(session, memory_dir)
+
+    # 附件的元数据行在 pg_dump 里，但正文在磁盘上 —— 不复制这一步，
+    # 恢复出来的库里每条带图的消息都会指向一个不存在的文件。
+    attachment_files, attachment_bytes = copy_attachments(
+        settings, BACKUP_DIR / "attachments"
+    )
 
     dump_path = BACKUP_DIR / f"{DUMP_PREFIX}{stamp}{DUMP_SUFFIX}"
     detail = await _pg_dump(settings.database_url, dump_path)
@@ -130,9 +139,50 @@ async def run_backup(
         dump_bytes=size,
         memory_files=count,
         memory_dir=str(memory_dir),
+        attachment_files=attachment_files,
+        attachment_bytes=attachment_bytes,
         created_at=stamp,
         detail=detail,
     )
+
+
+def copy_attachments(settings: Settings, dest: Path) -> tuple[int, int]:
+    """把附件正文增量复制到备份目录。返回 (新增文件数, 新增字节数)。
+
+    ⚠️ **不能照抄 `export_memories` 的「清空再全量重写」**：那对二进制附件意味着
+    每天把所有图片重新复制一遍，而备份是每天跑的。内容寻址下文件名就是内容摘要，
+    所以「已经存在就跳过」是天然正确的增量策略，不需要比对时间戳或大小。
+
+    同理，这里**不删**备份里多出来的文件：源目录也从不删文件（见 store.py），
+    真删了也说明是人工干预，备份不该跟着丢。
+    """
+    source = Path(settings.attachments_path)
+    if not source.is_dir():
+        return (0, 0)
+
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    files = 0
+    total = 0
+    for path in sorted(source.rglob("*")):
+        # 写到一半留下的临时文件不备份 —— 它的内容和文件名对不上
+        if not path.is_file() or path.suffix == ".partial":
+            continue
+        try:
+            relative = path.relative_to(source)
+        except ValueError:
+            continue
+        target = (root / relative).resolve()
+        if not target.is_relative_to(root):
+            logger.warning("跳过越界的附件路径：%s", path)
+            continue
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        files += 1
+        total += target.stat().st_size
+    return (files, total)
 
 
 async def export_memories(session: AsyncSession, dest: Path) -> int:

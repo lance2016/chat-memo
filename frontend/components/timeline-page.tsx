@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { AlarmClockOff, BellOff, BellRing, CalendarCheck2, CalendarDays, Check, CheckCircle2, CircleDashed, Clock3, MapPin, Pencil, Plus, RefreshCw, Timer, Trash2, TriangleAlert, X } from "lucide-react";
-import { createTimelineItem, deleteTimelineItem, errorMessage, listTimeline, snoozeTimelineItem, updateTimelineItem } from "@/lib/api";
+import { AlarmClockOff, BellOff, BellRing, CalendarCheck2, CalendarDays, Check, CheckCircle2, CircleDashed, Clock3, MapPin, Pencil, Plus, RefreshCw, Trash2, TriangleAlert, X } from "lucide-react";
+import { createTimelineItem, deleteTimelineItem, errorMessage, listTimeline, updateTimelineItem } from "@/lib/api";
 import type { TimelineItem, TimelineKind, TimelineStatus } from "@/lib/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useI18n } from "@/components/i18n-provider";
 import type { TranslationKey, TranslationValues } from "@/lib/i18n";
+import { useDismissDetailsOnOutside } from "@/lib/use-dismiss-on-outside";
 
 type View = "today" | "upcoming" | "month";
 
@@ -16,9 +17,6 @@ const timelineKindGroups = [
   { label: "timeline.kindGroup.events" as const, values: ["event", "birthday", "travel"] as TimelineKind[] },
   { label: "timeline.kindGroup.records" as const, values: ["note"] as TimelineKind[] },
 ];
-
-// 「稍后提醒」的快捷时长。保留快捷选择，同时把精确时间交给自定义选择器。
-const snoozeChoices = [0, 5, 15, 30, 60, 24 * 60];
 
 function startOfDay(value = new Date()) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -38,13 +36,6 @@ function dateKey(value: Date | string) {
 
 function inputDateTime(value: Date) {
   return `${dateKey(value)}T${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
-}
-
-function snoozeChoiceLabel(minutes: number, t: (key: TranslationKey, values?: TranslationValues) => string) {
-  if (minutes === 0) return t("timeline.snoozeNow");
-  if (minutes < 60) return t("timeline.minutes", { count: minutes });
-  if (minutes < 24 * 60) return t("timeline.hours", { count: minutes / 60 });
-  return t("timeline.days", { count: minutes / (24 * 60) });
 }
 
 // 每年重复的事项会被后端展开成多个「occurrence」，它们共用同一个 id。
@@ -97,73 +88,16 @@ function leadLabel(item: TimelineItem, t: (key: TranslationKey, values?: Transla
   return t("timeline.remindBefore", { value: t("timeline.days", { count: Math.round(minutes / (24 * 60)) }) });
 }
 
-function TimelineSnoozeMenu({ busy, onSnooze }: {
-  busy: boolean;
-  onSnooze: (minutes: number) => void;
-}) {
-  const { t } = useI18n();
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [open, setOpen] = useState(false);
-  const [customOpen, setCustomOpen] = useState(false);
-  const [customAt, setCustomAt] = useState("");
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
-
-  const choose = (minutes: number) => {
-    onSnooze(minutes);
-    setOpen(false);
-    setCustomOpen(false);
-  };
-
-  const chooseCustom = () => {
-    if (customMinutes === null || !Number.isFinite(customMinutes) || customMinutes < 0 || customMinutes > 7 * 24 * 60) return;
-    choose(customMinutes);
-  };
-
-  const now = new Date();
-  const max = addDays(now, 7);
-  const customMinutes = customAt ? Math.ceil((new Date(customAt).getTime() - Date.now()) / 60000) : null;
-  const customTimeValid = customMinutes !== null && Number.isFinite(customMinutes) && customMinutes >= 0 && customMinutes <= 7 * 24 * 60;
-  return <div className={`timeline-snooze ${open ? "is-open" : ""}`} ref={menuRef}>
-    <button type="button" disabled={busy} title={t("timeline.snooze")} aria-label={t("timeline.snooze")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}><Timer size={13} /></button>
-    {open && <div className="timeline-snooze-menu" role="menu">
-      <div className="timeline-snooze-heading">{t("timeline.snooze")}</div>
-      {snoozeChoices.map((minutes) => <button type="button" role="menuitem" key={minutes} onClick={() => choose(minutes)} disabled={busy}>{snoozeChoiceLabel(minutes, t)}</button>)}
-      <div className="timeline-snooze-divider" />
-      {!customOpen ? <button type="button" role="menuitem" className="timeline-snooze-custom-trigger" onClick={() => { setCustomOpen(true); setCustomAt(inputDateTime(now)); }} disabled={busy}>{t("timeline.snoozeCustom")}</button> : <div className="timeline-snooze-custom">
-        <label><span>{t("timeline.snoozeCustomLabel")}</span><input type="datetime-local" value={customAt} min={inputDateTime(now)} max={inputDateTime(max)} onChange={(event) => setCustomAt(event.target.value)} autoFocus /></label>
-        <div><button type="button" className="timeline-snooze-cancel" onClick={() => setCustomOpen(false)}>{t("common.cancel")}</button><button type="button" className="timeline-snooze-confirm" onClick={chooseCustom} disabled={!customTimeValid}>{t("common.confirm")}</button></div>
-      </div>}
-    </div>}
-  </div>;
-}
-
-function TimelineCard({ item, busy, overdue, onStatus, onSnooze, onToggleNotify, onEdit, onDelete }: {
+function TimelineCard({ item, busy, overdue, onStatus, onToggleNotify, onEdit, onDelete }: {
   item: TimelineItem;
   busy: boolean;
   overdue: boolean;
   onStatus: (status: TimelineStatus) => void;
-  onSnooze: (minutes: number) => void;
   onToggleNotify: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const { locale, t } = useI18n();
-  const snoozedUntil = item.snoozed_until && new Date(item.snoozed_until) > new Date() ? new Date(item.snoozed_until) : null;
   const done = item.status === "completed" || item.status === "cancelled";
   return <article className={`timeline-item kind-${item.kind} status-${item.status} ${overdue ? "is-overdue" : ""}`}>
     <div className="timeline-item-rail"><span /><i /></div>
@@ -173,12 +107,11 @@ function TimelineCard({ item, busy, overdue, onStatus, onSnooze, onToggleNotify,
         <strong>{item.title}</strong>
       </div>
       {item.details && <p>{item.details}</p>}
-      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item, locale, t("timeline.allDay"))}{item.said && <em className="timeline-said" title={t("timeline.saidHint")}>{t("timeline.said", { said: item.said })}</em>}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>{t("timeline.yearly")}</span>}{!done && (item.remind_at ? <span className="timeline-remind"><BellRing size={12} />{leadLabel(item, t)}</span> : <span className="timeline-remind muted"><BellOff size={12} />{t("timeline.noRemind")}</span>)}{snoozedUntil && <span className="timeline-remind"><Timer size={12} />{t("timeline.snoozedUntil", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false }).format(snoozedUntil) })}</span>}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>{t("timeline.fromConversation")}</Link>}</div>
+      <div className="timeline-item-meta"><span><Clock3 size={12} />{timeLabel(item, locale, t("timeline.allDay"))}{item.said && <em className="timeline-said" title={t("timeline.saidHint")}>{t("timeline.said", { said: item.said })}</em>}</span>{item.location && <span><MapPin size={12} />{item.location}</span>}{item.recurrence === "yearly" && <span>{t("timeline.yearly")}</span>}{!done && (item.remind_at ? <span className="timeline-remind"><BellRing size={12} />{leadLabel(item, t)}</span> : <span className="timeline-remind muted"><BellOff size={12} />{t("timeline.noRemind")}</span>)}{item.source_conversation_id && <Link href={`/?conversation=${item.source_conversation_id}`}>{t("timeline.fromConversation")}</Link>}</div>
     </div>
     <div className="timeline-item-actions">
       {item.status === "pending" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.confirm")}><Check size={14} /></button>}
       {!done && <button onClick={() => onStatus("completed")} disabled={busy} title={t("timeline.complete")}><CheckCircle2 size={14} /></button>}
-      {!done && <TimelineSnoozeMenu busy={busy} onSnooze={onSnooze} />}
       {!done && <button onClick={onToggleNotify} disabled={busy} title={item.remind_at ? t("timeline.muteRemind") : t("timeline.unmuteRemind")}>{item.remind_at ? <AlarmClockOff size={13} /> : <BellRing size={13} />}</button>}
       <button onClick={onEdit} disabled={busy} title={t("timeline.edit")}><Pencil size={13} /></button>
       {item.status === "completed" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.reopen")}><RefreshCw size={13} /></button>}
@@ -199,6 +132,8 @@ export function TimelinePage() {
   const [saving, setSaving] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TimelineItem | null>(null);
+  const completedRef = useRef<HTMLDetailsElement>(null);
+  useDismissDetailsOnOutside(completedRef);
   const nextHour = useMemo(() => { const value = new Date(); value.setHours(value.getHours() + 1, 0, 0, 0); return value; }, []);
   const emptyDraft = useMemo(() => ({ title: "", details: "", kind: "todo" as TimelineKind, startsAt: inputDateTime(nextHour), allDay: false, location: "", leadMinutes: "" }), [nextHour]);
   const [draft, setDraft] = useState(emptyDraft);
@@ -316,7 +251,6 @@ export function TimelinePage() {
   const cardProps = (item: TimelineItem, overdue = false) => ({
     item, overdue, busy: busyId === item.id,
     onStatus: (status: TimelineStatus) => void applyChange(item, () => updateTimelineItem(item.id, { status }), t("timeline.updateError")),
-    onSnooze: (minutes: number) => void applyChange(item, () => snoozeTimelineItem(item.id, minutes), t("timeline.updateError")),
     onToggleNotify: () => void applyChange(item, () => updateTimelineItem(item.id, { notify: !item.remind_at }), t("timeline.updateError")),
     onEdit: () => openComposer(item),
     onDelete: () => setDeleteTarget(item),
@@ -337,7 +271,7 @@ export function TimelinePage() {
     {loading ? <div className="timeline-empty"><RefreshCw className="spin" size={20} /><strong>{t("timeline.loading")}</strong></div> : view === "month" ? <section className="timeline-calendar"><div className="timeline-weekdays">{Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale, { weekday: "short" }).format(addDays(new Date(2024, 0, 1), index))).map((day) => <span key={day}>{day}</span>)}</div><div className="timeline-calendar-grid">{monthDays.map((day) => { const key = dateKey(day); const dayItems = items.filter((item) => dateKey(item.starts_at) === key); const currentMonth = day.getMonth() === cursor.getMonth(); return <div className={`timeline-day ${currentMonth ? "" : "outside"} ${key === dateKey(new Date()) ? "today" : ""}`} key={key}><time>{day.getDate()}</time><div>{dayItems.slice(0, 3).map((item) => <span className={`kind-${item.kind}`} title={item.title} key={itemKey(item)}>{item.title}</span>)}</div>{dayItems.length > 3 && <small>{t("timeline.more", { count: dayItems.length - 3 })}</small>}</div>; })}</div></section> : <>
       {overdueItems.length > 0 && <section className="timeline-list timeline-overdue"><div className="timeline-day-group"><div className="timeline-date"><TriangleAlert size={15} /><div><strong>{t("timeline.overdueTitle")}</strong><span>{t("timeline.overdueHint", { count: overdueItems.length })}</span></div></div><div className="timeline-day-items">{overdueItems.map((item) => <TimelineCard {...cardProps(item, true)} key={itemKey(item)} />)}</div></div></section>}
       {grouped.length ? <section className="timeline-list">{grouped.map(([key, dayItems]) => <div className="timeline-day-group" key={key}><div className="timeline-date"><CalendarDays size={15} /><div><strong>{dayTitle(key, locale, t("timeline.today"), t("timeline.tomorrow"))}</strong><span>{key}</span></div></div><div className="timeline-day-items">{dayItems.map((item) => <TimelineCard {...cardProps(item)} key={itemKey(item)} />)}</div></div>)}</section> : overdueItems.length === 0 && <div className="timeline-empty"><CalendarCheck2 size={25} /><strong>{view === "today" ? t("timeline.emptyToday") : t("timeline.emptyUpcoming")}</strong><span>{t("timeline.emptyDescription")}</span></div>}
-      {completedGroups.length > 0 && <details className="timeline-completed"><summary><CheckCircle2 size={14} /><span>{t("timeline.completed.title")}</span><b>{completedGroups.reduce((count, [, dayItems]) => count + dayItems.length, 0)}</b></summary><section className="timeline-list">{completedGroups.map(([key, dayItems]) => <div className="timeline-day-group" key={key}><div className="timeline-date"><CalendarDays size={15} /><div><strong>{dayTitle(key, locale, t("timeline.today"), t("timeline.tomorrow"))}</strong><span>{key}</span></div></div><div className="timeline-day-items">{dayItems.map((item) => <TimelineCard {...cardProps(item)} key={itemKey(item)} />)}</div></div>)}</section></details>}
+      {completedGroups.length > 0 && <details ref={completedRef} className="timeline-completed"><summary><CheckCircle2 size={14} /><span>{t("timeline.completed.title")}</span><b>{completedGroups.reduce((count, [, dayItems]) => count + dayItems.length, 0)}</b></summary><section className="timeline-list">{completedGroups.map(([key, dayItems]) => <div className="timeline-day-group" key={key}><div className="timeline-date"><CalendarDays size={15} /><div><strong>{dayTitle(key, locale, t("timeline.today"), t("timeline.tomorrow"))}</strong><span>{key}</span></div></div><div className="timeline-day-items">{dayItems.map((item) => <TimelineCard {...cardProps(item)} key={itemKey(item)} />)}</div></div>)}</section></details>}
     </>}
   </main><ConfirmDialog open={deleteTarget !== null} title={t("timeline.deleteTitle")} description={t("timeline.deleteDescription")} subject={deleteTarget?.title} confirmLabel={t("timeline.deleteConfirm")} busy={busyId === deleteTarget?.id} onCancel={() => setDeleteTarget(null)} onConfirm={() => void remove()} /></div>;
 }

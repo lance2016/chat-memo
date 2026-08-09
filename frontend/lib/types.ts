@@ -41,6 +41,8 @@ export interface ModelProfileSummary {
   available: boolean;
   reason: string;
   capabilities: ModelCapabilities;
+  /** 输入 + 输出总上下文窗口；第三方服务未配置时为空。 */
+  context_window_tokens: number | null;
   is_default: boolean;
 }
 
@@ -60,6 +62,8 @@ export interface RuntimeSettings {
   kb_enabled?: boolean;
   /** 后端是否已配置 Tavily；Key 本身永远不下发。 */
   web_search_enabled?: boolean;
+  /** 能不能贴图：聊天模型自己支持视觉，或配了视觉模型档案。 */
+  vision_enabled?: boolean;
   values: Record<string, unknown>;
   sources: Record<string, "db" | "env" | "default">;
   fields: RuntimeSettingField[];
@@ -95,6 +99,7 @@ export interface RuntimeSettingField {
   maximum?: number | null;
   provider?: string;
   group: string;
+  secret?: boolean;
 }
 
 export interface RuntimeProvider {
@@ -189,6 +194,8 @@ export interface BackupResult {
   dump_bytes: number;
   memory_files: number;
   memory_dir: string;
+  attachment_files: number;
+  attachment_bytes: number;
   created_at: string;
   detail: string;
 }
@@ -300,7 +307,18 @@ export type ContentBlock =
   | { type: "thinking"; thinking: string; signature?: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
+  // 消息里存的是引用，不是图片本身。正文在磁盘上，发给模型之前后端才换成真内容。
+  | { type: "attachment_ref"; id: number; kind: string; filename: string; mime?: string; bytes?: number; width?: number; height?: number }
   | { type: string; [key: string]: unknown };
+
+export interface AttachmentMeta {
+  id: number;
+  filename: string;
+  mime: string;
+  bytes: number;
+  width: number;
+  height: number;
+}
 
 export interface ApiMessage {
   id: number;
@@ -334,8 +352,18 @@ export interface ToolActivity {
   summary: string;
 }
 
+export interface TurnAttachment {
+  id: number;
+  filename: string;
+  mime?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  previewUrl?: string;
+}
+
 export type Turn =
-  | { kind: "user"; text: string; messageId?: number }
+  | { kind: "user"; text: string; attachments?: TurnAttachment[]; messageId?: number }
   | { kind: "assistant"; text: string; thinking: string; tools: ToolActivity[]; usage?: MessageUsage; messageId?: number };
 
 export interface MemoryNode {
@@ -356,7 +384,7 @@ export interface MemoryVersion {
   path: string;
   content: string;
   operation: "created" | "modified" | "deleted";
-  actor: "chat" | "consolidation" | "manual";
+  actor: "chat" | "consolidation" | "manual" | "ingest";
   created_at: string;
 }
 
@@ -442,6 +470,20 @@ export interface OpenLoop {
   status: "open" | "closed" | "dropped";
   actor: "consolidation" | "manual";
   source_conversation_id: number | null;
+}
+
+export interface MemoryImportResult {
+  format: "markdown" | "text" | "json" | "jsonl";
+  imported: number;
+  skipped: number;
+  paths: string[];
+  warnings: string[];
+}
+
+export interface ConversationClearResult {
+  deleted_conversations: number;
+  deleted_messages: number;
+  deleted_summaries: number;
 }
 
 export type TimelineKind = "todo" | "event" | "reminder" | "birthday" | "travel" | "deadline" | "note";
@@ -566,7 +608,24 @@ export interface ConversationContext {
   retained_turns: number;
   trimmed_messages: number;
   prompt_tokens: number;
+  exact_prompt_tokens?: number;
+  estimated_prompt_tokens?: number;
   cached_tokens: number;
+  estimated?: boolean;
+  model_id?: string;
+  model_name?: string;
+  context_window_tokens?: number | null;
+  max_output_tokens?: number;
+  remaining_tokens?: number | null;
+  used_percent?: number | null;
+  breakdown?: Array<{
+    key: string;
+    label: string;
+    tokens: number;
+    items?: number;
+    estimated?: boolean;
+  }>;
+  toolkits?: string[];
 }
 
 /** 一条评测样本的概览。完整内容在 evals/cases/*.json 里，界面只显示标注状态。 */

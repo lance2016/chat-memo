@@ -54,7 +54,7 @@ class LLMProvider(Protocol):
         self,
         *,
         system: str,
-        prompt: str,
+        prompt: str | list[dict[str, Any]],
         max_tokens: int | None = None,
         thinking: bool = True,
     ) -> str:
@@ -62,5 +62,9 @@ class LLMProvider(Protocol):
 
         ``thinking`` 默认开着 —— 每日整理是质量最敏感的活，值得让它想。
         标题这类「一句话概括」要显式关掉：思考在那里只是让用户白等。
+
+        ``prompt`` 也接受 content block 数组，图片就是这么传进来的。
+        **放宽在协议这一层而不是绕过去**：否则预描述和 image_ask 会各写一套
+        「怎么把图发出去」，而两者本来就该是同一段代码。
         """
         ...

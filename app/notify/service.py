@@ -21,7 +21,7 @@ from app.config import Settings
 from app.db.models import Notification
 from app.notify.channels import Channel, ChannelError, build_channels
 from app.notify.message import PushMessage
-from app.obs import trace
+from app.obs import add_current_span_event, trace
 from app.obs.context import set_current_span_attributes
 
 logger = logging.getLogger(__name__)
@@ -68,12 +68,23 @@ class Notifier:
             set_current_span_attributes(
                 **{"notify.skipped": True, "notify.reason": "no_channel"}
             )
+            add_current_span_event(
+                "notify.delivery.skipped",
+                reason="no_channel",
+                kind=message.kind,
+            )
             return None
 
         record = await self._claim(message)
         if record is None:
             set_current_span_attributes(
                 **{"notify.skipped": True, "notify.reason": "deduplicated"}
+            )
+            add_current_span_event(
+                "notify.delivery.skipped",
+                reason="deduplicated",
+                kind=message.kind,
+                dedupe_key=message.dedupe_key,
             )
             return None
 
@@ -117,6 +128,13 @@ class Notifier:
                     else {}
                 ),
             }
+        )
+        add_current_span_event(
+            "notify.delivery.completed",
+            delivered=bool(delivered),
+            channels=record.channels,
+            attempts=record.attempts,
+            failure_count=len(failures),
         )
         return record
 

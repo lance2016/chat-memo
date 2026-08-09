@@ -174,6 +174,48 @@ def live_message() -> ColumnElement[bool]:
     return Message.deleted_at.is_(None)
 
 
+class Attachment(Base):
+    """用户上传的一个附件。**正文不在这里，在磁盘上。**
+
+    行和文件是多对一：磁盘按 ``sha256`` 内容寻址，同一张图反复贴只占一份，
+    但每次上传各有自己的行（各自的文件名、挂在各自的消息上）。
+
+    ``vision_*`` 三列是给看不了图的聊天模型准备的：图交给视觉模型转成一段
+    描述 + OCR，存下来之后每轮复用。**懒生成** —— 聊天模型自己支持视觉时
+    这几列会一直是空的，因为那条路径根本不需要描述。
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # 两个外键都可空：上传发生在发送之前，那一刻消息还没落库，
+    # 新会话的第一条消息连会话都还没有。
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    message_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # image | file（file 尚未实现，留位是为了别在加文件上传时再迁移一次）
+    kind: Mapped[str] = mapped_column(String(16), default="image")
+    filename: Mapped[str] = mapped_column(String(200), default="")
+    mime: Mapped[str] = mapped_column(String(120), default="")
+    bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # 磁盘路径由它推出，也是描述复用的判据 —— 两个用途都要求能按它查。
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    width: Mapped[int] = mapped_column(Integer, default=0)
+    height: Mapped[int] = mapped_column(Integer, default=0)
+    # 视觉模型写的描述 + OCR。空 = 还没算过（或根本不需要）。
+    vision_description: Mapped[str] = mapped_column(Text, default="")
+    vision_model: Mapped[str] = mapped_column(String(240), default="")
+    vision_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
 

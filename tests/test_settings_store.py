@@ -172,6 +172,16 @@ def test_describe_never_leaks_secrets() -> None:
     assert "admin-token" not in blob
 
 
+def test_describe_masks_runtime_notification_key() -> None:
+    payload = describe(
+        Settings(bark_key="bark-device-secret"),
+        {"bark_key": "bark-device-secret"},
+    )
+    assert payload["values"]["bark_key"] == ""
+    assert next(field for field in payload["fields"] if field["key"] == "bark_key")["secret"] is True
+    assert "bark-device-secret" not in str(payload)
+
+
 # ---------- 接口 ----------
 
 

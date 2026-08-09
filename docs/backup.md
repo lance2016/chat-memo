@@ -11,9 +11,15 @@
 |---|---|---|
 | `chat-<时间戳>.dump` | **完整恢复**：对话、记忆、版本历史、时间线、埋点 | `backups/` |
 | `memories/` 文件树 | **给人看**：能 grep、能用编辑器打开、能 git 管理 | `backups/memories/` |
+| `attachments/` 目录 | **正文不在 dump 里**：附件的行在库里，图片本身在磁盘上 | `backups/attachments/` |
 
-两份都要。dump 是二进制的，出事时能一键还原但看不了；`.md` 树反过来 ——
+前两份都要。dump 是二进制的，出事时能一键还原但看不了；`.md` 树反过来 ——
 记忆平时只以数据库行的形式存在，磁盘上没有任何文件，这是唯一把它们落成真实文件的地方。
+
+第三份是**必须的**，不是补充：附件正文故意不进数据库（blob 会被份数轮换乘一遍），
+所以只恢复 dump 的话，每条带图的消息都会指向一个不存在的文件。
+复制是增量的 —— 磁盘按 sha256 内容寻址，文件名就是内容，「已存在就跳过」天然正确，
+不会每天把所有图片重抄一遍。
 
 ## 自动备份
 
@@ -105,6 +111,12 @@ docker exec chat-restore-drill psql -U chat -d chat -tAc "
 # 内容抽查：记忆正文真的在，而不是一堆空行
 docker exec chat-restore-drill psql -U chat -d chat -tAc \
   "select left(content, 60) from memories where path='/memories/MEMORY.md';"
+
+# 附件：行数要和磁盘上的文件数对得上。
+# 行比文件多是正常的（同一张图贴多次共用一份），反过来就是丢正文了。
+docker exec chat-restore-drill psql -U chat -d chat -tAc \
+  "select count(*)||' 行 / '||count(distinct sha256)||' 个文件' from attachments;"
+find "${BACKUP_HOST_DIR:-./backups}/attachments" -type f | wc -l
 ```
 
 ### 4. 让真正的后端连上去跑一次

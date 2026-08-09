@@ -218,6 +218,8 @@ def test_a_conditionally_enabled_toolkit_explains_how_to_turn_it_on() -> None:
     from app.config import Settings as S
 
     for kit in TOOLKITS:
-        always_on = kit.enabled(S(vault_path="")) and kit.enabled(S(vault_path="/x"))
+        always_on = kit.enabled(S(vault_path=""), None) and kit.enabled(
+            S(vault_path="/x"), None
+        )
         if not always_on:
             assert kit.disabled_hint, kit.name

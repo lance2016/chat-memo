@@ -1,9 +1,11 @@
 import type {
   ApiMessage,
   AsrStatus,
+  AttachmentMeta,
   BackupResult,
   ChatEvent,
   Conversation,
+  ConversationClearResult,
   ConversationContext,
   ConversationSummary,
   ConsolidateResult,
@@ -22,6 +24,7 @@ import type {
   Memory,
   MemoryNode,
   MemoryIndexAudit,
+  MemoryImportResult,
   MemoryStats,
   MemoryVersion,
   ModelCatalog,
@@ -101,8 +104,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function listConversations(limit = 50, archived = false) {
-  return request<Conversation[]>(`/api/conversations?limit=${limit}&archived=${archived}`);
+export function listConversations(limit = 50, archived = false, offset = 0) {
+  return request<Conversation[]>(`/api/conversations?limit=${limit}&archived=${archived}&offset=${offset}`);
 }
 
 export function listTimeline(params: { from?: string; to?: string; statuses?: TimelineStatus[]; limit?: number; includeOverdue?: boolean } = {}, signal?: AbortSignal) {
@@ -114,10 +117,6 @@ export function listTimeline(params: { from?: string; to?: string; statuses?: Ti
   if (params.includeOverdue) query.set("include_overdue", "true");
   const suffix = query.size ? `?${query.toString()}` : "";
   return request<TimelineItem[]>(`/api/timeline${suffix}`, { signal });
-}
-
-export function snoozeTimelineItem(id: number, minutes: number) {
-  return request<TimelineItem>(`/api/timeline/${id}/snooze`, { method: "POST", body: JSON.stringify({ minutes }) });
 }
 
 export function getNotifyStatus(signal?: AbortSignal) {
@@ -177,6 +176,7 @@ export function createModelProfile(input: {
   model_id: string;
   display_name?: string;
   capabilities?: Record<string, boolean>;
+  context_window_tokens?: number;
 }) {
   return request<ModelCatalog>("/api/models/profiles", {
     method: "POST",
@@ -225,6 +225,38 @@ export function uploadSkill(file: File, overwrite = true) {
     method: "POST",
     body,
   });
+}
+
+export function uploadAttachment(file: File, conversationId: number | null) {
+  const body = new FormData();
+  body.append("file", file);
+  const query = conversationId === null ? "" : `?conversation_id=${conversationId}`;
+  // 同 uploadSkill：不设 Content-Type，让浏览器自己带 boundary
+  return request<AttachmentMeta>(`/api/attachments${query}`, { method: "POST", body });
+}
+
+// 取回的 blob URL 按附件 id 缓存。
+// **不能直接把接口地址写进 `<img src>`**：那是浏览器自己发的 GET，带不了
+// X-API-Key。所以先 authed fetch 一次再 createObjectURL。
+// 代价是绕开了浏览器的 HTTP 缓存，所以这里自己存一份 —— 同一张图在气泡里
+// 反复渲染（每次 setState 都会重跑）不该每次都重新下载一遍。
+const attachmentUrls = new Map<number, Promise<string>>();
+
+export function attachmentObjectUrl(id: number): Promise<string> {
+  const cached = attachmentUrls.get(id);
+  if (cached) return cached;
+  const pending = (async () => {
+    const headers = new Headers();
+    const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+    if (apiKey) headers.set("X-API-Key", apiKey);
+    const response = await fetch(`${API_BASE}/api/attachments/${id}`, { headers });
+    if (!response.ok) throw new ApiError(response.status, `图片加载失败（${response.status}）`);
+    return URL.createObjectURL(await response.blob());
+  })();
+  // 失败的不留在缓存里，否则一次网络抖动会让这张图这辈子都加载不出来
+  pending.catch(() => attachmentUrls.delete(id));
+  attachmentUrls.set(id, pending);
+  return pending;
 }
 
 export function setSkillEnabled(name: string, enabled: boolean) {
@@ -380,6 +412,10 @@ export function deleteConversation(id: number) {
   return request<void>(`/api/conversations/${id}`, { method: "DELETE" });
 }
 
+export function clearConversations() {
+  return request<ConversationClearResult>("/api/conversations", { method: "DELETE" });
+}
+
 export function archiveConversation(id: number, archived = true) {
   return request<Conversation>(`/api/conversations/${id}/archive?archived=${archived}`, { method: "POST" });
 }
@@ -397,6 +433,10 @@ export function listMessages(id: number) {
 
 export function getConversationContext(id: number) {
   return request<ConversationContext>(`/api/conversations/${id}/context`);
+}
+
+export function getContextPreview() {
+  return request<ConversationContext>("/api/context");
 }
 
 export function truncateMessages(conversationId: number, after = 0) {
@@ -506,6 +546,12 @@ export function saveMemory(path: string, content: string) {
   });
 }
 
+export function importMemories(file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return request<MemoryImportResult>("/api/memories/import", { method: "POST", body });
+}
+
 export function restoreMemoryVersion(versionId: number) {
   return request<Memory>("/api/memories/restore", {
     method: "POST",
@@ -588,6 +634,7 @@ export async function streamChat(
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
   webSearchEnabled = false,
+  attachmentIds: number[] = [],
 ) {
   const headers = new Headers({ "Content-Type": "application/json" });
   const apiKey = process.env.NEXT_PUBLIC_API_KEY;
@@ -598,7 +645,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId, web_search: webSearchEnabled }),
+      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId, web_search: webSearchEnabled, attachment_ids: attachmentIds }),
       signal,
     });
   } catch (cause) {

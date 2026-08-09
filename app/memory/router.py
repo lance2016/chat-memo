@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,8 @@ from app.db.models import Memory, MemoryVersion
 from app.db.session import get_session
 from app.memory.audit import audit_index
 from app.memory.errors import InvalidMemoryPath, MemoryNotFound, MemoryToolError
-from app.memory.paths import MEMORY_ROOT
+from app.memory.importer import MemoryImportError, build_paths, prepare_import
+from app.memory.paths import INDEX_PATH, MEMORY_ROOT
 from app.memory.stats import collect_stats
 from app.memory.store import MemoryStore
 from app.security import require_api_key
@@ -52,6 +54,14 @@ class MemoryVersionOut(BaseModel):
 
 class MemoryWrite(BaseModel):
     content: str = Field(default="")
+
+
+class MemoryImportOut(BaseModel):
+    format: str
+    imported: int
+    skipped: int
+    paths: list[str]
+    warnings: list[str]
 
 
 class RestoreRequest(BaseModel):
@@ -187,6 +197,75 @@ async def restore_version(
         await store.create(version.path, version.content)
         logger.info("↺ 恢复 %s 到版本 #%s", version.path, version.id)
         return await store.read(version.path)
+
+
+@router.post("/import", response_model=MemoryImportOut)
+async def import_memories(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+) -> MemoryImportOut:
+    """导入常见的外部记忆导出，并放进独立的 imports 目录。
+
+    导入默认不覆盖已有文件。这样同一个导出重复上传时，结果是「跳过」而不是
+    把手工整理过的内容悄悄覆盖掉；用户可以在记忆页删除 imports 目录后再重来。
+    """
+    try:
+        data = await file.read()
+        prepared = prepare_import(file.filename or "memory.txt", data)
+    except MemoryImportError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    finally:
+        await file.close()
+
+    paths = build_paths(file.filename or "memory.txt", prepared.entries)
+    imported: list[str] = []
+    imported_entries: list[tuple[str, str]] = []
+    skipped = 0
+    store = MemoryStore(session, actor="ingest", track_reads=False)
+    for path, entry in paths:
+        if await session.scalar(select(Memory.id).where(Memory.path == path)) is not None:
+            skipped += 1
+            continue
+        try:
+            await store.create(path, entry.content)
+        except MemoryToolError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{path}：{exc}") from exc
+        imported.append(path)
+        imported_entries.append((path, entry.title))
+
+    if imported_entries:
+        index = await session.scalar(select(Memory).where(Memory.path == INDEX_PATH))
+        index_content = index.content if index is not None else "# 记忆索引\n"
+        existing = set(re.findall(r"\]\(([^)]+)\)", index_content))
+        new_lines = []
+        for path, title in imported_entries:
+            relative = path.removeprefix(f"{MEMORY_ROOT}/")
+            if relative in existing:
+                continue
+            new_lines.append(f"- [{title}]({relative}) — 外部导入，待整理")
+        if new_lines:
+            updated_index = index_content.rstrip() + "\n\n" + "\n".join(new_lines) + "\n"
+            try:
+                await store.create(INDEX_PATH, updated_index)
+            except MemoryToolError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{INDEX_PATH}：{exc}") from exc
+            warnings = ["已把导入文件加入 MEMORY.md 索引，后续可再按主题整理"]
+        else:
+            warnings = []
+    else:
+        warnings = []
+
+    warnings = list(prepared.warnings) + warnings
+    if skipped:
+        warnings.append(f"已跳过 {skipped} 个同名文件；导入不会覆盖已有记忆")
+    logger.info("导入记忆：格式=%s，新增=%d，跳过=%d", prepared.format, len(imported), skipped)
+    return MemoryImportOut(
+        format=prepared.format,
+        imported=len(imported),
+        skipped=skipped,
+        paths=imported,
+        warnings=warnings,
+    )
 
 
 @router.get("/versions", response_model=list[MemoryVersionOut])

@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, BookOpen, CalendarClock, CalendarDays, Home, MoreHorizontal, Pencil, Settings2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Archive, ArchiveRestore, BookOpen, CalendarClock, CalendarDays, Home, LoaderCircle, MoreHorizontal, Pencil, Settings2, Trash2 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -45,6 +45,7 @@ const navigation = [
 ];
 const workspaceRoutes = navigation.map(({ href }) => href);
 const warmedRoutes = new Set<string>();
+const CONVERSATION_PAGE_SIZE = 20;
 
 function currentConversationId() {
   if (typeof window === "undefined") return null;
@@ -101,6 +102,9 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const router = useRouter();
   const [selectedConversationId, setSelectedConversationId] = useState<number | null>(null);
   const [recentConversations, setRecentConversations] = useState<Conversation[]>([]);
+  const [hasMoreConversations, setHasMoreConversations] = useState(true);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [conversationLoadError, setConversationLoadError] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [menuTarget, setMenuTarget] = useState<Conversation | null>(null);
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null);
@@ -109,7 +113,39 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const [busyId, setBusyId] = useState<number | null>(null);
   const [actionError, setActionError] = useState("");
   const menuRef = useRef<HTMLDivElement>(null);
+  const recentListRef = useRef<HTMLDivElement>(null);
+  const recentListEndRef = useRef<HTMLButtonElement>(null);
+  const loadingConversationsRef = useRef(false);
+  const conversationRequestVersionRef = useRef(0);
   const activeRoute = navigation.find(({ key }) => key === active)?.href;
+
+  const loadMoreConversations = useCallback(() => {
+    if (!hasMoreConversations || loadingConversationsRef.current) return;
+    const requestVersion = conversationRequestVersionRef.current;
+    const offset = recentConversations.length;
+    loadingConversationsRef.current = true;
+    setLoadingConversations(true);
+    setConversationLoadError("");
+    void listConversations(CONVERSATION_PAGE_SIZE, showArchived, offset)
+      .then((items) => {
+        if (requestVersion !== conversationRequestVersionRef.current) return;
+        setRecentConversations((current) => {
+          const knownIds = new Set(current.map((conversation) => conversation.id));
+          return [...current, ...items.filter((conversation) => !knownIds.has(conversation.id))];
+        });
+        setHasMoreConversations(items.length === CONVERSATION_PAGE_SIZE);
+      })
+      .catch((cause: unknown) => {
+        if (requestVersion === conversationRequestVersionRef.current) {
+          setConversationLoadError(errorMessage(cause, t("workspace.actionFailed")));
+        }
+      })
+      .finally(() => {
+        if (requestVersion !== conversationRequestVersionRef.current) return;
+        loadingConversationsRef.current = false;
+        setLoadingConversations(false);
+      });
+  }, [hasMoreConversations, recentConversations.length, showArchived, t]);
 
   useEffect(() => {
     const syncFromLocation = () => setSelectedConversationId(currentConversationId());
@@ -145,16 +181,51 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
 
   useEffect(() => {
     let activeRequest = true;
-    // Keep the workspace rail useful without turning every page into a second
-    // conversation history. The full list still lives on Home/search.
-    const refresh = () => { void listConversations(5, showArchived).then((items) => { if (activeRequest) setRecentConversations(items); }).catch(() => undefined); };
+    const refresh = () => {
+      const requestVersion = ++conversationRequestVersionRef.current;
+      loadingConversationsRef.current = true;
+      setLoadingConversations(true);
+      setConversationLoadError("");
+      setHasMoreConversations(true);
+      setRecentConversations([]);
+      recentListRef.current?.scrollTo({ top: 0 });
+      void listConversations(CONVERSATION_PAGE_SIZE, showArchived, 0)
+        .then((items) => {
+          if (!activeRequest || requestVersion !== conversationRequestVersionRef.current) return;
+          setRecentConversations(items);
+          setHasMoreConversations(items.length === CONVERSATION_PAGE_SIZE);
+        })
+        .catch((cause: unknown) => {
+          if (activeRequest && requestVersion === conversationRequestVersionRef.current) {
+            setConversationLoadError(errorMessage(cause, t("workspace.actionFailed")));
+          }
+        })
+        .finally(() => {
+          if (!activeRequest || requestVersion !== conversationRequestVersionRef.current) return;
+          loadingConversationsRef.current = false;
+          setLoadingConversations(false);
+        });
+    };
     refresh();
     window.addEventListener(conversationsChangedEvent, refresh);
     return () => {
       activeRequest = false;
+      conversationRequestVersionRef.current += 1;
+      loadingConversationsRef.current = false;
       window.removeEventListener(conversationsChangedEvent, refresh);
     };
-  }, [showArchived]);
+  }, [showArchived, t]);
+
+  useEffect(() => {
+    const root = recentListRef.current;
+    const end = recentListEndRef.current;
+    if (!root || !end || !hasMoreConversations || loadingConversations || conversationLoadError || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMoreConversations();
+    }, { root, rootMargin: "120px 0px" });
+    observer.observe(end);
+    return () => observer.disconnect();
+  }, [conversationLoadError, hasMoreConversations, loadMoreConversations, loadingConversations]);
 
   useEffect(() => {
     if (!menuTarget) return;
@@ -248,24 +319,38 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
         <div className="workspace-sidebar-recent-heading">
           <span>{showArchived ? t("workspace.archived") : t("workspace.recent")}</span>
         </div>
-        {recentConversations.map((conversation) => <div className={`workspace-sidebar-conversation ${selectedConversationId === conversation.id ? "selected" : ""}`} key={conversation.id}>
-          <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
-          <button
-            className="workspace-sidebar-conversation-more"
-            type="button"
-            aria-label={t("workspace.conversationActions", { title: conversation.title })}
-            aria-haspopup="menu"
-            aria-expanded={menuTarget?.id === conversation.id}
-            onClick={() => setMenuTarget((current) => current?.id === conversation.id ? null : conversation)}
-          ><MoreHorizontal size={16} /></button>
-          {menuTarget?.id === conversation.id && <div className="workspace-conversation-menu" role="menu" aria-label={t("workspace.conversationActions", { title: conversation.title })} ref={menuRef}>
-            <button type="button" role="menuitem" onClick={() => openRename(conversation)} disabled={busyId !== null}><Pencil size={15} /><span>{t("workspace.rename")}</span></button>
-            <button type="button" role="menuitem" onClick={() => void toggleConversationArchived(conversation)} disabled={busyId !== null}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}<span>{showArchived ? t("workspace.restore") : t("workspace.archive")}</span></button>
-            <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setDeleteTarget(conversation); setActionError(""); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
-          </div>}
-        </div>)}
-        {!recentConversations.length && <small>{showArchived ? t("workspace.noArchived") : t("workspace.noRecent")}</small>}
-        {actionError && <small className="workspace-sidebar-recent-error" role="alert">{actionError}</small>}
+        <div
+          className="workspace-sidebar-recent-list"
+          ref={recentListRef}
+          onScroll={() => {
+            const list = recentListRef.current;
+            if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 120) loadMoreConversations();
+          }}
+        >
+          {loadingConversations && !recentConversations.length && <small><LoaderCircle size={12} className="spin" />{t("workspace.loadingConversations")}</small>}
+          {recentConversations.map((conversation) => <div className={`workspace-sidebar-conversation ${selectedConversationId === conversation.id ? "selected" : ""}`} key={conversation.id}>
+            <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
+            <button
+              className="workspace-sidebar-conversation-more"
+              type="button"
+              aria-label={t("workspace.conversationActions", { title: conversation.title })}
+              aria-haspopup="menu"
+              aria-expanded={menuTarget?.id === conversation.id}
+              onClick={() => setMenuTarget((current) => current?.id === conversation.id ? null : conversation)}
+            ><MoreHorizontal size={16} /></button>
+            {menuTarget?.id === conversation.id && <div className="workspace-conversation-menu" role="menu" aria-label={t("workspace.conversationActions", { title: conversation.title })} ref={menuRef}>
+              <button type="button" role="menuitem" onClick={() => openRename(conversation)} disabled={busyId !== null}><Pencil size={15} /><span>{t("workspace.rename")}</span></button>
+              <button type="button" role="menuitem" onClick={() => void toggleConversationArchived(conversation)} disabled={busyId !== null}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}<span>{showArchived ? t("workspace.restore") : t("workspace.archive")}</span></button>
+              <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setDeleteTarget(conversation); setActionError(""); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
+            </div>}
+          </div>)}
+          {loadingConversations && recentConversations.length > 0 && <small><LoaderCircle size={12} className="spin" />{t("workspace.loadingConversations")}</small>}
+          {!loadingConversations && !recentConversations.length && !conversationLoadError && <small>{showArchived ? t("workspace.noArchived") : t("workspace.noRecent")}</small>}
+          {conversationLoadError && <><small className="workspace-sidebar-recent-error" role="alert">{conversationLoadError}</small><button className="workspace-sidebar-load-more" type="button" onClick={loadMoreConversations}>{t("workspace.retry")}</button></>}
+          {!loadingConversations && !conversationLoadError && hasMoreConversations && <button className="workspace-sidebar-load-more" type="button" ref={recentListEndRef} onClick={loadMoreConversations}>{t("workspace.loadMore")}</button>}
+          {!loadingConversations && !conversationLoadError && !hasMoreConversations && recentConversations.length > 0 && <small>{t("workspace.allConversationsLoaded")}</small>}
+          {actionError && <small className="workspace-sidebar-recent-error" role="alert">{actionError}</small>}
+        </div>
         <button className="workspace-sidebar-recent-filter" type="button" onClick={() => { setMenuTarget(null); setActionError(""); setShowArchived((value) => !value); }}>
           {showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
           <span>{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</span>

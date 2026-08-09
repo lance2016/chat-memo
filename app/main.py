@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.asr.router import router as asr_router
+from app.attachments.router import router as attachments_router
 from app.chat.router import router as chat_router
 from app.config import get_settings
 from app.db.session import get_session, get_sessionmaker
@@ -161,6 +162,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chat_router)
     app.include_router(asr_router)
+    app.include_router(attachments_router)
     app.include_router(memory_router)
     app.include_router(review_router)
     app.include_router(timeline_router)

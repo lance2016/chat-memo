@@ -3,11 +3,11 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, Globe2, LoaderCircle, Pencil, Plus, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getRuntimeSettings, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
+import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, Globe2, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2, X } from "lucide-react";
+import { apiUrl, attachmentObjectUrl, errorMessage, getContextPreview, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getRuntimeSettings, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, uploadAttachment } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
-import type { ChatEvent, Conversation, ConversationContext, ModelCatalog, ToolActivity, Turn, TtsStatus } from "@/lib/types";
+import type { AttachmentMeta, ChatEvent, Conversation, ConversationContext, ModelCatalog, ToolActivity, Turn, TurnAttachment, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
 import { conversationsChangedEvent, notifyWorkspaceConversationsChanged, notifyWorkspaceSelectedConversationChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
 import { LatestRequest } from "@/lib/latest-request";
@@ -15,6 +15,7 @@ import { resetMediaElement } from "@/lib/media-playback";
 import { VoiceInputButton } from "@/components/voice-input-button";
 import { useI18n } from "@/components/i18n-provider";
 import { usePhoenixUrl } from "@/lib/phoenix";
+import { useDismissOnOutside } from "@/lib/use-dismiss-on-outside";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -102,22 +103,7 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
   const [open, setOpen] = useState(false);
   const menuId = useId();
 
-  useEffect(() => {
-    if (!open) return;
-    const closeOnPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && pickerRef.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnPointerDown);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnPointerDown);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  useDismissOnOutside(pickerRef, open, () => setOpen(false));
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -157,27 +143,101 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
   </div>;
 }
 
-function ComposerToolMenu({ enabled, available, disabled, onChange }: { enabled: boolean; available: boolean; disabled: boolean; onChange: (value: boolean) => void }) {
+type DisplayAttachment = TurnAttachment & { previewUrl?: string };
+type ComposerAttachment = AttachmentMeta & { previewUrl?: string };
+
+function AttachmentThumb({ id, filename, previewUrl, onRemove }: { id: number; filename: string; previewUrl?: string; onRemove?: () => void }) {
+  const { t } = useI18n();
+  const [url, setUrl] = useState(previewUrl ?? "");
+  const [usingLocalPreview, setUsingLocalPreview] = useState(Boolean(previewUrl));
+  const [failed, setFailed] = useState(false);
+  // Keep the object URL that was already visible while history is being
+  // reloaded. A transient failure of the authenticated download must not
+  // turn a working image into a warning icon.
+  const lastLocalPreviewRef = useRef(previewUrl ?? "");
+
+  useEffect(() => {
+    let active = true;
+    if (previewUrl) lastLocalPreviewRef.current = previewUrl;
+    const fallbackUrl = previewUrl || lastLocalPreviewRef.current;
+    setUrl(fallbackUrl);
+    setUsingLocalPreview(Boolean(fallbackUrl));
+    setFailed(false);
+    if (previewUrl) return () => { active = false; };
+    // 走 authed fetch 换 blob URL —— <img src> 带不了 X-API-Key。
+    // URL 由 api.ts 按 id 缓存复用，所以这里**不能** revokeObjectURL：
+    // 撤销之后同一张图在别处（或重新挂载时）就再也显示不出来了。
+    attachmentObjectUrl(id).then(
+      (value) => {
+        if (!active) return;
+        setUrl(value);
+        setUsingLocalPreview(false);
+      },
+      () => {
+        // The local object URL is still a valid preview in this state. Keep
+        // it instead of showing a false negative while the API recovers.
+        if (active && !fallbackUrl) setFailed(true);
+      },
+    );
+    return () => { active = false; };
+  }, [id, previewUrl]);
+
+  const handleImageError = () => {
+    if (usingLocalPreview) {
+      // The local URL itself failed, so don't try it again if the backend
+      // fallback also fails.
+      lastLocalPreviewRef.current = "";
+      setUsingLocalPreview(false);
+      setUrl("");
+      attachmentObjectUrl(id).then(
+        (value) => { setUrl(value); setFailed(false); },
+        () => setFailed(true),
+      );
+      return;
+    }
+    // A canonical download can finish after the stream and still fail to
+    // decode (or be briefly unavailable). If the user already has a good
+    // local preview, prefer it to a warning placeholder.
+    if (lastLocalPreviewRef.current) {
+      setUrl(lastLocalPreviewRef.current);
+      setUsingLocalPreview(true);
+      setFailed(false);
+      return;
+    }
+    setFailed(true);
+  };
+
+  return <span className={`attachment-thumb ${failed ? "is-failed" : ""}`} title={filename}>
+    {/* next/image 在这里帮不上忙：它的优化管线要一个能被服务端取到的 URL，
+        而这是个 authed fetch 出来的 blob:，只存在于本页面的内存里。 */}
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    {url && !failed ? <img src={url} alt={filename || t("chat.attachment.image")} onError={handleImageError} /> : <span className="attachment-thumb-placeholder">{failed ? <TriangleAlert size={14} /> : <LoaderCircle size={14} className="spin" />}</span>}
+    {onRemove && <button type="button" className="attachment-thumb-remove" onClick={onRemove} aria-label={t("chat.attachment.remove")}><X size={11} /></button>}
+  </span>;
+}
+
+function AttachmentStrip({ items, onRemove, showNames = false }: { items: DisplayAttachment[]; onRemove?: (id: number) => void; showNames?: boolean }) {
+  if (items.length === 0) return null;
+  return <div className={`attachment-strip ${showNames ? "with-names" : ""}`}>
+    {items.map((item) => <div className="attachment-item" key={item.id}><AttachmentThumb id={item.id} filename={item.filename} previewUrl={item.previewUrl} onRemove={onRemove ? () => onRemove(item.id) : undefined} />{showNames && <span className="attachment-name" title={item.filename}>{item.filename}</span>}</div>)}
+  </div>;
+}
+
+function ComposerAttachments({ items, uploading, onRemove }: { items: ComposerAttachment[]; uploading: number; onRemove: (id: number) => void }) {
+  const { t } = useI18n();
+  if (items.length === 0 && uploading === 0) return null;
+  return <div className="composer-attachments">
+    <div className="composer-attachments-head"><span><ImagePlus size={13} />{items.length ? t("chat.attachment.count", { count: items.length }) : t("chat.attachment.uploading")}</span>{uploading > 0 && <small>{t("chat.attachment.uploadingCount", { count: uploading })}</small>}</div>
+    <div className="composer-attachments-body"><AttachmentStrip items={items.map((item) => ({ id: item.id, filename: item.filename, previewUrl: item.previewUrl }))} onRemove={onRemove} showNames />{uploading > 0 && <span className="attachment-thumb is-uploading"><span className="attachment-thumb-placeholder"><LoaderCircle size={14} className="spin" /></span></span>}</div>
+  </div>;
+}
+
+function ComposerToolMenu({ enabled, available, disabled, onChange, onPickImage, imageAvailable }: { enabled: boolean; available: boolean; disabled: boolean; onChange: (value: boolean) => void; onPickImage?: () => void; imageAvailable?: boolean }) {
   const { t } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
 
-  useEffect(() => {
-    if (!open) return;
-    const closeOnPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnPointerDown);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOnPointerDown);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [open]);
+  useDismissOnOutside(menuRef, open, () => setOpen(false));
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -191,9 +251,13 @@ function ComposerToolMenu({ enabled, available, disabled, onChange }: { enabled:
 
   return <div className={`composer-tools ${enabled ? "is-enabled" : ""}`} ref={menuRef}>
     <button type="button" className="composer-tool-trigger" aria-label={t("chat.webSearch.menu")} title={t("chat.webSearch.menu")} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><Plus size={18} /></button>
-    {enabled && <span className="composer-tool-active"><Globe2 size={12} />{t("chat.webSearch.short")}</span>}
+    {enabled && <button type="button" className="composer-tool-active" onClick={() => onChange(false)} aria-label={t("chat.webSearch.disable")} title={t("chat.webSearch.disable")}><Globe2 size={12} /><span>{t("chat.webSearch.short")}</span><X size={12} /></button>}
     {open && <div className="composer-tool-menu" role="menu">
       <div className="composer-tool-menu-heading">{t("chat.webSearch.menu")}</div>
+      {onPickImage && <button type="button" className="composer-tool-option" role="menuitem" disabled={!imageAvailable || disabled} onClick={() => { onPickImage(); setOpen(false); }}>
+        <span className="composer-tool-option-icon"><ImagePlus size={16} /></span>
+        <span className="composer-tool-option-copy"><strong>{t("chat.attachment.label")}</strong><small>{imageAvailable ? t("chat.attachment.description") : t("chat.attachment.unavailable")}</small></span>
+      </button>}
       <button type="button" className={`composer-tool-option ${enabled ? "is-selected" : ""}`} role="menuitemcheckbox" aria-checked={enabled} disabled={!available || disabled} onClick={toggleWebSearch}>
         <span className="composer-tool-option-icon"><Globe2 size={16} /></span>
         <span className="composer-tool-option-copy"><strong>{t("chat.webSearch.label")}</strong><small>{available ? t("chat.webSearch.description") : t("chat.webSearch.unavailable")}</small></span>
@@ -203,7 +267,7 @@ function ComposerToolMenu({ enabled, available, disabled, onChange }: { enabled:
   </div>;
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange }: {
+function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange, attachments, uploading, visionAvailable, onPickImage, onRemoveAttachment, onPasteFiles, onDropFiles, context }: {
   conversations: Conversation[];
   input: string;
   memoryCount: number | null;
@@ -222,6 +286,14 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   webSearchEnabled: boolean;
   webSearchAvailable: boolean;
   onWebSearchChange: (value: boolean) => void;
+  attachments: AttachmentMeta[];
+  uploading: number;
+  visionAvailable: boolean;
+  onPickImage: () => void;
+  onRemoveAttachment: (id: number) => void;
+  onPasteFiles: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  onDropFiles: (event: React.DragEvent) => void;
+  context: ConversationContext | null;
 }) {
   const { locale, t } = useI18n();
   const recent = conversations.slice(0, 2);
@@ -236,9 +308,10 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
       </section>
 
       {backgroundResponseTitle && <button type="button" className="home-background-stream" onClick={onReturnToResponse}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: backgroundResponseTitle })}</span><ArrowRight size={13} /></button>}
-      <form className="home-capture" onSubmit={onSubmit}>
-        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} /><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div></div><div className="home-capture-actions"><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
+      <form className="home-capture" onSubmit={onSubmit} onDragOver={(event) => event.preventDefault()} onDrop={onDropFiles}>
+        <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} onPaste={onPasteFiles} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
+        <ComposerAttachments items={attachments} uploading={uploading} onRemove={onRemoveAttachment} />
+        <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} onPickImage={onPickImage} imageAvailable={visionAvailable} /><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div></div><div className="home-capture-actions"><ContextIndicator context={context} /><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={(!input.trim() && attachments.length === 0) || sending || uploading > 0} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
@@ -310,7 +383,7 @@ function TurnView({ turn, traceId, editing = false, editText = "", enterToSend =
     window.setTimeout(() => setCopied(false), 1600);
   };
   if (turn.kind === "user") {
-    return <div className={`turn user-turn ${editing ? "is-editing" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group">{editing && onEditChange && onEditSubmit && onEditCancel ? <InlineMessageEditor value={editText} enterToSend={enterToSend} onChange={onEditChange} onSubmit={onEditSubmit} onCancel={onEditCancel} /> : <><div className="user-bubble">{turn.text}</div><div className="turn-actions"><button onClick={() => void copyTurn()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("chat.copied") : t("chat.copy")}</button>{onEdit && <button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button>}</div></>}</div></div>;
+    return <div className={`turn user-turn ${editing ? "is-editing" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}><div className="user-message-group">{editing && onEditChange && onEditSubmit && onEditCancel ? <InlineMessageEditor value={editText} enterToSend={enterToSend} onChange={onEditChange} onSubmit={onEditSubmit} onCancel={onEditCancel} /> : <><AttachmentStrip items={turn.attachments ?? []} />{turn.text && <div className="user-bubble">{turn.text}</div>}<div className="turn-actions"><button onClick={() => void copyTurn()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("chat.copied") : t("chat.copy")}</button>{onEdit && <button onClick={onEdit}><Pencil size={12} />{t("chat.editResend")}</button>}</div></>}</div></div>;
   }
   return (
     <div className={`turn assistant-turn ${streaming ? "is-streaming" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
@@ -341,19 +414,48 @@ function TurnView({ turn, traceId, editing = false, editText = "", enterToSend =
 
 function ContextIndicator({ context }: { context: ConversationContext | null }) {
   const { locale, t } = useI18n();
+  const contextRef = useRef<HTMLDetailsElement>(null);
+  const [open, setOpen] = useState(false);
+  useDismissOnOutside(contextRef, open, () => setOpen(false));
   if (!context) return null;
   const number = (value: number) => value.toLocaleString(locale);
-  const cacheRate = context.prompt_tokens > 0 ? Math.round(context.cached_tokens / context.prompt_tokens * 100) : 0;
-  return <details className="chat-context-indicator">
-    <summary><Gauge size={12} /><span>{t("chat.context.label")}</span><b>{context.prompt_tokens ? t("chat.context.tokens", { count: number(context.prompt_tokens) }) : t("chat.context.turns", { count: context.retained_turns })}</b></summary>
+  const compact = (value: number) => {
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`;
+    return number(value);
+  };
+  const breakdown = context.breakdown ?? [];
+  const total = context.prompt_tokens || context.estimated_prompt_tokens || 0;
+  const window = context.context_window_tokens ?? null;
+  const exact = context.exact_prompt_tokens ?? 0;
+  const cacheRate = total > 0 ? Math.round(context.cached_tokens / total * 100) : 0;
+  const colors = ["mint", "amber", "violet", "cyan", "blue"];
+  const usedPercent = window ? Math.min(100, total / window * 100) : 0;
+  return <details className="chat-context-indicator" ref={contextRef} open={open}>
+    <summary aria-label={t("chat.context.label")} aria-expanded={open} onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}><Gauge size={13} /><span>{t("chat.context.label")}</span><b>{window ? `${compact(total)} / ${compact(window)}` : `约 ${compact(total)}`}</b></summary>
     <div className="chat-context-popover">
-      <div><span>{t("chat.context.promptTokens")}</span><strong>{number(context.prompt_tokens)} tokens</strong></div>
-      <div><span>{t("chat.context.retained")}</span><strong>{t("chat.context.turns", { count: context.retained_turns })}</strong></div>
-      <div><span>{t("chat.context.trimmed")}</span><strong>{number(context.trimmed_messages)}</strong></div>
-      <div><span>{t("chat.context.budget")}</span><strong>{number(context.history_chars)} / {number(context.history_budget_chars)} chars</strong></div>
-      <div><span>{t("chat.context.cache")}</span><strong>{cacheRate}%</strong></div>
+      <div className="chat-context-heading"><div><strong>{t("chat.context.title")}</strong><span>{context.model_name || context.model_id || "—"}</span></div><span className="chat-context-estimate">{context.estimated ? t("chat.context.estimated") : t("chat.context.measured")}</span></div>
+      <div className="chat-context-total"><strong>{compact(total)}</strong><span>{window ? `/ ${compact(window)} ${t("chat.context.tokensUnit")}` : t("chat.context.unknownWindow")}</span></div>
+      <div className="chat-context-meter" aria-label={t("chat.context.title")}>
+        {breakdown.map((item, index) => <span key={item.key} className={`chat-context-meter-segment ${colors[index % colors.length]}`} style={{ width: `${total > 0 ? Math.max(item.tokens / total * 100, item.tokens > 0 ? 1.5 : 0) : 0}%` }} />)}
+      </div>
+      <div className="chat-context-breakdown">
+        {breakdown.map((item, index) => <div className="chat-context-breakdown-row" key={item.key}><span><i className={`chat-context-dot ${colors[index % colors.length]}`} />{item.label}{item.items ? ` · ${item.items}` : ""}</span><strong>{compact(item.tokens)}</strong></div>)}
+      </div>
+      <div className="chat-context-summary"><span>{t("chat.context.retained")}</span><strong>{t("chat.context.turns", { count: context.retained_turns })}</strong><span>{t("chat.context.trimmed")}</span><strong>{number(context.trimmed_messages)}</strong><span>{t("chat.context.cache")}</span><strong>{cacheRate}%</strong></div>
+      <div className="chat-context-footnote"><span>{exact ? `${number(exact)} ${t("chat.context.tokensUnit")} · ${t("chat.context.measured")}` : t("chat.context.estimateNote")}</span><span>{window ? `${usedPercent.toFixed(1)}% · ${compact(Math.max(window - total, 0))} ${t("chat.context.remaining")}` : `${t("chat.context.outputLimit")} ${compact(context.max_output_tokens ?? 0)}`}</span></div>
     </div>
   </details>;
+}
+
+function turnKey(turn: Turn, index: number) {
+  // The optimistic user turn has no message id yet, while the same turn from
+  // history does. Keep image turns mounted across that handoff so their local
+  // object preview can bridge the authenticated history fetch.
+  if (turn.kind === "user" && turn.attachments?.length) {
+    return `user-attachments-${turn.attachments.map((attachment) => attachment.id).join(",")}-${turn.text}`;
+  }
+  return `${turn.kind}-${turn.messageId ?? index}`;
 }
 
 export function ChatPage() {
@@ -368,6 +470,11 @@ export function ChatPage() {
   const [selectedId, setSelectedId] = useState<number | null>(Number.isFinite(selectedFromUrl) && selectedFromUrl > 0 ? selectedFromUrl : null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [pendingUser, setPendingUser] = useState("");
+  // 已经上传、还没随消息发出去的附件
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // 发送瞬间冻结的那一份，给乐观渲染用（attachments 已经被清空了）
+  const [pendingAttachments, setPendingAttachments] = useState<TurnAttachment[]>([]);
+  const [uploading, setUploading] = useState(0);
   const [draft, setDraft] = useState({ text: "", thinking: "", tools: [] as LiveTool[] });
   const [input, setInput] = useState("");
   const [loadingConversations, setLoadingConversations] = useState(true);
@@ -377,6 +484,7 @@ export function ChatPage() {
   const [, setShowArchived] = useState(false);
   const [editingTarget, setEditingTarget] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  const [editAttachments, setEditAttachments] = useState<TurnAttachment[]>([]);
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
   const [ttsLoadingId, setTtsLoadingId] = useState<number | null>(null);
@@ -385,6 +493,7 @@ export function ChatPage() {
   const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const speechBusyGenerationRef = useRef<number | null>(null);
   const speechQueueRef = useRef<string[]>([]);
@@ -415,6 +524,7 @@ export function ChatPage() {
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] = useState<number | null>(null);
   const [webSearchAvailable, setWebSearchAvailable] = useState(false);
+  const [visionAvailable, setVisionAvailable] = useState(false);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
   const [traceIds, setTraceIds] = useState<Record<number, string>>({});
@@ -433,7 +543,13 @@ export function ChatPage() {
   useEffect(() => {
     void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
     void getModelCatalog().then(setModelCatalog).catch(() => undefined);
-    void getRuntimeSettings().then((settings) => setWebSearchAvailable(Boolean(settings.web_search_enabled))).catch(() => setWebSearchAvailable(false));
+    void getContextPreview().then((context) => {
+      if (selectedIdRef.current === null) setConversationContext(context);
+    }).catch(() => undefined);
+    void getRuntimeSettings().then((settings) => {
+      setWebSearchAvailable(Boolean(settings.web_search_enabled));
+      setVisionAvailable(Boolean(settings.vision_enabled));
+    }).catch(() => { setWebSearchAvailable(false); setVisionAvailable(false); });
   }, []);
 
   useEffect(() => {
@@ -572,6 +688,7 @@ export function ChatPage() {
       // 分开清会先渲染出「权威历史 + 尚未清掉的 draft」这一帧，也就是重影。
       if (streamConversationIdRef.current === id) {
         setPendingUser("");
+        setPendingAttachments([]);
         setDraft({ text: "", thinking: "", tools: [] });
         streamConversationIdRef.current = null;
         setStreamConversationId(null);
@@ -675,6 +792,7 @@ export function ChatPage() {
     updateSelectedId(id);
     setEditingTarget(null);
     setEditDraft("");
+    setEditAttachments([]);
     setInput("");
     setConversationContext(null);
     notifyWorkspaceSelectedConversationChanged(id);
@@ -936,10 +1054,65 @@ export function ChatPage() {
     }
   };
 
-  const send = async (contentOverride?: string, targetIdOverride?: number, conversationIdOverride?: number) => {
+  const addAttachments = async (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (files.length > 0 && images.length < files.length) setError(t("chat.attachment.unsupported"));
+    if (images.length === 0 || sending) return;
+    if (!visionAvailable) { setError(t("chat.attachment.unavailable")); return; }
+    if (images.length === files.length) setError("");
+    setUploading((current) => current + images.length);
+    for (const file of images) {
+      const previewUrl = URL.createObjectURL(file);
+      try {
+        const meta = await uploadAttachment(file, selectedId);
+        if (!mountedRef.current) return;
+        setAttachments((current) => [...current, { ...meta, previewUrl }]);
+      } catch (cause) {
+        URL.revokeObjectURL(previewUrl);
+        if (!mountedRef.current) return;
+        setError(errorMessage(cause, t("chat.attachment.uploadFailed")));
+      } finally {
+        if (mountedRef.current) setUploading((current) => Math.max(0, current - 1));
+      }
+    }
+  };
+
+  const removeAttachment = (id: number) => setAttachments((current) => {
+    const removed = current.find((item) => item.id === id);
+    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    return current.filter((item) => item.id !== id);
+  });
+
+  const pickImage = () => fileInputRef.current?.click();
+
+  const onPasteFiles = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files);
+    // 只在真的有图时拦截：剪贴板里同时有文字和图片是常见的，
+    // 那种情况下文字仍然该正常粘进输入框。
+    if (files.some((file) => file.type.startsWith("image/"))) {
+      event.preventDefault();
+      void addAttachments(files);
+    }
+  };
+
+  const onDropFiles = (event: React.DragEvent) => {
+    const files = Array.from(event.dataTransfer.files);
+    if (files.some((file) => file.type.startsWith("image/"))) {
+      event.preventDefault();
+      void addAttachments(files);
+    }
+  };
+
+  const send = async (contentOverride?: string, targetIdOverride?: number, conversationIdOverride?: number, attachmentsOverride?: TurnAttachment[]) => {
     const content = (contentOverride ?? input).trim();
     const conversationId = conversationIdOverride ?? selectedId;
-    if (!content || sending) return;
+    // 编辑重发/重新生成要把原消息的图**带回来**：那条消息会被软删除、重新落一条新的，
+    // 不显式传就等于编辑一次图片就没了（而用户只改了几个字）。
+    // 附件行可以改挂到新消息上，所以重复用同一批 id 是安全的。
+    const outgoingAttachments = attachmentsOverride ?? (targetIdOverride === undefined && editingTarget === null ? attachments.map((item) => ({ id: item.id, filename: item.filename, previewUrl: item.previewUrl })) : []);
+    // 只贴图不打字是正常用法，所以不能再要求 content 非空
+    if ((!content && outgoingAttachments.length === 0) || sending) return;
+    if (uploading > 0) return;
     let activeConversationId = conversationId;
     const targetId = targetIdOverride ?? editingTarget;
     const baseMessages = targetId !== null && targetId !== undefined
@@ -963,6 +1136,8 @@ export function ChatPage() {
     setError("");
     setInput("");
     setPendingUser(content);
+    setAttachments([]);
+    setPendingAttachments(outgoingAttachments);
     if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
     draftFrameRef.current = null;
     setDraft({ text: "", thinking: "", tools: [] });
@@ -987,7 +1162,7 @@ export function ChatPage() {
       await streamChat(activeConversationId, content, selectedModelProfileId, (event) => {
         if (event.type === "conversation") activeConversationId = event.conversation.id;
         handleEvent(event, activeConversationId);
-      }, controller.signal, webSearchEnabled);
+      }, controller.signal, webSearchEnabled, outgoingAttachments.map((item) => item.id));
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
@@ -1002,6 +1177,7 @@ export function ChatPage() {
       setSending(false);
       setEditingTarget(null);
       setEditDraft("");
+      setEditAttachments([]);
       // 临时态由 loadMessages 在换上权威历史的同一帧里清掉，这里不要提前清 ——
       // 提前清会让刚说完的回答先消失，等 fetch 回来再出现。
       await Promise.all([
@@ -1019,7 +1195,7 @@ export function ChatPage() {
   const startHomeConversation = (event: FormEvent) => {
     event.preventDefault();
     const content = input.trim();
-    if (!content || sending) return;
+    if ((!content && attachments.length === 0) || sending) return;
     void send(content);
   };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void send(); };
@@ -1036,24 +1212,27 @@ export function ChatPage() {
       if (selectedId === null) event.currentTarget.form?.requestSubmit();
       else void send();
     }
-    if (event.key === "Escape" && editingTarget !== null) { setEditingTarget(null); setEditDraft(""); }
+    if (event.key === "Escape" && editingTarget !== null) { setEditingTarget(null); setEditDraft(""); setEditAttachments([]); }
   };
 
   const editMessage = (turn: Extract<Turn, { kind: "user" }>) => {
     if (turn.messageId === undefined) return;
     setEditingTarget(turn.messageId);
     setEditDraft(turn.text);
+    setEditAttachments(turn.attachments ?? []);
   };
 
   const cancelEditing = () => {
     setEditingTarget(null);
     setEditDraft("");
+    setEditAttachments([]);
     window.requestAnimationFrame(() => composerRef.current?.focus());
   };
 
   const submitEditing = () => {
-    if (editingTarget === null || !editDraft.trim() || sending) return;
-    void send(editDraft, editingTarget);
+    if (editingTarget === null || sending) return;
+    if (!editDraft.trim() && editAttachments.length === 0) return;
+    void send(editDraft, editingTarget, undefined, editAttachments);
   };
 
   const streamConversation = useMemo(() => conversations.find((item) => item.id === streamConversationId), [conversations, streamConversationId]);
@@ -1061,7 +1240,11 @@ export function ChatPage() {
   const selectedTraceId = selectedId === null ? undefined : traceIds[selectedId];
   const displayTurns = useMemo(() => {
     const result = [...turns] as Turn[];
-    if (streamBelongsToSelection && pendingUser) result.push({ kind: "user", text: pendingUser });
+    // 纯图片消息没有正文，所以判据要带上附件 —— 只看 pendingUser 的话
+    // 那种消息在等待期间气泡整个不出现，看着像没发出去。
+    if (streamBelongsToSelection && (pendingUser || pendingAttachments.length > 0)) {
+      result.push({ kind: "user", text: pendingUser, attachments: pendingAttachments });
+    }
     // sending 期间无条件给出助手气泡：首个 token 之前它只有一个闪烁光标，
     // 否则从发送到首字之间界面上没有任何「在回答」的迹象，看着像卡死。
     // 流结束后不看 sending，让 draft 一直留在屏幕上，直到 loadMessages
@@ -1070,14 +1253,14 @@ export function ChatPage() {
       result.push({ kind: "assistant", text: draft.text, thinking: draft.thinking, tools: draft.tools });
     }
     return result;
-  }, [draft, pendingUser, sending, streamBelongsToSelection, turns]);
+  }, [draft, pendingAttachments, pendingUser, sending, streamBelongsToSelection, turns]);
 
   if (loadingConversations) return <WorkspacePageFallback active="chat" messageKey="loading.connecting" />;
 
   return (
     <div className="app-shell">
       <main className="main-panel">
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} /> : <>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} attachments={attachments} uploading={uploading} visionAvailable={visionAvailable} onPickImage={pickImage} onRemoveAttachment={removeAttachment} onPasteFiles={onPasteFiles} onDropFiles={onDropFiles} context={conversationContext} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
               <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
@@ -1087,16 +1270,17 @@ export function ChatPage() {
             </div>
           </div>
           <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
-            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={`${turn.kind}-${turn.messageId ?? index}`} />; })}
+            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId, undefined, previousUser.attachments ?? []) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={turnKey(turn, index)} />; })}
           </div>
           {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
           <div className="composer-wrap">
             {error && <div className="error-banner">{error}</div>}
-            <form className="composer" onSubmit={onSubmit}>
-              <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
+            <form className="composer" onSubmit={onSubmit} onDragOver={(event) => event.preventDefault()} onDrop={onDropFiles}>
+              <ComposerAttachments items={attachments} uploading={uploading} onRemove={removeAttachment} />
+              <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} onPaste={onPasteFiles} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
               <div className="composer-bottom">
                 <div className="composer-meta">
-                  <ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={setWebSearchEnabled} />
+                  <ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={setWebSearchEnabled} onPickImage={pickImage} imageAvailable={visionAvailable} />
                   <ContextIndicator context={conversationContext} />
                   <span className="composer-hint">{sending && !streamBelongsToSelection ? t("chat.backgroundHint") : t("chat.sendHint")}</span>
                 </div>
@@ -1104,12 +1288,14 @@ export function ChatPage() {
                   <VoiceInputButton disabled={sending} onTranscript={appendTranscription} />
                   {sending
                     ? streamBelongsToSelection ? <button type="button" className="ghost-button stop-button composer-submit" onClick={stop} aria-label={t("chat.stop")} title={t("chat.stop")}><Square size={14} /></button> : <button type="button" className="ghost-button composer-submit" onClick={() => streamConversationId !== null && selectConversation(streamConversationId)} aria-label={t("chat.returnToResponse")} title={t("chat.returnToResponse")}><ArrowRight size={15} /></button>
-                    : <button type="submit" className="primary-button composer-submit" disabled={!input.trim()} aria-label={t("chat.send")} title={t("chat.send")}><Send size={17} /></button>}
+                    : <button type="submit" className="primary-button composer-submit" disabled={(!input.trim() && attachments.length === 0) || uploading > 0} aria-label={t("chat.send")} title={t("chat.send")}><Send size={17} /></button>}
                 </div>
               </div>
             </form>
           </div>
         </>}
+        {/* 两个 composer 共用这一个。value 每次清掉，否则连着选同一张图不会触发 change */}
+        <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ""; void addAttachments(files); }} />
         <audio ref={audioRef} className="tts-audio" onEnded={handleSpeechEnded} onError={handleSpeechError} />
       </main>
     </div>

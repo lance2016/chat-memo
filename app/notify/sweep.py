@@ -21,7 +21,7 @@ from app.db.models import TimelineItem
 from app.notify.compose import compose_body, format_clock, kind_emoji, subtitle_for
 from app.notify.message import PushMessage
 from app.notify.service import Notifier
-from app.obs import trace
+from app.obs import add_current_span_event, trace
 from app.obs.context import set_current_span_attributes
 from app.timeutils import aware, local_day_bounds
 
@@ -90,8 +90,24 @@ async def sweep_due(
         catchup_hours=settings.notify_catchup_hours,
         limit=MAX_PER_TICK,
     )
+    set_current_span_attributes(
+        **{
+            "notify.due_candidate_count": len(items),
+            "notify.due_limit": MAX_PER_TICK,
+        }
+    )
+    add_current_span_event(
+        "notify.due.evaluated",
+        candidate_count=len(items),
+        limit=MAX_PER_TICK,
+    )
     sent = 0
     for item in items:
+        add_current_span_event(
+            "notify.item.selected",
+            timeline_item_id=item.id,
+            kind=item.kind,
+        )
         body = await compose_body(session, item, settings, now)
         message = PushMessage(
             dedupe_key=dedupe_key_for(item),
@@ -198,11 +214,40 @@ async def sweep_briefing(
     session: AsyncSession, settings: Settings, notifier: Notifier, now: dt.datetime
 ) -> int:
     if not briefing_due(settings, now):
+        set_current_span_attributes(
+            **{
+                "notify.briefing_due": False,
+                "notify.briefing_skip_reason": "outside_window",
+            }
+        )
+        add_current_span_event(
+            "notify.briefing.skipped",
+            reason="outside_window",
+            briefing_hour=settings.notify_briefing_hour,
+        )
         return 0
 
     today, overdue, stale = await briefing_sections(session, now)
+    set_current_span_attributes(
+        **{
+            "notify.briefing_due": True,
+            "notify.briefing_today_count": len(today),
+            "notify.briefing_overdue_count": len(overdue),
+            "notify.briefing_stale_count": len(stale),
+        }
+    )
     if not (today or overdue or stale):
         # 什么都没有就不推。「今天没有安排」每天来一条纯属噪音。
+        set_current_span_attributes(
+            **{"notify.briefing_skip_reason": "no_content"}
+        )
+        add_current_span_event(
+            "notify.briefing.skipped",
+            reason="no_content",
+            today_count=0,
+            overdue_count=0,
+            stale_count=0,
+        )
         return 0
 
     title, body = briefing_text(today, overdue, stale)
@@ -216,7 +261,16 @@ async def sweep_briefing(
         group="每日简报",
         level="active",
     )
-    return 1 if await notifier.deliver(message) is not None else 0
+    sent = 1 if await notifier.deliver(message) is not None else 0
+    set_current_span_attributes(**{"notify.briefing_sent": bool(sent)})
+    add_current_span_event(
+        "notify.briefing.completed",
+        sent=bool(sent),
+        today_count=len(today),
+        overdue_count=len(overdue),
+        stale_count=len(stale),
+    )
+    return sent
 
 
 async def sweep(
@@ -229,6 +283,7 @@ async def sweep(
     with trace("job", "notify.sweep", purpose="notify"):
         count = await _sweep(session, settings, notifier, now)
         set_current_span_attributes(**{"notify.sent_count": count})
+        add_current_span_event("notify.sweep.completed", sent_count=count)
         return count
 
 

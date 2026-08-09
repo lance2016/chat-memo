@@ -14,6 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import debug
+from app.attachments import store
+from app.attachments.hydrate import (
+    AttachmentHydrator,
+    has_refs,
+    placeholder_hydrate,
+    ref_block,
+)
 from app.config import Settings, get_settings
 from app.db.models import Conversation, Message, live_message
 from app.db.session import get_sessionmaker
@@ -61,6 +68,16 @@ def extract_text(blocks: list[dict[str, Any]]) -> str:
     ).strip()
 
 
+def _attachment_seed(blocks: list[dict[str, Any]]) -> str:
+    names = [
+        b.get("filename", "")
+        for b in blocks
+        if isinstance(b, dict) and b.get("type") == "attachment_ref"
+    ]
+    names = [name for name in names if name]
+    return f"（用户发来图片：{'、'.join(names)}）" if names else ""
+
+
 def _preview(text: str, limit: int = 60) -> str:
     """日志里只放一行预览 —— 完整内容在数据库里，不该刷屏。"""
     flat = " ".join(text.split())
@@ -93,6 +110,72 @@ def _message_chars(message: dict[str, Any]) -> int:
     工具结果。序列化多算的那点结构开销，方向是偏保守的，正合适。
     """
     return len(json.dumps(message, ensure_ascii=False))
+
+
+def approximate_tokens(value: Any) -> int:
+    """Estimate token size without pretending to be a provider tokenizer.
+
+    The application supports several providers and most compatible endpoints do
+    not expose their tokenizer. Chinese/non-ASCII text is therefore counted
+    closer to one token per character, while ASCII runs use a conservative
+    four-characters-per-token approximation. The result is deliberately marked
+    as estimated by the API.
+    """
+    if value is None:
+        return 0
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if not text:
+        return 0
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    other_chars = len(text) - ascii_chars
+    return max(1, int((ascii_chars + 3) // 4 + other_chars))
+
+
+def context_breakdown(
+    system: str,
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return an explainable, provider-neutral context cost breakdown.
+
+    Provider usage gives us the exact aggregate input count only. This view is
+    an estimate of the components that made up that input, useful for finding
+    an oversized prompt, tool result, or attachment without leaking content.
+    """
+    conversation_tokens = 0
+    tool_message_tokens = 0
+    image_tokens = 0
+    image_count = 0
+
+    for message in messages:
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else [{"type": "text", "text": content or ""}]
+        for block in blocks:
+            if not isinstance(block, dict):
+                conversation_tokens += approximate_tokens(block)
+                continue
+            kind = block.get("type")
+            if kind in {"image", "image_url", "input_image", "attachment_ref"}:
+                image_count += 1
+                # The media tokenization is model-specific. Include the small
+                # JSON envelope and a visible placeholder estimate, rather
+                # than showing zero and hiding image cost altogether.
+                image_tokens += approximate_tokens(block) + 512
+            elif kind in {"tool_use", "tool_result", "tool_call"}:
+                tool_message_tokens += approximate_tokens(block)
+            else:
+                conversation_tokens += approximate_tokens(block)
+
+        for call in message.get("tool_calls", []) or []:
+            tool_message_tokens += approximate_tokens(call)
+
+    return [
+        {"key": "system", "label": "系统提示词", "tokens": approximate_tokens(system), "estimated": True},
+        {"key": "tools", "label": "工具与智能体", "tokens": approximate_tokens(tools) + tool_message_tokens, "estimated": True},
+        {"key": "conversation", "label": "对话消息", "tokens": conversation_tokens, "estimated": True},
+        {"key": "images", "label": "图片与附件", "tokens": image_tokens, "items": image_count, "estimated": True},
+        {"key": "connectors", "label": "连接器 / MCP", "tokens": 0, "items": 0, "estimated": True},
+    ]
 
 
 def _is_orphan_result(message: dict[str, Any]) -> bool:
@@ -292,11 +375,15 @@ class ChatService:
         settings: Settings | None = None,
         title_client: TitleClient | None = None,
         model_profile_id: int | None = None,
+        hydrator: AttachmentHydrator | None = None,
     ) -> None:
         self.session = session
         self.provider = provider
         self.executor = executor
         self.settings = settings or get_settings()
+        # 由 router 装配（解析视觉档案要查数据库）。None = 这条链路上没有附件，
+        # 历史里万一有引用块会退化成占位文本，不会把原始 ref 发给模型。
+        self.hydrator = hydrator
         # 由调用方（router）决定标题走不走智谱。这里**不**自己去问全局配置：
         # 那样任何只注入了假 provider 的测试都会跟着开发机的 .env 走真实网络请求。
         # None = 用聊天 provider 兜底（同样关思考）。
@@ -324,6 +411,20 @@ class ChatService:
         rows = (await self.session.execute(stmt)).scalars()
         history = [{"role": row.role, "content": row.content} for row in rows]
         return sanitize_history(trim_history(history, self.settings.history_max_chars))
+
+    async def _hydrate(
+        self, messages: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """引用块换成图片或描述。**发给模型之前的最后一步。**
+
+        没有 hydrator 时也不能把 ref 原样发出去 —— 那对模型是一段没有意义的
+        JSON，它会当成用户说的话。退化成占位文本至少是句实话。
+        """
+        if not has_refs(messages):
+            return messages
+        if self.hydrator is None:
+            return placeholder_hydrate(messages)
+        return await self.hydrator.hydrate(messages)
 
     async def _persist(
         self,
@@ -376,13 +477,21 @@ class ChatService:
         background.add_done_callback(_background_title_tasks.discard)
 
     async def stream_reply(
-        self, *, conversation: Conversation, system: str, user_text: str
+        self,
+        *,
+        conversation: Conversation,
+        system: str,
+        user_text: str,
+        attachment_ids: list[int] | None = None,
     ) -> AsyncIterator[AgentEvent | tuple[str, dict[str, Any]]]:
         """Run a chat turn under one Phoenix session and chat purpose."""
 
         with bind(session_id=conversation.id, purpose="chat"):
             inner = self._stream_reply(
-                conversation=conversation, system=system, user_text=user_text
+                conversation=conversation,
+                system=system,
+                user_text=user_text,
+                attachment_ids=attachment_ids or [],
             )
             try:
                 async for event in inner:
@@ -393,7 +502,12 @@ class ChatService:
                 await inner.aclose()
 
     async def _stream_reply(
-        self, *, conversation: Conversation, system: str, user_text: str
+        self,
+        *,
+        conversation: Conversation,
+        system: str,
+        user_text: str,
+        attachment_ids: list[int] | None = None,
     ) -> AsyncIterator[AgentEvent | tuple[str, dict[str, Any]]]:
         """跑一轮对话，边流式产出事件边落库。
 
@@ -403,9 +517,24 @@ class ChatService:
         debug.current_conversation.set(conversation.id)
         history = await self.load_history(conversation.id)
 
-        user_content = [{"type": "text", "text": user_text}]
-        # 落库的是用户原话；发给模型的那一份额外带运行时上下文，两者故意不一致。
+        attachment_ids = attachment_ids or []
+        attachments = await store.load_many(self.session, attachment_ids)
+        # 引用块排在文本前面：先看到图再看到问题，和人贴图的顺序一致。
+        # 落库的是引用；发给模型的那一份既带运行时上下文、又把引用换成真内容 ——
+        # 两处不一致都是有意的，见 attachments/hydrate.py。
+        user_content: list[dict[str, Any]] = [
+            ref_block(attachments[aid]) for aid in attachment_ids if aid in attachments
+        ]
+        if user_text:
+            user_content.append({"type": "text", "text": user_text})
+
         user_message = await self._persist(conversation.id, "user", user_content)
+        await store.attach_to_message(
+            self.session,
+            attachment_ids,
+            message_id=user_message.id,
+            conversation_id=conversation.id,
+        )
         await self.session.commit()
 
         outgoing = [
@@ -417,7 +546,9 @@ class ChatService:
             },
             *user_content,
         ]
-        messages = [*history, {"role": "user", "content": outgoing}]
+        messages = await self._hydrate(
+            [*history, {"role": "user", "content": outgoing}]
+        )
 
         last_message_id = user_message.id
         failed = False
@@ -430,9 +561,12 @@ class ChatService:
         # 标题和正文互不依赖，就让它俩并行 —— 串在正文之后会让用户在
         # 「话已经说完」和 done 之间多等一次模型调用，白白转圈。
         # 只并行模型调用，写库留到最后：session 不能并发使用。
+        # 纯图片消息没有正文可概括，退而用文件名 —— 标题模型收到空字符串
+        # 只会编一个和这次对话无关的标题。
+        title_seed = user_text or _attachment_seed(user_content)
         title_task = (
-            asyncio.create_task(self._complete_title(user_text))
-            if conversation.title == DEFAULT_TITLE
+            asyncio.create_task(self._complete_title(title_seed))
+            if conversation.title == DEFAULT_TITLE and title_seed
             else None
         )
         title_route = (

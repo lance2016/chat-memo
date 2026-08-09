@@ -122,6 +122,11 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
   没有行不等于没有技能（手动拷进目录的就没有行）。「一个技能是否对模型可见」
   的判据只有 `service.py` 一处，别在 router 或 agent 里再判一遍。
   技能只读不执行（这里没有沙箱）；安装只能由人发起，模型没有安装工具。
+- `app/attachments/` — 图片附件。**行和文件是多对一**：磁盘按 sha256 内容寻址
+  （`ATTACHMENTS_PATH`，可写挂载），数据库每次上传各有一行。消息里只存
+  `attachment_ref`，发给模型之前由 `hydrate.py` 换成真内容 —— 换成什么**只看
+  `target.supports_vision`**：能看图就发 image block，看不了就发视觉模型写的描述
+  （懒生成、按 sha256 复用）。`image_ask` 工具是补充路径，只在聊天模型看不了图时注册。
 - `app/tts/` + `app/asr/` — 本地 mlx-audio 服务的代理；共享一把串行锁。
 - `app/debug/` — 请求快照环形缓冲（进程内存，不落库），配合 `GET /api/debug/requests`
   和 `/api/debug/prompt` 看清每轮真正发出去的 payload。
@@ -160,6 +165,10 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
   它是唯一常驻 system prompt 的技能内容。
 - **解压技能包不能用 `extractall`**：它会把 `../` 规范化掉但不拒绝，压缩包里声明的
   软链也照样跟随。`app/skills/install.py` 逐条自己写，四道闸缺一不可。
+- **附件在消息里是引用，发给模型前必须 hydrate**（`ChatService._hydrate`，作用在
+  历史 + 当前轮的合并列表上）。存 base64 会一口吃掉 `trim_history` 的整个字符预算；
+  把 `attachment_ref` 原样发出去，模型会把那段 JSON 当成用户说的话。
+  hydrate 出的文本必须带编号 `[图片 #7 x.png]`，否则 `image_ask` 指认不了是哪张图。
 - **搜索是 `pg_trgm` 三元组子串匹配**，不是全文检索；正文冗余在 `messages.search_text` 列上。
 - **TTS 合成必须串行**（MLX 一次只加载一份权重）；朗读文本的清洗和切句在服务端
   （`app/tts/segment.py`），前端按 Markdown 切的位置对不上。

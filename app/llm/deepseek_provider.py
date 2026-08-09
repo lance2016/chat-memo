@@ -77,6 +77,18 @@ class DeepSeekProvider:
     def model_name(self) -> str:
         return self.target.model_id
 
+    def _should_disable_thinking(self, want_thinking: bool) -> bool:
+        """要不要发那个「关掉思考」的透传参数。
+
+        ⚠️ **不思考的模型不需要被关掉思考。** 这个参数是 DeepSeek 的方言，
+        而这条协议下挂着一整类兼容服务。硅基流动上的 Qwen3-VL-Instruct 收到它
+        直接 400（`current model does not support parameter enable_thinking`）——
+        一个纯粹多余的参数把整次调用打死了。
+
+        判据用档案声明的能力：没有思考能力就什么都不发，让服务端用它自己的默认。
+        """
+        return not want_thinking and bool(self.target.capabilities.get("thinking", False))
+
     async def run(
         self,
         *,
@@ -105,7 +117,7 @@ class DeepSeekProvider:
             }
             if tools:
                 request["tools"] = tools
-            if not want_thinking:
+            if self._should_disable_thinking(want_thinking):
                 # DeepSeek 用和 Anthropic 一样的形状，但它不是 OpenAI 标准字段 ——
                 # SDK 的 create() 会拒绝未知 kwarg，必须走 extra_body 透传。
                 # 不传就是默认开着，所以只在要关的时候发。
@@ -262,19 +274,21 @@ class DeepSeekProvider:
         self,
         *,
         system: str,
-        prompt: str,
+        prompt: str | list[dict[str, Any]],
         max_tokens: int | None = None,
         thinking: bool = True,
     ) -> str:
+        # 传 block 数组时按多模态翻译一次 —— 看图那次调用就是这么进来的。
+        content = to_openai_parts(prompt) if isinstance(prompt, list) else prompt
         request: dict[str, Any] = {
             "model": self.target.model_id,
             "max_tokens": max_tokens or self.target.max_tokens,
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
+                {"role": "user", "content": content},
             ],
         }
-        if not thinking:
+        if self._should_disable_thinking(thinking):
             # 和 run() 同一个形状：不是 OpenAI 标准字段，必须走 extra_body 透传，
             # 而且不传就是默认开着，所以只在要关的时候发。
             request["extra_body"] = {"thinking": {"type": "disabled"}}
@@ -352,6 +366,12 @@ def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             b.get("text", "") for b in blocks if b.get("type") == "text"
         ).strip()
 
+        if role == "user" and any(b.get("type") == "image" for b in blocks):
+            # 只有带图时才换成多模态数组：纯文本消息保持字符串形状，
+            # 免得给所有现存请求平白换一种写法（有些兼容服务对数组更挑剔）。
+            out.append({"role": role, "content": to_openai_parts(blocks)})
+            continue
+
         if role == "assistant":
             tool_calls = [
                 {
@@ -372,6 +392,38 @@ def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         else:
             out.append({"role": role, "content": text})
     return out
+
+
+def to_openai_parts(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """content block 数组 → OpenAI 的多模态 parts 数组。
+
+    只处理 text 和 image 两种 —— 其余（thinking / tool_use）在 OpenAI 协议里
+    有各自的位置，不能混进 parts。
+
+    图片走 data URI 而不是外链：外链意味着模型服务要能反向访问到我们，
+    而这是个跑在本机的单人应用，没有公网地址可给。
+    """
+    parts: list[dict[str, Any]] = []
+    for block in blocks:
+        kind = block.get("type")
+        if kind == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append({"type": "text", "text": text})
+        elif kind == "image":
+            source = block.get("source", {})
+            if source.get("type") != "base64":
+                continue
+            media_type = source.get("media_type", "image/png")
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{media_type};base64,{source.get('data', '')}"
+                    },
+                }
+            )
+    return parts
 
 
 def to_content_blocks(

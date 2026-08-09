@@ -51,6 +51,9 @@ class ModelTarget:
     capabilities: dict[str, bool] = None  # type: ignore[assignment]
     # ---- 调用参数：换模型就会变，所以跟着 target 走而不是留在 Settings ----
     max_tokens: int = 8192
+    # 模型的输入 + 输出总上下文窗口。第三方兼容服务通常不会在接口中返回，
+    # 未配置时保持 None，调用方不能把 max_tokens（输出上限）误当成上下文容量。
+    context_window_tokens: int | None = None
     # 该模型默认要不要思考。单次请求仍可覆盖
     thinking_default: bool = False
     # Anthropic 的推理强度；其他协议留空表示不传
@@ -63,6 +66,15 @@ class ModelTarget:
     @property
     def supports_tools(self) -> bool:
         return bool(self.capabilities.get("tool_calling", False))
+
+    @property
+    def supports_vision(self) -> bool:
+        """能不能直接吃 image block。
+
+        **带图那一轮的全部分支都问这一个属性**，不问厂商名。所以把聊天模型换成
+        Claude 之后，原生视觉是自动生效的 —— 没有任何一处代码需要改。
+        """
+        return bool(self.capabilities.get("vision", False))
 
     def with_model(self, model_id: str) -> ModelTarget:
         """换一个模型 ID，其余（地址、密钥、参数）不变。
@@ -91,7 +103,13 @@ class ModelTarget:
                 api_key=settings.anthropic_api_key,
                 service_slug="anthropic",
                 service_name="Anthropic",
-                capabilities={**DEFAULT_CAPABILITIES, "thinking": True, "json_mode": True},
+                capabilities={
+                    **DEFAULT_CAPABILITIES,
+                    "thinking": True,
+                    "json_mode": True,
+                    # 在售的 Claude 全系都能看图，没有需要用户自己勾的余地
+                    "vision": True,
+                },
                 max_tokens=settings.max_tokens,
                 thinking_default=True,
                 effort=settings.effort,
@@ -108,7 +126,12 @@ class ModelTarget:
                 service_name="DeepSeek",
                 capabilities={
                     **DEFAULT_CAPABILITIES,
-                    "thinking": settings.deepseek_thinking,
+                    # ⚠️ 能力是「这个模型会不会思考」，**不是**「这次要不要思考」。
+                    # 后者是下面的 `thinking_default`（以及单次请求的覆盖）。
+                    # 这两件事一度共用 `settings.deepseek_thinking` 这一个值，
+                    # 于是「用户默认关思考」被记成了「这个模型不会思考」，
+                    # 而 provider 要靠能力判断「发不发那个关思考的方言参数」。
+                    "thinking": True,
                 },
                 max_tokens=settings.deepseek_max_tokens,
                 thinking_default=settings.deepseek_thinking,

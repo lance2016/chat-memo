@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowUpRight, ChevronDown, Clock3, MessageSquare } from "lucide-react";
 import Link from "next/link";
 import type { Conversation } from "@/lib/types";
 import { useI18n } from "@/components/i18n-provider";
+import { useDismissDetailsOnOutside } from "@/lib/use-dismiss-on-outside";
 
 export function ReviewConversationList({ conversations, error }: { conversations: Conversation[]; error?: string }) {
   const { locale, t } = useI18n();
@@ -12,8 +13,10 @@ export function ReviewConversationList({ conversations, error }: { conversations
   const formatTime = (value: string) => new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
   const visibleConversations = showAll ? conversations : conversations.slice(0, 6);
   const hiddenCount = conversations.length - visibleConversations.length;
+  const cardRef = useRef<HTMLDetailsElement>(null);
+  useDismissDetailsOnOutside(cardRef, !error);
 
-  return <details className="review-card review-collapsible-card review-conversation-card" open={error ? true : undefined}>
+  return <details ref={cardRef} className="review-card review-collapsible-card review-conversation-card" open={error ? true : undefined}>
     <summary className="card-heading review-collapsible-heading">
       <div><span className="card-kicker">{t("review.chats.kicker")}</span><h2>{t("review.chats.title")}</h2></div>
       <span className="review-collapsible-meta"><span className="count-pill">{error ? "—" : conversations.length}</span><ChevronDown size={15} /></span>

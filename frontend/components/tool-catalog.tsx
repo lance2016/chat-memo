@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Braces, Check, Copy, RefreshCw, Wrench } from "lucide-react";
 import { errorMessage, getToolCatalog } from "@/lib/api";
 import type { ToolCatalog as ToolCatalogData, ToolDefinition, ToolSchemaProperty } from "@/lib/types";
 import { useI18n } from "@/components/i18n-provider";
+import { useDismissDetailsOnOutside } from "@/lib/use-dismiss-on-outside";
 
 function propertyType(property: ToolSchemaProperty) {
   if (property.type === "array") return `${property.items?.type ?? "any"}[]`;
@@ -17,6 +18,10 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
   const required = new Set(tool.input_schema.required ?? []);
   const properties = Object.entries(tool.input_schema.properties ?? {});
   const schemaText = JSON.stringify(tool.input_schema, null, 2);
+  const itemRef = useRef<HTMLDetailsElement>(null);
+  const schemaRef = useRef<HTMLDetailsElement>(null);
+  useDismissDetailsOnOutside(itemRef);
+  useDismissDetailsOnOutside(schemaRef);
 
   const copySchema = async () => {
     await navigator.clipboard.writeText(schemaText);
@@ -24,7 +29,7 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
     window.setTimeout(() => setCopied(false), 1600);
   };
 
-  return <details className={`tool-catalog-item ${tool.enabled ? "" : "disabled"}`}>
+  return <details ref={itemRef} className={`tool-catalog-item ${tool.enabled ? "" : "disabled"}`}>
     <summary>
       <span className="tool-catalog-glyph"><Wrench size={14} /></span>
       <span className="tool-catalog-summary-copy"><code>{tool.name}</code><small>{t("tools.parameters", { count: properties.length })} · {tool.protocols.join(" / ")}</small></span>
@@ -42,7 +47,7 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
           {property.enum && property.description && <small>{property.enum.join(" · ")}</small>}
         </div>)}
       </div> : <div className="tool-no-parameters">{t("tools.noParameters")}</div>}
-      <details className="tool-raw-schema">
+      <details ref={schemaRef} className="tool-raw-schema">
         <summary><Braces size={13} />{t("tools.rawSchema")}</summary>
         <div><button type="button" className="tool-copy-schema" onClick={() => void copySchema()}>{copied ? <Check size={12} /> : <Copy size={12} />}{copied ? t("tools.copied") : t("tools.copy")}</button><pre>{schemaText}</pre></div>
       </details>

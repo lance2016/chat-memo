@@ -53,7 +53,7 @@ flowchart TB
         R["入口层：13 个 router<br/>/api/**"]
         AG["装配层：app/agent.py<br/>provider + 工具 + system prompt"]
         OR["编排层<br/>chat/service · jobs/consolidate · eval/service"]
-        CAP["能力层<br/>memory · timeline · kb · skills · llm · tts · asr · notify · search"]
+        CAP["能力层<br/>memory · timeline · kb · skills · attachments · llm · tts · asr · notify · search"]
         BG["后台循环<br/>整理 · 通知 · 备份"]
         INF["基础层<br/>db · config · settings_store · security · obs"]
     end
@@ -209,6 +209,7 @@ flowchart LR
 | `timeline` | 626 | 时间事项存储与工具 |
 | `kb` | 517 | Obsidian vault 只读扫描（无索引） |
 | `skills` | 约 900 | Agent Skills：磁盘技能目录、安全解压安装、两个 `skill_*` 工具 |
+| `attachments` | 约 700 | 图片附件：内容寻址落盘、按 `supports_vision` 分支的 hydrate、`image_ask` 工具 |
 | `review` | 212 | 每日回顾读取 |
 
 ### 基础层
@@ -247,6 +248,7 @@ erDiagram
 - **模型目录**：`model_services`（发到哪）、`model_profiles`（调哪个模型）
 - **运行记录**：`consolidation_runs`（一天一行，补跑判据）
 - **配置与埋点**：`app_settings`、`kb_reads`、`skills`（只存来源和启用状态，正文在磁盘）
+- **附件**：`attachments`（元数据 + 缓存的视觉描述；**正文在磁盘**，按 sha256 内容寻址）
 
 ## 后台任务（全在 API 进程内）
 
@@ -300,13 +302,13 @@ erDiagram
 
 ```
 外部:      浏览器/Next.js | 模型服务(Anthropic,DeepSeek,硅基流动) | mlx-audio | Bark | Phoenix | Obsidian vault
-存储:      PostgreSQL+pgvector | 文件系统(backups, evals, eval-runs)
+存储:      PostgreSQL+pgvector | 文件系统(backups, evals, eval-runs, skills, attachments)
 入口层:    chat/router | memory/router | timeline/router | llm/router | eval/router |
            review/router | jobs/router | notify/router | tts/router | asr/router |
-           debug/router | obs/router | skills/router | tool_catalog
+           debug/router | obs/router | skills/router | attachments/router | tool_catalog
 装配层:    agent.py (TOOLKITS 注册表)
 编排层:    chat/service | jobs/consolidate | eval/service
-能力层:    memory | timeline | kb | skills | llm(provider+catalog) | tts | asr | notify | search | backup
+能力层:    memory | timeline | kb | skills | attachments | llm(provider+catalog) | tts | asr | notify | search | backup
 后台循环:  整理 ticker | 通知 ticker | 备份 ticker
 基础层:    db | config | settings_store | security | obs | timeutils
 ```

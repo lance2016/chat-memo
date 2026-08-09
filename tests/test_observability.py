@@ -11,6 +11,8 @@ import pytest
 from app.config import Settings
 from app.obs import middleware as obs_middleware
 from app.obs.context import (
+    _json_attribute,
+    add_current_span_event,
     bind,
     current_purpose,
     current_session_id,
@@ -41,6 +43,70 @@ def test_nested_bind_only_overrides_the_fields_it_receives() -> None:
             assert current_purpose() == "title"
         assert current_session_id() == "12"
         assert current_purpose() == "chat"
+
+
+def test_span_event_keeps_only_scalar_decision_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSpan:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, object]]] = []
+
+        def is_recording(self) -> bool:
+            return True
+
+        def add_event(self, name: str, *, attributes: dict[str, object]) -> None:
+            self.events.append((name, attributes))
+
+    span = FakeSpan()
+    monkeypatch.setattr("app.obs.context._current_span", lambda: span)
+
+    add_current_span_event(
+        "notify.tick.skipped",
+        reason="disabled",
+        count=0,
+        detail="开关关闭",
+        ignored=["not exported"],
+    )
+
+    assert span.events == [
+        (
+            "notify.tick.skipped",
+            {"reason": "disabled", "count": 0, "detail": "开关关闭"},
+        )
+    ]
+
+
+def test_llm_payload_replaces_image_bytes_at_the_observability_boundary() -> None:
+    encoded = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="
+    payload = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": encoded,
+                        },
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encoded}"
+                        },
+                    },
+                ],
+            }
+        ]
+    }
+
+    serialized = _json_attribute(payload)
+
+    assert encoded not in serialized
+    assert "image data omitted" in serialized
+    # Observability must never mutate the payload that is subsequently sent.
+    assert payload["messages"][0]["content"][0]["source"]["data"] == encoded
 
 
 def test_json_formatter_is_valid_json_and_strips_ansi() -> None:

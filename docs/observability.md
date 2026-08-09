@@ -230,10 +230,27 @@ opentelemetry-exporter-otlp
 - `OBS_TRACE_HTTP_PATHS` 控制 HTTP 入口白名单，默认只有 `/api/chat` 和手动整理入口；像 `/api/tts/stop`、设置保存、归档等控制请求不建 Phoenix span。需要排查某个入口时再临时追加路径。
 - 手工 span 写入 `openinference.span.kind`，HTTP/任务显示为 `CHAIN`，工具类 span 可显示为 `TOOL`，避免 Phoenix 列表全部变成 `unknown`。
 - LLM span 使用 `openinference.span.kind=LLM`；input/output 以 JSON 写入 `input.value` /
-  `output.value`。trace 中包含完整对话内容，Phoenix retention 和本地端口访问限制必须保持开启。
+  `output.value`。文本和工具内容会保留，图片正文只保留 MIME/大小占位符，不写入完整
+  base64；Phoenix retention 和本地端口访问限制仍必须保持开启。
 - 聊天 SSE 会发送当前完整 `trace_id`。对话顶部显示短码，复制按钮复制完整 ID，打开按钮只打开本机 Phoenix UI；浏览器不直连 Phoenix API，也不接触 collector endpoint。
 - Phoenix 默认绑定 `127.0.0.1`，因为 trace 里包含完整 prompt/response。需要局域网访问时再显式修改 compose 端口绑定。
 - Phoenix compose 已关闭 UI telemetry、外部资源、MCP/MCP code mode 和 Prometheus；本地只保留 UI、OTLP 收集和 SQLite trace 存储。旧 span 不会因新过滤规则消失，需按时间/项目清理，或等待 retention 到期。
+
+### 通知 ticker 的决策记录
+
+`notify.tick` 不只表示「定时器执行过」。每分钟 tick 会在同一个 span 上记录配置、决策和扫描结果，并在 Phoenix 的 Events 面板写入可读事件：
+
+| 字段 / 事件 | 含义 |
+|---|---|
+| `notify.tick.evaluated` | 本轮读取到的通知开关、配置通道和实际可用通道 |
+| `notify.tick.skipped` | 没有执行扫描的原因：`disabled` 或 `no_channel` |
+| `notify.scan_performed` | 是否真正查询了待提醒事项 |
+| `notify.due_candidate_count` | 本轮命中的到点事项数量，受 `notify.due_limit` 限制 |
+| `notify.briefing_*_count` | 今日、逾期、长期待确认事项的数量 |
+| `notify.delivery.completed` | 每条通知的送达通道、尝试次数和失败数量 |
+| `notify.tick.completed` | 本轮最终送达数量，以及 `sent` / `no_match` 决策 |
+
+因此看到 `notify.tick` 但没有子任务时，直接看 Events：如果是 `notify.tick.skipped`，事件里的 `reason` 和 `detail` 就是本轮为什么没有继续；如果执行了扫描，则看 `notify.sweep.completed`、`notify.due.evaluated` 和 `notify.delivery.completed`。
 
 ### 成本核算的一个手工步骤
 
