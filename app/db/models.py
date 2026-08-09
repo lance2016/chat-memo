@@ -290,6 +290,32 @@ class AppSetting(Base):
     )
 
 
+class Skill(Base):
+    """一个已安装技能的**元数据**，正文和附带文件都在磁盘上。
+
+    磁盘是「有哪些技能」的唯一事实来源（见 app/skills/store.py），这张表只回答
+    磁盘回答不了的两个问题：这技能是从哪装的（将来要能更新）、有没有被停用。
+
+    所以**没有行不等于没有技能** —— 手动拷进技能目录的技能没有行，视为已启用、
+    来源为本地。反过来，删除技能时行和目录一起删。
+    """
+
+    __tablename__ = "skills"
+
+    # 技能名就是目录名，天然唯一，不需要再造一个自增 ID
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 安装时用户填的那串来源，原样保留（owner/repo@ref、zip 直链，或 upload）
+    source: Mapped[str] = mapped_column(String(500), default="")
+    ref: Mapped[str] = mapped_column(String(120), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    installed_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class DailyDigest(Base):
     """这一天是什么，每日回顾页的主角。
 

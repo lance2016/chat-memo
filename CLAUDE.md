@@ -115,6 +115,13 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
   `open_loops`，并让模型对 L2 做去重/修正/提炼。
 - `app/kb/` — 可选的 Obsidian vault 只读接入（`VAULT_PATH`），四个 `kb_*` 工具，
   无索引现场扫描，写保护做在 `:ro` 挂载层。
+- `app/skills/` — Agent Skills：磁盘上的技能目录（`SKILLS_PATH`，可写挂载），
+  格式对齐 Anthropic 的 `SKILL.md`。渐进式披露和记忆同构：system prompt 里只有
+  「名字 + 一句话用途」，`skill_read` 读正文，`skill_file` 读附带文件。
+  **磁盘是「有哪些技能」的唯一事实来源**，`skills` 表只存来源和启用状态——
+  没有行不等于没有技能（手动拷进目录的就没有行）。「一个技能是否对模型可见」
+  的判据只有 `service.py` 一处，别在 router 或 agent 里再判一遍。
+  技能只读不执行（这里没有沙箱）；安装只能由人发起，模型没有安装工具。
 - `app/tts/` + `app/asr/` — 本地 mlx-audio 服务的代理；共享一把串行锁。
 - `app/debug/` — 请求快照环形缓冲（进程内存，不落库），配合 `GET /api/debug/requests`
   和 `/api/debug/prompt` 看清每轮真正发出去的 payload。
@@ -149,7 +156,10 @@ Phoenix 链路观测：**默认开启，不需要配任何环境变量**。开�
 - **「一天」按本地时区切**，用 `local_day_bounds`（`app/timeutils.py`）；容器必须设 `TZ`。
 - **记忆/vault 路径来自模型输出**，`validate_path` 的穿越校验不能省；导出成真实文件时再验一次。
 - **记忆索引条目只写主题不写结论**（限 25 字，`tests/test_memory_prompt.py` 钉住），
-  否则渐进式披露退化成全量注入。
+  否则渐进式披露退化成全量注入。技能的 `description` 是同一条纪律（限 500 字）——
+  它是唯一常驻 system prompt 的技能内容。
+- **解压技能包不能用 `extractall`**：它会把 `../` 规范化掉但不拒绝，压缩包里声明的
+  软链也照样跟随。`app/skills/install.py` 逐条自己写，四道闸缺一不可。
 - **搜索是 `pg_trgm` 三元组子串匹配**，不是全文检索；正文冗余在 `messages.search_text` 列上。
 - **TTS 合成必须串行**（MLX 一次只加载一份权重）；朗读文本的清洗和切句在服务端
   （`app/tts/segment.py`），前端按 Markdown 切的位置对不上。

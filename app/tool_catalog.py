@@ -51,8 +51,15 @@ async def list_tools(
                     "category": kit.name,
                     "category_label": kit.label,
                     "enabled": enabled,
+                    "request_enabled": kit.request_enabled,
                     "availability": (
-                        "可用于所有对话" if enabled else kit.disabled_hint or "未启用"
+                        (
+                            "在聊天输入框打开后可用"
+                            if kit.request_enabled
+                            else "可用于所有对话"
+                        )
+                        if enabled
+                        else kit.disabled_hint or "未启用"
                     ),
                     "protocols": protocols,
                     "native_protocol": kit.native_protocol,

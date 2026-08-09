@@ -34,6 +34,16 @@ POST /api/models/default
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
 
+### 第 9 批 · Agent Skills ✅
+
+| 变化 | 前端行为 |
+|---|---|
+| 新增 `/api/skills` 全套接口 | 设置页多一个「技能」分区：安装、启停、查看正文、删除 |
+| 新增 `skill_read` / `skill_file` 模型工具 | 工具目录多一个 `skills` 分类 |
+| 新增可写配置 `skills_enabled`（group=`skills`） | 技能总开关，关掉后模型看不到任何技能 |
+
+技能的设计取舍见 [internals.md](internals.md#技能agent-skills)。
+
 ### 第 8 批 · 时间线 MVP 已实现 ✅
 
 | 变化 | 前端行为 |
@@ -140,12 +150,13 @@ Obsidian 知识库（只读）接入：`.env` 配置 `VAULT_PATH` 后模型多�
 4. [聊天：SSE 流](#聊天sse-流)
 5. [历史消息：必须先规整再渲染](#历史消息必须先规整再渲染) ← **最容易写错的地方**
 6. [记忆](#记忆)
-7. [语音播放](#语音播放)
-8. [自定义指令](#自定义指令)
-9. [调试：看清每次发了什么](#调试看清每次发了什么)
-10. [任务](#任务)
-11. [五个页面](#五个页面)
-12. [TypeScript 类型](#typescript-类型)
+7. [技能](#技能)
+8. [语音播放](#语音播放)
+9. [自定义指令](#自定义指令)
+10. [调试：看清每次发了什么](#调试看清每次发了什么)
+11. [任务](#任务)
+12. [五个页面](#五个页面)
+13. [TypeScript 类型](#typescript-类型)
 
 ---
 
@@ -913,7 +924,7 @@ GET /api/tools
 
 | 字段 | 含义 |
 |---|---|
-| `category` / `category_label` | 分类标识与中文名。当前是 `memory` / `timeline` / `kb` |
+| `category` / `category_label` | 分类标识与中文名。当前是 `memory` / `timeline` / `skills` / `kb` |
 | `enabled` | 本次是否可用。**停用的也会返回**，别过滤掉 |
 | `availability` | 停用时说明怎么开启（例：未启用：设置 VAULT_PATH 并重启后端） |
 | `protocols` | 能跑这个工具的协议，从 provider 注册表推导 |
@@ -925,6 +936,76 @@ GET /api/tools
 > 🔄 字段更名（随工具注册表重构）：`providers` → `protocols`，
 > `native_provider` → `native_protocol`，知识库的 `category` 由 `knowledge` 改为 `kb`。
 > 旧名不再返回。
+
+## 技能
+
+Agent Skills：把某类任务的做法写成 `SKILL.md`，模型判断相关时自己去读。
+渐进式披露和长期记忆同构 —— system prompt 里只有名字和一句话用途，
+正文要模型调 `skill_read` 才拿得到。设计取舍见 [internals.md](internals.md#技能agent-skills)。
+
+```http
+GET    /api/skills              列出全部技能
+GET    /api/skills/{name}       某个技能的详情（含 SKILL.md 正文）
+POST   /api/skills/install      从来源安装 {"source": "...", "overwrite": true}
+POST   /api/skills/upload       上传 zip 安装（multipart，字段名 file）
+PATCH  /api/skills/{name}       启用 / 停用 {"enabled": false}
+DELETE /api/skills/{name}       删除（连同磁盘目录，204）
+```
+
+```json
+{
+  "root": "/skills", "enabled": true, "total": 2, "active": 1,
+  "skills": [{
+    "name": "pdf", "description": "从 PDF 提取文本和表格。需要处理 PDF 文件时使用。",
+    "version": "1.2", "license": "MIT", "allowed_tools": [],
+    "files": ["references/api.md"], "size_bytes": 20480,
+    "enabled": true, "source": "anthropics/skills/document-skills/pdf",
+    "ref": "main", "installed_at": "2026-08-09T10:00:00+08:00", "error": ""
+  }]
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `root` | 技能目录在后端的位置。装不上时第一个要看的就是它 |
+| `enabled`（顶层） | 总开关（`skills_enabled` + `SKILLS_PATH` 都要有）。关掉时技能仍然列出来，只是不进对话 |
+| `active` | 实际会进 system prompt 的数量 = 启用 且 解析正常 |
+| `source` | 安装来源。手动拷进技能目录的显示「本地」 |
+| `error` | 非空 = 这个技能的 `SKILL.md` 解析失败，对模型不可见 |
+| `warning` | 非空 = 装得上但值得说一句（description / 正文超预算）。**不影响可见性**，正常显示技能，附一行提醒即可 |
+
+⚠️ **`error` 非空的技能不要从列表里过滤掉。** 它对模型不可见，但对人必须可见 ——
+让它凭空消失的话，人只会以为没装上然后再装一遍。这类技能的启停开关应该置灰。
+
+**安装来源**支持四种写法，后端统一归一成「一个 zip + 一个子目录」：
+
+```
+anthropics/skills                        仓库，默认分支
+anthropics/skills@main                   指定分支 / tag / commit
+anthropics/skills/document-skills/pdf    仓库里的某个子目录
+https://github.com/owner/repo/tree/main/path
+https://example.com/pack.zip             任意 zip 直链
+```
+
+一个包里有多个 `SKILL.md` 时全部安装（`anthropics/skills` 一次装 18 个）。
+包里有装不了的会**跳过并报出来**，不是整批失败：
+
+```json
+{
+  "installed": [{"name": "pdf", "description": "…", "replaced": false}],
+  "skipped": [{"path": "skills/weird", "reason": "SKILL.md 缺少 description"}]
+}
+```
+
+⚠️ **`skipped` 不要丢掉。** 只显示「装好了 17 个」的话，人不会发现自己想要的那个
+恰好被跳过了 —— 而这正是他来装这一趟的原因。
+
+失败一律是 400，`detail` 是可以直接显示给用户的中文原因
+（看不懂的来源 / 包里没有 SKILL.md / 缺少 description / 压缩包里有越界路径 / 已经装过了）。
+**别把它替换成自己的兜底文案** —— 那句话正是用户排查的唯一线索。
+
+> 技能是第三方写的操作说明，模型会照着做。安装入口只对人开放（模型没有安装工具），
+> 界面上也要提示装之前先看清楚内容。
 
 ## 评测
 
@@ -1699,6 +1780,35 @@ POST /api/jobs/consolidate?day=2026-08-05
 ## TypeScript 类型
 
 ```ts
+/** 🆕 第 9 批：GET /api/skills。正文不在这里 —— 详情接口才给 */
+export interface Skill {
+  name: string;
+  description: string;
+  version: string;
+  license: string;
+  allowed_tools: string[];
+  files: string[];
+  size_bytes: number;
+  enabled: boolean;
+  /** 安装来源；手动拷进技能目录的显示「本地」 */
+  source: string;
+  ref: string;
+  installed_at: string | null;
+  /** 非空 = SKILL.md 解析失败：仍然要列出来，但开关置灰 */
+  error: string;
+  /** 非空 = 装得上但超了上下文预算。不影响可见性，附一行提醒 */
+  warning: string;
+}
+
+export interface SkillCatalog {
+  root: string;
+  enabled: boolean;
+  total: number;
+  /** 实际进 system prompt 的数量 = 启用 且 解析正常 */
+  active: number;
+  skills: Skill[];
+}
+
 export interface Conversation {
   id: number;
   title: string;

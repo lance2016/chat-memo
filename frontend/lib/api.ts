@@ -32,6 +32,10 @@ import type {
   PrepareResult,
   RuntimeSettings,
   SearchResults,
+  Skill,
+  SkillCatalog,
+  SkillDetail,
+  SkillInstallResult,
   SpeechRequest,
   TtsStatus,
   TtsVoices,
@@ -72,7 +76,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   const apiKey = process.env.NEXT_PUBLIC_API_KEY;
   if (apiKey) headers.set("X-API-Key", apiKey);
-  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  // FormData 必须让浏览器自己写 Content-Type —— 手动设成 application/json
+  // 会连 multipart 的 boundary 一起丢掉，后端只会看到一个解析不了的请求体。
+  if (init?.body && !headers.has("Content-Type") && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
 
   let response: Response;
   try {
@@ -194,6 +200,42 @@ export function setDefaultModel(purpose: "chat" | "consolidation", profileId: nu
 
 export function getToolCatalog() {
   return request<ToolCatalog>("/api/tools");
+}
+
+export function listSkills() {
+  return request<SkillCatalog>("/api/skills");
+}
+
+export function getSkill(name: string) {
+  return request<SkillDetail>(`/api/skills/${encodeURIComponent(name)}`);
+}
+
+export function installSkill(source: string, overwrite = true) {
+  return request<SkillInstallResult>("/api/skills/install", {
+    method: "POST",
+    body: JSON.stringify({ source, overwrite }),
+  });
+}
+
+export function uploadSkill(file: File, overwrite = true) {
+  const body = new FormData();
+  body.append("file", file);
+  // 不设 Content-Type：浏览器要自己带 multipart 的 boundary
+  return request<SkillInstallResult>(`/api/skills/upload?overwrite=${overwrite}`, {
+    method: "POST",
+    body,
+  });
+}
+
+export function setSkillEnabled(name: string, enabled: boolean) {
+  return request<Skill>(`/api/skills/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function deleteSkill(name: string) {
+  return request<void>(`/api/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 export function updateRuntimeSettings(changes: Record<string, unknown>) {
@@ -545,6 +587,7 @@ export async function streamChat(
   modelProfileId: number | null,
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
+  webSearchEnabled = false,
 ) {
   const headers = new Headers({ "Content-Type": "application/json" });
   const apiKey = process.env.NEXT_PUBLIC_API_KEY;
@@ -555,7 +598,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId }),
+      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId, web_search: webSearchEnabled }),
       signal,
     });
   } catch (cause) {

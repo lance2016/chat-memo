@@ -3,8 +3,8 @@
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, LoaderCircle, Pencil, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
-import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
+import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, Globe2, LoaderCircle, Pencil, Plus, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2 } from "lucide-react";
+import { apiUrl, errorMessage, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getRuntimeSettings, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
 import type { ChatEvent, Conversation, ConversationContext, ModelCatalog, ToolActivity, Turn, TtsStatus } from "@/lib/types";
@@ -44,7 +44,8 @@ function ToolActivityGroup({ tools }: { tools: (LiveTool | ToolActivity)[] }) {
   const failedCount = tools.filter((tool) => !("status" in tool && tool.status === "running") && !tool.ok).length;
   const knowledgeBaseCount = tools.filter((tool) => tool.name.startsWith("kb_")).length;
   const timelineCount = tools.filter((tool) => tool.name.startsWith("timeline_")).length;
-  const groupName = knowledgeBaseCount === tools.length ? t("chat.tool.knowledge") : timelineCount === tools.length ? t("chat.tool.timeline") : knowledgeBaseCount > 0 || timelineCount > 0 ? t("chat.tool.general") : t("chat.tool.memory");
+  const webSearchCount = tools.filter((tool) => tool.name === "web_search").length;
+  const groupName = webSearchCount === tools.length ? t("chat.tool.webSearch") : knowledgeBaseCount === tools.length ? t("chat.tool.knowledge") : timelineCount === tools.length ? t("chat.tool.timeline") : knowledgeBaseCount > 0 || timelineCount > 0 ? t("chat.tool.general") : t("chat.tool.memory");
   const label = runningCount ? t("chat.tool.runningLabel", { count: tools.length, group: groupName }) : t("chat.tool.doneLabel", { count: tools.length, group: groupName });
   const state = runningCount ? t("chat.tool.runningState", { count: runningCount }) : failedCount ? t("chat.tool.attentionState", { count: failedCount }) : t("chat.tool.done");
 
@@ -156,7 +157,53 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
   </div>;
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange }: {
+function ComposerToolMenu({ enabled, available, disabled, onChange }: { enabled: boolean; available: boolean; disabled: boolean; onChange: (value: boolean) => void }) {
+  const { t } = useI18n();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  const toggleWebSearch = () => {
+    if (!available || disabled) return;
+    onChange(!enabled);
+    setOpen(false);
+  };
+
+  return <div className={`composer-tools ${enabled ? "is-enabled" : ""}`} ref={menuRef}>
+    <button type="button" className="composer-tool-trigger" aria-label={t("chat.webSearch.menu")} title={t("chat.webSearch.menu")} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><Plus size={18} /></button>
+    {enabled && <span className="composer-tool-active"><Globe2 size={12} />{t("chat.webSearch.short")}</span>}
+    {open && <div className="composer-tool-menu" role="menu">
+      <div className="composer-tool-menu-heading">{t("chat.webSearch.menu")}</div>
+      <button type="button" className={`composer-tool-option ${enabled ? "is-selected" : ""}`} role="menuitemcheckbox" aria-checked={enabled} disabled={!available || disabled} onClick={toggleWebSearch}>
+        <span className="composer-tool-option-icon"><Globe2 size={16} /></span>
+        <span className="composer-tool-option-copy"><strong>{t("chat.webSearch.label")}</strong><small>{available ? t("chat.webSearch.description") : t("chat.webSearch.unavailable")}</small></span>
+        <span className={`composer-tool-switch ${enabled ? "is-on" : ""}`} aria-hidden="true"><i /></span>
+      </button>
+    </div>}
+  </div>;
+}
+
+function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange }: {
   conversations: Conversation[];
   input: string;
   memoryCount: number | null;
@@ -172,6 +219,9 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   modelCatalog: ModelCatalog | null;
   modelProfileId: number | null;
   onModelChange: (value: number | null) => void;
+  webSearchEnabled: boolean;
+  webSearchAvailable: boolean;
+  onWebSearchChange: (value: boolean) => void;
 }) {
   const { locale, t } = useI18n();
   const recent = conversations.slice(0, 2);
@@ -188,7 +238,7 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
       {backgroundResponseTitle && <button type="button" className="home-background-stream" onClick={onReturnToResponse}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: backgroundResponseTitle })}</span><ArrowRight size={13} /></button>}
       <form className="home-capture" onSubmit={onSubmit}>
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
-        <div className="home-capture-foot"><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div><div className="home-capture-actions"><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
+        <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} /><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div></div><div className="home-capture-actions"><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={!input.trim() || sending} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
 
       <section className="memory-home-grid">
@@ -364,6 +414,8 @@ export function ChatPage() {
   const [memoryCount, setMemoryCount] = useState<number | null>(null);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] = useState<number | null>(null);
+  const [webSearchAvailable, setWebSearchAvailable] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null);
   const [traceIds, setTraceIds] = useState<Record<number, string>>({});
   const selectedIdRef = useRef<number | null>(selectedId);
@@ -381,6 +433,7 @@ export function ChatPage() {
   useEffect(() => {
     void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
     void getModelCatalog().then(setModelCatalog).catch(() => undefined);
+    void getRuntimeSettings().then((settings) => setWebSearchAvailable(Boolean(settings.web_search_enabled))).catch(() => setWebSearchAvailable(false));
   }, []);
 
   useEffect(() => {
@@ -934,7 +987,7 @@ export function ChatPage() {
       await streamChat(activeConversationId, content, selectedModelProfileId, (event) => {
         if (event.type === "conversation") activeConversationId = event.conversation.id;
         handleEvent(event, activeConversationId);
-      }, controller.signal);
+      }, controller.signal, webSearchEnabled);
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
@@ -1024,7 +1077,7 @@ export function ChatPage() {
   return (
     <div className="app-shell">
       <main className="main-panel">
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} /> : <>
+        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
               <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
@@ -1043,6 +1096,7 @@ export function ChatPage() {
               <textarea ref={composerRef} rows={1} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} placeholder={sending && !streamBelongsToSelection ? t("chat.composer.backgroundPlaceholder") : t("chat.composer.placeholder")} disabled={sending} />
               <div className="composer-bottom">
                 <div className="composer-meta">
+                  <ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={setWebSearchEnabled} />
                   <ContextIndicator context={conversationContext} />
                   <span className="composer-hint">{sending && !streamBelongsToSelection ? t("chat.backgroundHint") : t("chat.sendHint")}</span>
                 </div>

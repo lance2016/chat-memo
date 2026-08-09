@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createConversation: vi.fn(),
   getMemoryStats: vi.fn(),
   getModelCatalog: vi.fn(),
+  getRuntimeSettings: vi.fn(),
   getConversationContext: vi.fn(),
   getTtsStatus: vi.fn(),
   listConversations: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@/lib/api", () => ({
   errorMessage: (_cause: unknown, fallback: string) => fallback,
   getMemoryStats: mocks.getMemoryStats,
   getModelCatalog: mocks.getModelCatalog,
+  getRuntimeSettings: mocks.getRuntimeSettings,
   getConversationContext: mocks.getConversationContext,
   getNextSpeech: vi.fn(),
   getTtsStatus: mocks.getTtsStatus,
@@ -90,6 +92,7 @@ describe("ChatPage streaming lifecycle", () => {
     mocks.createConversation.mockResolvedValue(conversation);
     mocks.getMemoryStats.mockResolvedValue({ total_memories: 0 });
     mocks.getModelCatalog.mockResolvedValue({ purpose: "chat", default_profile_id: null, services: [], profiles: [] });
+    mocks.getRuntimeSettings.mockResolvedValue({ web_search_enabled: true });
     mocks.getConversationContext.mockResolvedValue({ history_chars: 0, history_budget_chars: 120000, retained_messages: 0, retained_turns: 0, trimmed_messages: 0, prompt_tokens: 0, cached_tokens: 0 });
     mocks.getTtsStatus.mockResolvedValue({ mode: "off", enabled: false });
     mocks.stopSpeech.mockResolvedValue({ dropped: 0 });
@@ -112,6 +115,26 @@ describe("ChatPage streaming lifecycle", () => {
     expect(screen.queryByText("服务端标题")).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "选择聊天模型" })).toBeInTheDocument();
     finishStream();
+  });
+
+  it("sends web search only after the composer tool is enabled", async () => {
+    mocks.streamChat.mockResolvedValue(undefined);
+    render(<ChatPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "添加工具" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /联网搜索/ }));
+    const input = await screen.findByPlaceholderText("和我聊聊，或告诉我一件想记住的事……");
+    fireEvent.change(input, { target: { value: "查一下今天的新闻" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledWith(
+      null,
+      "查一下今天的新闻",
+      null,
+      expect.any(Function),
+      expect.any(AbortSignal),
+      true,
+    ));
   });
 
   it("edits a user message in place before resending", async () => {
@@ -150,6 +173,7 @@ describe("ChatPage streaming lifecycle", () => {
       null,
       expect.any(Function),
       expect.any(AbortSignal),
+      false,
     ));
   });
 

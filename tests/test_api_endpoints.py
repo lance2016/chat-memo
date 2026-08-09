@@ -40,12 +40,15 @@ async def test_tool_catalog_exposes_names_descriptions_and_schemas(
     assert response.status_code == 200
     body = response.json()
 
-    assert body["total"] == 8
+    assert body["total"] == 11
     assert {tool["name"] for tool in body["tools"]} == {
         "memory",
         "timeline_list",
         "timeline_create",
         "timeline_update",
+        "skill_read",
+        "skill_file",
+        "web_search",
         "kb_search",
         "kb_read",
         "kb_list",
@@ -79,7 +82,11 @@ async def test_tool_catalog_matches_what_chat_actually_registers(
     registered = {d["function"]["name"] for d in context.executor.openai_definitions}
 
     body = (await client.get("/api/tools")).json()
-    listed = {tool["name"] for tool in body["tools"] if tool["enabled"]}
+    listed = {
+        tool["name"]
+        for tool in body["tools"]
+        if tool["enabled"] and not tool.get("request_enabled", False)
+    }
 
     assert listed == registered
 

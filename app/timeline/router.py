@@ -51,7 +51,8 @@ class TimelineUpdate(BaseModel):
 
 
 class SnoozeRequest(BaseModel):
-    minutes: int = Field(default=30, ge=1, le=7 * 24 * 60)
+    # 0 表示立刻恢复提醒；正数表示从现在起推迟多久。
+    minutes: int = Field(default=30, ge=0, le=7 * 24 * 60)
 
 
 class TimelineOut(BaseModel):

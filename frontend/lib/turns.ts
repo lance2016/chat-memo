@@ -70,6 +70,7 @@ export function toolLabel(tool: Pick<ToolActivity, "name" | "input">) {
   if (tool.name === "timeline_list") return "查看近期时间事项";
   if (tool.name === "timeline_create") return `记录时间事项「${inputValue("title", "新事项")}」`;
   if (tool.name === "timeline_update") return `更新时间事项「${inputValue("title", "已有事项")}」`;
+  if (tool.name === "web_search") return `联网搜索「${inputValue("query", "相关内容")}」`;
 
   const command = typeof tool.input.command === "string" ? tool.input.command : "";
   const path = typeof tool.input.path === "string" ? tool.input.path : "记忆";

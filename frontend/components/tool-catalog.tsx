@@ -32,7 +32,7 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
     </summary>
     <div className="tool-catalog-detail">
       <p className="tool-description">{tool.description}</p>
-      <div className="tool-availability"><span className={tool.enabled ? "online" : ""} />{tool.category === "kb" ? tool.enabled ? t("tools.availability.kbEnabled") : t("tools.availability.kbDisabled") : t("tools.availability.all")}{tool.native_protocol ? ` · ${t("tools.native", { provider: tool.native_protocol })}` : ""}</div>
+      <div className="tool-availability"><span className={tool.enabled ? "online" : ""} />{tool.category === "kb" ? tool.enabled ? t("tools.availability.kbEnabled") : t("tools.availability.kbDisabled") : tool.request_enabled ? t("tools.availability.onDemand") : t("tools.availability.all")}{tool.native_protocol ? ` · ${t("tools.native", { provider: tool.native_protocol })}` : ""}</div>
       <div className="tool-schema-heading"><strong>Input schema</strong><span>{properties.length ? t("tools.requiredCount", { count: required.size }) : t("tools.noInput")}</span></div>
       {properties.length > 0 ? <div className="tool-parameter-list">
         {properties.map(([name, property]) => <div className="tool-parameter-row" key={name}>
@@ -73,7 +73,7 @@ export function ToolCatalog() {
   const groups = useMemo(() => {
     const entries = new Map<string, { label: string; tools: ToolDefinition[] }>();
     for (const tool of catalog?.tools ?? []) {
-      const categoryKey = tool.category === "memory" ? "tools.category.memory" : tool.category === "timeline" ? "tools.category.timeline" : "tools.category.knowledge";
+      const categoryKey = tool.category === "memory" ? "tools.category.memory" : tool.category === "timeline" ? "tools.category.timeline" : tool.category === "skills" ? "tools.category.skills" : tool.category === "web_search" ? "tools.category.webSearch" : "tools.category.knowledge";
       const group = entries.get(tool.category) ?? { label: t(categoryKey), tools: [] };
       group.tools.push(tool);
       entries.set(tool.category, group);

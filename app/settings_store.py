@@ -84,6 +84,9 @@ WRITABLE: tuple[Field, ...] = (
     Field("consolidate_model", "整理专用模型", "str", allow_empty=True),
     # 配了 SILICONFLOW_API_KEY 或旧的 ZHIPU_API_KEY 时生效。
     Field("title_model", "标题专用模型", "str", allow_empty=True),
+    # 技能的总开关。目录位置是挂载点（ENV_ONLY），但「这轮对话要不要带技能」
+    # 是每次装配时重读的，所以可以放在设置页里，关掉立刻生效。
+    Field("skills_enabled", "启用技能", "bool", group="skills"),
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
     Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
@@ -154,6 +157,8 @@ ENV_ONLY = (
     "siliconflow_title_model",
     "zhipu_api_key",
     "zhipu_base_url",
+    "tavily_api_key",
+    "tavily_base_url",
     "api_key",
     "cors_origins",
     "log_level",
@@ -164,6 +169,8 @@ ENV_ONLY = (
     "tts_base_url",
     "tts_model_cache",
     "asr_max_bytes",
+    # 技能目录同 vault：是个挂载点，容器内外写法不同，改数据库不会让挂载变出来
+    "skills_path",
     # 启动期读一次决定要不要建 ticker 任务，改数据库不会生效 —— 放进白名单
     # 只会给出一个「点了没反应」的开关。各任务自己的开关（consolidate_auto /
     # backup_auto / notify_enabled）仍然在设置页，那些是每轮重读的。
@@ -339,6 +346,8 @@ ENV_FIELDS: tuple[EnvField, ...] = (
              "未配置：标题生成退回聊天模型，更慢更贵"),
     EnvField("zhipu_api_key", "智谱密钥", "secret",
              "未配置：仅在没有硅基流动时才会用到"),
+    EnvField("tavily_api_key", "Tavily 搜索密钥", "secret",
+             "未配置：输入框里的联网搜索不可用"),
     # ⚠️ 空值 = 所有 /api 请求完全不校验（见 security.require_api_key）。
     # 单机 localhost 无所谓，暴露到局域网之前必须配 —— roadmap 的暴露面 checklist 第一条。
     EnvField("api_key", "接口访问 Key", "secret",
@@ -349,6 +358,8 @@ ENV_FIELDS: tuple[EnvField, ...] = (
     EnvField("siliconflow_base_url", "硅基流动地址"),
     EnvField("siliconflow_title_model", "标题模型"),
     EnvField("zhipu_base_url", "智谱地址"),
+    EnvField("tavily_base_url", "Tavily 地址"),
+    EnvField("skills_path", "技能目录", "plain", "未配置：技能功能整体关闭"),
     EnvField("tts_base_url", "语音服务地址"),
     EnvField("tts_model_cache", "语音模型缓存"),
     EnvField("asr_max_bytes", "录音大小上限"),

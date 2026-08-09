@@ -2,22 +2,24 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
+import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, Package, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
 import { apiBaseLabel, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
 import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { AsrStatus, EnvFieldStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { ObservabilityCard } from "@/components/observability-card";
+import { SkillsPanel } from "@/components/skills-panel";
 import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
 
-type SettingsSectionKey = "general" | "assistant" | "model" | "review" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
+type SettingsSectionKey = "general" | "assistant" | "model" | "skills" | "review" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
 
 const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
   { key: "general", icon: SlidersHorizontal },
   { key: "assistant", icon: UserRound },
   { key: "model", icon: BrainCircuit },
+  { key: "skills", icon: Package },
   { key: "review", icon: Clock3 },
   { key: "notify", icon: BellRing },
   { key: "voice", icon: Headphones },
@@ -64,6 +66,7 @@ const fieldHelp: Record<string, string> = {
   asr_language: "固定语言可省去自动判断；中英混说时选择自动检测",
   asr_max_tokens: "短语音建议保持 512，降低静音或噪声导致的异常长识别",
   asr_timeout: "语音识别服务单次请求最长等待时间",
+  skills_enabled: "关掉后模型看不到任何技能；已装的技能不会被删",
   debug_prompts: "临时保存最近请求，可能包含完整对话原文",
 };
 
@@ -491,6 +494,7 @@ export function SettingsPage() {
   const notifyFields = useMemo(() => activeFields.filter((field) => field.group === "notify"), [activeFields]);
   const notifyChannelFields = useMemo(() => notifyFields.filter((field) => notifyChannelFieldKeys.has(field.key)), [notifyFields]);
   const notifyTimingFields = useMemo(() => notifyFields.filter((field) => !notifyChannelFieldKeys.has(field.key)), [notifyFields]);
+  const skillFields = useMemo(() => activeFields.filter((field) => field.group === "skills"), [activeFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
   const changedKeys = useMemo(() => Array.from(new Set([
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
@@ -760,6 +764,16 @@ export function SettingsPage() {
               <SettingsVisualGroup icon={Gauge} title="回答与工具限制" description="输出上限、标题模型和最大工具次数" tone="warm">{modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}</SettingsVisualGroup>
               <ModelServicesPanel />
             </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
+          </section>}
+
+          {activeSection === "skills" && <section className="settings-card settings-panel-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">SKILLS</span><h2>技能</h2><p>把某类任务的做法装成说明书，模型判断相关时自己去读。</p></div><Package size={17} /></div>
+            <SettingsVisualGroup icon={Package} title="技能开关" description="关掉后模型看不到任何技能，已装的技能不会被删" tone="neutral">
+              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能设置…</div> : skillFields.length ? renderRuntimeFields(skillFields) : <div className="settings-empty">当前后端没有提供技能配置。</div>}
+            </SettingsVisualGroup>
+            <SettingsVisualGroup icon={Download} title="已安装的技能" description="从 GitHub 安装、上传 zip，或直接把技能目录拷进技能目录" tone="accent">
+              <SkillsPanel />
+            </SettingsVisualGroup>
           </section>}
 
           {activeSection === "review" && <section className="settings-card settings-panel-card">

@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     zhipu_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     title_model: str = "glm-4.7-flash"
 
+    # 联网搜索只在用户在输入框里打开时启用。Key 只留在后端环境变量中，不下发浏览器。
+    tavily_api_key: str = ""
+    tavily_base_url: str = "https://api.tavily.com"
+
     # 自动每日整理默认关闭：进程一重启计时器就从头开始，笔记本凌晨多半是睡眠状态，
     # 这个定时器很容易整天不触发。手动 POST /api/jobs/consolidate 更可靠。
     # 自动备份。补跑式（查「今天备份过没有」），不做精确定时 —— 笔记本凌晨在睡眠，
@@ -127,6 +131,15 @@ class Settings(BaseSettings):
     # 记录每次发给模型的完整请求体，供 /api/debug/requests 查、日志里打轮廓。
     # 默认关：开着会把完整对话历史留在进程内存里。
     debug_prompts: bool = False
+
+    # ---- Agent Skills ----
+    # 技能目录（compose 把宿主机 ./skills 可写挂到 /skills）。和 vault 不同，这个
+    # 必须可写 —— 安装技能就是往里面解压目录。留空 = 整个技能功能关闭。
+    # 是挂载点，所以只能改 .env。
+    skills_path: str = "skills"
+    # 技能总开关。装了一堆技能但想临时看看「不带技能时模型怎么答」时用；
+    # 也是出问题时的第一道止血阀（某个技能的说明把模型带偏了）。
+    skills_enabled: bool = True
 
     # Obsidian vault 的挂载点（compose 把宿主机 VAULT_PATH 只读挂到 /vault 并注入本值）。
     # 留空 = 不启用知识库工具。基础设施配置，只能改 .env —— 挂载点本来就要改 compose 才能变。

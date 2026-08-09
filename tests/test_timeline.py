@@ -212,6 +212,18 @@ async def test_snooze_endpoint(session: AsyncSession) -> None:
         assert snoozed.status_code == 200
         assert snoozed.json()["snoozed_until"] is not None
 
+        immediate = await client.post(f"/api/timeline/{item_id}/snooze", json={"minutes": 0})
+        assert immediate.status_code == 200
+        assert immediate.json()["notify"] is True
+        immediate_until = dt.datetime.fromisoformat(immediate.json()["snoozed_until"].replace("Z", "+00:00"))
+        if immediate_until.tzinfo is None:
+            immediate_until = immediate_until.replace(tzinfo=dt.UTC)
+        assert immediate_until <= dt.datetime.now(dt.UTC)
+        immediate_remind_at = dt.datetime.fromisoformat(immediate.json()["remind_at"].replace("Z", "+00:00"))
+        if immediate_remind_at.tzinfo is None:
+            immediate_remind_at = immediate_remind_at.replace(tzinfo=dt.UTC)
+        assert immediate_remind_at <= dt.datetime.now(dt.UTC)
+
         # 关掉提醒后 remind_at 必须清空 —— 留着旧值 ticker 还会扫到。
         muted = await client.patch(f"/api/timeline/{item_id}", json={"notify": False})
         assert muted.json()["remind_at"] is None

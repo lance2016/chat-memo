@@ -33,6 +33,7 @@ from app.obs.tracing import apply_tracing
 from app.review.router import router as review_router
 from app.security import require_api_key
 from app.settings_store import resolve_settings
+from app.skills.router import router as skills_router
 from app.timeline.router import router as timeline_router
 from app.tool_catalog import router as tool_catalog_router
 from app.tts.client import warmup
@@ -164,6 +165,7 @@ def create_app() -> FastAPI:
     app.include_router(review_router)
     app.include_router(timeline_router)
     app.include_router(notify_router)
+    app.include_router(skills_router)
     app.include_router(tool_catalog_router)
     app.include_router(model_router)
     app.include_router(jobs_router)

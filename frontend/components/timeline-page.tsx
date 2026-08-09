@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AlarmClockOff, BellOff, BellRing, CalendarCheck2, CalendarDays, Check, CheckCircle2, CircleDashed, Clock3, MapPin, Pencil, Plus, RefreshCw, Timer, Trash2, TriangleAlert, X } from "lucide-react";
 import { createTimelineItem, deleteTimelineItem, errorMessage, listTimeline, snoozeTimelineItem, updateTimelineItem } from "@/lib/api";
@@ -17,8 +17,8 @@ const timelineKindGroups = [
   { label: "timeline.kindGroup.records" as const, values: ["note"] as TimelineKind[] },
 ];
 
-// 「稍后提醒」的可选时长。三档覆盖「马上回来」「忙完这阵」「明天再说」。
-const snoozeChoices = [15, 60, 24 * 60];
+// 「稍后提醒」的快捷时长。保留快捷选择，同时把精确时间交给自定义选择器。
+const snoozeChoices = [0, 5, 15, 30, 60, 24 * 60];
 
 function startOfDay(value = new Date()) {
   return new Date(value.getFullYear(), value.getMonth(), value.getDate());
@@ -38,6 +38,13 @@ function dateKey(value: Date | string) {
 
 function inputDateTime(value: Date) {
   return `${dateKey(value)}T${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}`;
+}
+
+function snoozeChoiceLabel(minutes: number, t: (key: TranslationKey, values?: TranslationValues) => string) {
+  if (minutes === 0) return t("timeline.snoozeNow");
+  if (minutes < 60) return t("timeline.minutes", { count: minutes });
+  if (minutes < 24 * 60) return t("timeline.hours", { count: minutes / 60 });
+  return t("timeline.days", { count: minutes / (24 * 60) });
 }
 
 // 每年重复的事项会被后端展开成多个「occurrence」，它们共用同一个 id。
@@ -90,6 +97,61 @@ function leadLabel(item: TimelineItem, t: (key: TranslationKey, values?: Transla
   return t("timeline.remindBefore", { value: t("timeline.days", { count: Math.round(minutes / (24 * 60)) }) });
 }
 
+function TimelineSnoozeMenu({ busy, onSnooze }: {
+  busy: boolean;
+  onSnooze: (minutes: number) => void;
+}) {
+  const { t } = useI18n();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customAt, setCustomAt] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const choose = (minutes: number) => {
+    onSnooze(minutes);
+    setOpen(false);
+    setCustomOpen(false);
+  };
+
+  const chooseCustom = () => {
+    if (customMinutes === null || !Number.isFinite(customMinutes) || customMinutes < 0 || customMinutes > 7 * 24 * 60) return;
+    choose(customMinutes);
+  };
+
+  const now = new Date();
+  const max = addDays(now, 7);
+  const customMinutes = customAt ? Math.ceil((new Date(customAt).getTime() - Date.now()) / 60000) : null;
+  const customTimeValid = customMinutes !== null && Number.isFinite(customMinutes) && customMinutes >= 0 && customMinutes <= 7 * 24 * 60;
+  return <div className={`timeline-snooze ${open ? "is-open" : ""}`} ref={menuRef}>
+    <button type="button" disabled={busy} title={t("timeline.snooze")} aria-label={t("timeline.snooze")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((current) => !current)}><Timer size={13} /></button>
+    {open && <div className="timeline-snooze-menu" role="menu">
+      <div className="timeline-snooze-heading">{t("timeline.snooze")}</div>
+      {snoozeChoices.map((minutes) => <button type="button" role="menuitem" key={minutes} onClick={() => choose(minutes)} disabled={busy}>{snoozeChoiceLabel(minutes, t)}</button>)}
+      <div className="timeline-snooze-divider" />
+      {!customOpen ? <button type="button" role="menuitem" className="timeline-snooze-custom-trigger" onClick={() => { setCustomOpen(true); setCustomAt(inputDateTime(now)); }} disabled={busy}>{t("timeline.snoozeCustom")}</button> : <div className="timeline-snooze-custom">
+        <label><span>{t("timeline.snoozeCustomLabel")}</span><input type="datetime-local" value={customAt} min={inputDateTime(now)} max={inputDateTime(max)} onChange={(event) => setCustomAt(event.target.value)} autoFocus /></label>
+        <div><button type="button" className="timeline-snooze-cancel" onClick={() => setCustomOpen(false)}>{t("common.cancel")}</button><button type="button" className="timeline-snooze-confirm" onClick={chooseCustom} disabled={!customTimeValid}>{t("common.confirm")}</button></div>
+      </div>}
+    </div>}
+  </div>;
+}
+
 function TimelineCard({ item, busy, overdue, onStatus, onSnooze, onToggleNotify, onEdit, onDelete }: {
   item: TimelineItem;
   busy: boolean;
@@ -116,7 +178,7 @@ function TimelineCard({ item, busy, overdue, onStatus, onSnooze, onToggleNotify,
     <div className="timeline-item-actions">
       {item.status === "pending" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.confirm")}><Check size={14} /></button>}
       {!done && <button onClick={() => onStatus("completed")} disabled={busy} title={t("timeline.complete")}><CheckCircle2 size={14} /></button>}
-      {!done && <div className="timeline-snooze"><button disabled={busy} title={t("timeline.snooze")}><Timer size={13} /></button><div className="timeline-snooze-menu">{snoozeChoices.map((minutes) => <button key={minutes} onClick={() => onSnooze(minutes)} disabled={busy}>{minutes < 60 ? t("timeline.minutes", { count: minutes }) : minutes < 24 * 60 ? t("timeline.hours", { count: minutes / 60 }) : t("timeline.days", { count: minutes / (24 * 60) })}</button>)}</div></div>}
+      {!done && <TimelineSnoozeMenu busy={busy} onSnooze={onSnooze} />}
       {!done && <button onClick={onToggleNotify} disabled={busy} title={item.remind_at ? t("timeline.muteRemind") : t("timeline.unmuteRemind")}>{item.remind_at ? <AlarmClockOff size={13} /> : <BellRing size={13} />}</button>}
       <button onClick={onEdit} disabled={busy} title={t("timeline.edit")}><Pencil size={13} /></button>
       {item.status === "completed" && <button onClick={() => onStatus("confirmed")} disabled={busy} title={t("timeline.reopen")}><RefreshCw size={13} /></button>}

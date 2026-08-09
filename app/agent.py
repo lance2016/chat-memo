@@ -36,8 +36,13 @@ from app.llm.target import ModelTarget
 from app.memory.prompt import build_system_prompt
 from app.memory.store import MemoryStore
 from app.memory.tool import MemoryToolExecutor
+from app.settings_store import is_configured
+from app.skills.service import active_entries, get_store
+from app.skills.store import SkillEntry
+from app.skills.tool import SkillToolExecutor
 from app.timeline.store import TimelineStore
 from app.timeline.tool import TimelineToolExecutor
+from app.web_search import WebSearchToolExecutor
 
 # chat = 用户对话；consolidation = 每日整理。
 # 整理的输入是对话摘要，用不上知识库和时间线 —— 提示词里提了工具却不注册，模型会困惑。
@@ -53,6 +58,9 @@ class _Deps:
     store: MemoryStore
     actor: str
     conversation_id: int | None
+    # 本次可见的技能。要先查数据库和扫磁盘才知道，所以是装配时算好传进来的，
+    # 不能让 build 函数自己去查 —— build 是同步的
+    skills: tuple[SkillEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,8 @@ class Toolkit:
     enabled: Callable[[Settings], bool] = lambda _settings: True
     # 停用时怎么开启。`enabled` 恒真的工具留空
     disabled_hint: str = ""
+    # 只在用户从输入框明确打开时注册；默认不消耗搜索额度，也不让模型猜测要不要联网。
+    request_enabled: bool = False
     # 该工具在某个协议上是模型的原生能力（Anthropic 的 memory 工具），
     # 其他协议下靠手写 schema 顶上，模型表现会有差别，值得在目录里标出来
     native_protocol: str | None = None
@@ -102,6 +112,19 @@ TOOLKITS: tuple[Toolkit, ...] = (
         purposes=frozenset({"chat"}),
     ),
     Toolkit(
+        name="skills",
+        label="技能",
+        build=lambda deps: SkillToolExecutor(
+            get_store(deps.settings),
+            frozenset(skill.name for skill in deps.skills),
+        ),
+        # 整理任务不带技能：它的输入是当天对话摘要，做的是固定的一件事。
+        # 把技能塞进去只会让整理跑偏，而整理写的是长期记忆，跑偏的代价是持久的。
+        purposes=frozenset({"chat"}),
+        enabled=lambda settings: bool(settings.skills_path) and settings.skills_enabled,
+        disabled_hint="未启用：在设置页打开技能，或配置 SKILLS_PATH",
+    ),
+    Toolkit(
         name="kb",
         label="知识库",
         build=lambda deps: KbToolExecutor(
@@ -111,6 +134,18 @@ TOOLKITS: tuple[Toolkit, ...] = (
         # vault 没挂载时整段功能关闭：工具不注册，提示词也不提
         enabled=lambda settings: bool(settings.vault_path),
         disabled_hint="未启用：设置 VAULT_PATH 并重启后端",
+    ),
+    Toolkit(
+        name="web_search",
+        label="联网搜索",
+        build=lambda deps: WebSearchToolExecutor(
+            deps.settings.tavily_api_key,
+            deps.settings.tavily_base_url,
+        ),
+        purposes=frozenset({"chat"}),
+        enabled=lambda settings: is_configured(settings.tavily_api_key),
+        disabled_hint="未启用：在 .env 设置 TAVILY_API_KEY 并重启后端",
+        request_enabled=True,
     ),
 )
 
@@ -128,11 +163,15 @@ class AgentContext:
     toolkits: tuple[str, ...] = field(default_factory=tuple)
 
 
-def active_toolkits(settings: Settings, purpose: Purpose) -> tuple[Toolkit, ...]:
+def active_toolkits(
+    settings: Settings, purpose: Purpose, *, web_search: bool = False
+) -> tuple[Toolkit, ...]:
     return tuple(
         kit
         for kit in TOOLKITS
-        if purpose in kit.purposes and kit.enabled(settings)
+        if purpose in kit.purposes
+        and kit.enabled(settings)
+        and (not kit.request_enabled or web_search)
     )
 
 
@@ -172,6 +211,7 @@ async def build_agent_context(
     purpose: Purpose = "chat",
     conversation_id: int | None = None,
     actor: str = "",
+    web_search: bool = False,
 ) -> AgentContext:
     """装配一次 agent 运行。
 
@@ -184,16 +224,22 @@ async def build_agent_context(
     target = target or ModelTarget.from_settings(settings)
     actor = actor or ("chat" if purpose == "chat" else "consolidation")
     store = MemoryStore(session, actor=actor, conversation_id=conversation_id)
+
+    kits = active_toolkits(settings, purpose, web_search=web_search)
+    names = tuple(kit.name for kit in kits)
+    # 技能清单同时喂给工具（决定 skill_read 认哪些名字）和 system prompt（第 0 层），
+    # 必须是同一份：两边分别查一次的话，中间安装一个技能就会出现「提示词里有、
+    # 工具却说没这个技能」。
+    skills = await active_entries(session, settings) if "skills" in names else ()
+
     deps = _Deps(
         session=session,
         settings=settings,
         store=store,
         actor=actor,
         conversation_id=conversation_id,
+        skills=skills,
     )
-
-    kits = active_toolkits(settings, purpose)
-    names = tuple(kit.name for kit in kits)
     executor = CompositeExecutor(*(kit.build(deps) for kit in kits))
 
     # 提示词开哪几段，直接由「实际注册了哪些工具」决定，不是另写一份布尔参数。
@@ -202,6 +248,8 @@ async def build_agent_context(
         settings,
         include_kb="kb" in names,
         include_timeline="timeline" in names,
+        include_web_search="web_search" in names,
+        skills=skills,
     )
     return AgentContext(
         provider=provider or get_provider(settings, target=target),

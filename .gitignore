@@ -41,3 +41,8 @@ backups/
 
 # 评测产出：每次跑都会新增，不进版本库
 eval-runs/
+
+# ---- 技能 ----
+# 技能装在这里，属于本机数据，不进版本库（README 除外）。
+skills/*
+!skills/README.md

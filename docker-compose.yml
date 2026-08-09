@@ -88,6 +88,8 @@ services:
       # 宿主机设置了 VAULT_PATH 才启用知识库；:+ 表示「有值就替换成容器内挂载点」，
       # 否则为空串 —— 同时覆盖掉 env_file 里的宿主机路径，容器内那个路径不存在。
       VAULT_PATH: ${VAULT_PATH:+/vault}
+      # 技能目录。和 vault 不同，这个是**可写**挂载 —— 安装技能就是往里解压目录。
+      SKILLS_PATH: /skills
     # Docker Desktop 自带这个域名，Linux 上要显式映射到网关才解析得了
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -116,6 +118,9 @@ services:
       # Obsidian vault 只读挂载（写保护做在挂载层，不依赖 prompt 约束）。
       # 未设置 VAULT_PATH 时挂个空占位目录，此时容器内 VAULT_PATH 为空、功能整体关闭。
       - ${VAULT_PATH:-./.vault-placeholder}:/vault:ro
+      # 技能装在宿主机目录里，容器重建不会丢，也能直接用编辑器改 SKILL.md。
+      # 必须可写：安装 = 下载 zip 后往这里解压。
+      - ${SKILLS_HOST_DIR:-./skills}:/skills
       - ${HOME}/.cache/huggingface/hub:/hf-cache:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)\""]

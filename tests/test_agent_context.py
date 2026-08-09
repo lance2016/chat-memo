@@ -46,6 +46,21 @@ async def test_prompt_sections_follow_the_registered_tools(session: AsyncSession
     assert "# 知识库" not in context.system
 
 
+async def test_web_search_is_opt_in_per_agent_run(session: AsyncSession) -> None:
+    configured = _settings(tavily_api_key="tvly-test")
+    without_toggle = await build_agent_context(
+        session, settings=configured, purpose="chat", conversation_id=1
+    )
+    with_toggle = await build_agent_context(
+        session, settings=configured, purpose="chat", conversation_id=1, web_search=True
+    )
+
+    assert "web_search" not in without_toggle.toolkits
+    assert "# 联网搜索" not in without_toggle.system
+    assert "web_search" in with_toggle.toolkits
+    assert "# 联网搜索" in with_toggle.system
+
+
 async def test_kb_is_all_or_nothing(session: AsyncSession, tmp_path) -> None:
     """挂了 vault 就工具和提示词一起出现；两者永远同进同退。"""
     context = await build_agent_context(

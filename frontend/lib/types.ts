@@ -58,6 +58,8 @@ export interface RuntimeSettings {
   thinking_toggle: boolean;
   /** 是否已挂载只读知识库（由后端 VAULT_PATH 决定）。 */
   kb_enabled?: boolean;
+  /** 后端是否已配置 Tavily；Key 本身永远不下发。 */
+  web_search_enabled?: boolean;
   values: Record<string, unknown>;
   sources: Record<string, "db" | "env" | "default">;
   fields: RuntimeSettingField[];
@@ -127,6 +129,7 @@ export interface ToolDefinition {
   category: string;
   category_label: string;
   enabled: boolean;
+  request_enabled?: boolean;
   availability: string;
   /** 能跑这个工具的协议，从后端 provider 注册表推导（不再是写死的厂商名） */
   protocols: string[];
@@ -138,6 +141,47 @@ export interface ToolCatalog {
   total: number;
   enabled: number;
   tools: ToolDefinition[];
+}
+
+/** 一个已安装的技能。正文不在这里 —— 详情页才按需拉（后端也是同一套渐进式披露）。 */
+export interface Skill {
+  name: string;
+  description: string;
+  version: string;
+  license: string;
+  allowed_tools: string[];
+  files: string[];
+  size_bytes: number;
+  enabled: boolean;
+  /** 安装来源；手动拷进技能目录的显示「本地」 */
+  source: string;
+  ref: string;
+  installed_at: string | null;
+  /** 非空表示这个技能的 SKILL.md 解析失败：仍然列出来，但模型看不到它 */
+  error: string;
+  /** 装得上但值得说一句的问题（如 description 超预算）。不影响可见性 */
+  warning: string;
+}
+
+export interface SkillDetail extends Skill {
+  body: string;
+}
+
+export interface SkillCatalog {
+  root: string;
+  /** 总开关。关掉时技能仍然列出来，只是不进对话 */
+  enabled: boolean;
+  total: number;
+  /** 实际会进 system prompt 的数量（启用 + 解析正常） */
+  active: number;
+  skills: Skill[];
+}
+
+export interface SkillInstallResult {
+  installed: Array<{ name: string; description: string; replaced: boolean }>;
+  /** 包里有 SKILL.md 但装不了的。**别丢掉** —— 只说「装好了 17 个」的话，
+   *  人不会发现自己想要的那个恰好被跳过了 */
+  skipped: Array<{ path: string; reason: string }>;
 }
 
 export interface BackupResult {

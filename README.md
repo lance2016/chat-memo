@@ -19,6 +19,7 @@
   <a href="#功能">功能</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#配置边界">配置边界</a> ·
+  <a href="#技能agent-skills">技能</a> ·
   <a href="docs/roadmap.md">开发路线</a>
 </p>
 
@@ -33,6 +34,8 @@
 | 🗓️ 时间线 | 从对话提取待办和提醒，支持重复事项与 Bark 通知 |
 | 🧩 模型服务 | 将“服务地址”和“模型档案”分离管理，支持 Anthropic、OpenAI 兼容服务，并可在设置页添加、测试和切换 |
 | 🎙️ 本地能力 | 可选的本地 TTS/ASR，以及只读 Obsidian vault 知识库 |
+| 🌐 联网搜索 | 在聊天输入框按需开启 Tavily 搜索；默认关闭，Key 只保留在后端环境变量中 |
+| 🧰 Agent Skills | 从设置页安装、上传、查看、启停和删除技能；也支持直接把本地技能目录放入 `skills/` |
 | 🔭 开发工具 | 可选 Phoenix/OpenTelemetry 观测，以及可重复运行的记忆整理评测 |
 
 ```mermaid
@@ -51,6 +54,7 @@ flowchart LR
 ```bash
 cp .env.example .env
 # 编辑 .env：填写数据库配置和至少一个模型服务的 API Key
+# 如果要使用联网搜索，再填写：TAVILY_API_KEY=tvly-...
 docker compose up -d --build
 ```
 
@@ -62,6 +66,9 @@ docker compose up -d --build
 | <http://localhost:18000/health> | API 健康检查 |
 
 模型服务、具体模型、助手规则、记忆整理、通知和语音偏好，请在设置页配置。
+
+如果配置了 `TAVILY_API_KEY`，聊天输入框左下角的「+」菜单会出现「联网搜索」。它默认关闭，
+打开后只对发送请求显式启用，关闭即可停止后续搜索；搜索 Key 不会返回给浏览器或模型。
 
 常用命令：
 
@@ -82,6 +89,46 @@ docker compose exec api pytest -q
 
 模型服务在设置页保存服务协议、地址、模型 ID 和凭据引用；真正的密钥值仍只放在 `.env`，不会写入数据库。
 
+## 技能（Agent Skills）
+
+技能是放在磁盘上的任务说明书。模型平时只看到技能的名称和一句话用途，判断任务相关后才读取
+`SKILL.md` 正文；正文点名的参考资料再按需读取。技能里的脚本只会作为文本查看，不会在后端执行。
+
+### 使用技能
+
+在设置页进入「技能」可以：
+
+- 从 `owner/repo`、GitHub 子目录、指定分支或 `.zip` 直链安装；
+- 上传本地 `.zip`；
+- 查看 `SKILL.md`、启用/停用技能，或从磁盘删除技能。
+
+也可以直接把技能目录放进本地 `skills/`。最小结构如下：
+
+```text
+skills/
+└── meeting-notes/
+    └── SKILL.md
+```
+
+`SKILL.md` 必须以 YAML frontmatter 开头，且 `name` 要和目录名一致：
+
+```markdown
+---
+name: meeting-notes
+description: 整理会议记录并提炼行动项。需要处理会议笔记时使用。
+version: "1.0"
+---
+
+# 会议记录整理
+
+在这里写具体步骤和注意事项。
+```
+
+Docker 默认把宿主机 `./skills` 挂载到容器 `/skills`。如果技能放在其他目录，在 `.env` 设置
+`SKILLS_HOST_DIR=/你的技能目录`；技能总开关可以在设置页控制。`skills/` 中的本地技能属于运行数据，
+默认不会提交到 Git，完整约定见 [`skills/README.md`](skills/README.md) 和
+[`docs/internals.md`](docs/internals.md#技能agent-skills)。
+
 ## 近期计划
 
 - [ ] 增加独立 worker，执行记忆整理、通知、备份等后台任务
@@ -97,6 +144,7 @@ docker compose exec api pytest -q
 - [后端架构](docs/architecture.md)
 - [内部机制](docs/internals.md)：记忆、工具调用和后台流程的实现说明
 - [前端与 API 契约](docs/frontend-api.md)：前后端接口和模型选择约定
+- [技能目录说明](skills/README.md)：本地技能目录的基本约定
 - [时间线设计](docs/timeline.md)：事项提取、重复规则和通知边界
 - [可观测性](docs/observability.md)
 - [备份与恢复](docs/backup.md) · [评测](docs/evaluation.md)：调试链路与记忆质量评估

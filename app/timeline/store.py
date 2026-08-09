@@ -195,12 +195,18 @@ class TimelineStore:
         return item
 
     async def snooze(self, item_id: int, minutes: int) -> TimelineItem:
-        if minutes < 1 or minutes > 7 * 24 * 60:
-            raise TimelineError("推迟时长必须在 1 分钟到 7 天之间")
+        if minutes < 0 or minutes > 7 * 24 * 60:
+            raise TimelineError("推迟时长必须在 0 分钟到 7 天之间")
         item = await self.get(item_id)
         if item.status in ("completed", "cancelled"):
             raise TimelineError("已完成或已取消的事项不需要推迟")
-        item.snoozed_until = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=minutes)
+        now = dt.datetime.now(dt.UTC)
+        item.snoozed_until = now + dt.timedelta(minutes=minutes)
+        if minutes == 0:
+            # 「立即提醒」必须把实际提醒时刻也拉到现在；否则未来事项仍会被 remind_at 挡住。
+            # 用户明确选择了立即提醒时，顺便恢复这条事项的通知开关。
+            item.notify = True
+            item.remind_at = now
         await self.session.flush()
         return item
 

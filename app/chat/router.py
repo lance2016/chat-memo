@@ -31,6 +31,7 @@ from app.settings_store import (
     SettingError,
     apply,
     describe,
+    is_configured,
     load_overrides,
     resolve_settings,
 )
@@ -46,6 +47,8 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=1)
     # 选择器传入的模型。保存到会话后，后续消息默认继续使用它。
     model_profile_id: int | None = None
+    # 只影响这一轮；默认关闭，避免模型在用户没有明确要求时访问外网。
+    web_search: bool = False
 
 
 class ConversationOut(BaseModel):
@@ -91,6 +94,8 @@ async def get_runtime_settings(
         "thinking_toggle": True,
         # 知识库（Obsidian vault）是否挂载。只读状态位 —— vault_path 是 .env 配置，设置页改不了
         "kb_enabled": bool(settings.vault_path),
+        # 只返回能力状态，不返回 Tavily Key 本身。
+        "web_search_enabled": is_configured(settings.tavily_api_key),
     }
 
 
@@ -535,6 +540,9 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
 
                 # 每轮重新解析：设置页改完不用重启就能生效。会话选择优先于全局默认。
                 settings = await resolve_settings(session)
+                if payload.web_search and not is_configured(settings.tavily_api_key):
+                    yield _sse({"type": "error", "message": "联网搜索未配置，请在后端 .env 设置 TAVILY_API_KEY 后重启服务"})
+                    return
                 target = await resolve_model_target(
                     session,
                     settings,
@@ -554,6 +562,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     target=target,
                     purpose="chat",
                     conversation_id=conversation.id,
+                    web_search=payload.web_search,
                 )
                 service = ChatService(
                     session=session,
