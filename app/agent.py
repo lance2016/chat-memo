@@ -177,6 +177,15 @@ TOOLKITS: tuple[Toolkit, ...] = (
 )
 
 
+def _disabled_toolkits(settings: Settings) -> frozenset[str]:
+    """用户主动关闭的工具组；未知名称忽略，便于未来增删工具而不破坏旧配置。"""
+    return frozenset(
+        name.strip()
+        for name in str(getattr(settings, "toolkits_disabled", "") or "").split(",")
+        if name.strip()
+    )
+
+
 @dataclass(frozen=True)
 class AgentContext:
     """一次 agent 运行的全部输入。"""
@@ -201,6 +210,7 @@ def active_toolkits(
         kit
         for kit in TOOLKITS
         if purpose in kit.purposes
+        and kit.name not in _disabled_toolkits(settings)
         and kit.enabled(settings, target)
         and (not kit.request_enabled or web_search)
     )
@@ -226,8 +236,9 @@ def describe_toolkits(
         actor="manual",
         conversation_id=None,
     )
+    disabled = _disabled_toolkits(settings)
     return [
-        (kit, kit.enabled(settings, None), kit.build(deps))
+        (kit, kit.name not in disabled and kit.enabled(settings, None), kit.build(deps))
         for kit in TOOLKITS
         if purpose in kit.purposes
     ]

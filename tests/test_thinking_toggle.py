@@ -1,7 +1,7 @@
 """思考开关：全局默认 + 会话级覆盖。
 
-DeepSeek 用 `thinking: {"type": "disabled"}` 关闭（和 Anthropic 同形状）；
-`reasoning_effort` 会被静默忽略，别用。实测关掉后工具调用仍正常。
+DeepSeek 的开关通过 ``extra_body.thinking`` 传入；开启时同时发送官方支持的
+``reasoning_effort=low/high/max``，关闭时不能残留 effort。
 """
 
 from collections.abc import AsyncIterator
@@ -62,7 +62,7 @@ def deepseek_with_recorder() -> tuple[DeepSeekProvider, RecordingCompletions]:
     client = AsyncOpenAI(api_key="test", base_url="http://localhost")
     client.chat.completions = recorder  # type: ignore[assignment]
     provider = DeepSeekProvider(
-        settings=Settings(deepseek_api_key="test"), client=client
+        settings=Settings(provider="deepseek", deepseek_api_key="test"), client=client
     )
     return provider, recorder
 
@@ -79,11 +79,12 @@ async def drain(provider: Any, **kwargs: Any) -> None:
 # ---------- DeepSeek ----------
 
 
-async def test_thinking_on_sends_no_param() -> None:
-    """DeepSeek 默认就思考，不传参数即可 —— 少发一个字段。"""
+async def test_thinking_on_explicitly_enables_builtin_deepseek() -> None:
+    """The composer switch must not depend on an upstream model's default."""
     provider, recorder = deepseek_with_recorder()
     await drain(provider, thinking=True)
-    assert "extra_body" not in recorder.calls[0]
+    assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert recorder.calls[0]["reasoning_effort"] == "high"
 
 
 async def test_thinking_off_goes_through_extra_body() -> None:
@@ -93,6 +94,7 @@ async def test_thinking_off_goes_through_extra_body() -> None:
 
     assert "thinking" not in recorder.calls[0]  # 不能是顶层参数
     assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in recorder.calls[0]
 
 
 async def test_thinking_none_follows_global_default() -> None:
@@ -102,11 +104,27 @@ async def test_thinking_none_follows_global_default() -> None:
     assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
-async def test_never_sends_reasoning_effort() -> None:
-    """DeepSeek 会静默忽略它，发了只会让人误以为生效。"""
+async def test_selected_deepseek_effort_is_sent_only_while_thinking() -> None:
+    from dataclasses import replace
+
     provider, recorder = deepseek_with_recorder()
-    await drain(provider, thinking=False)
-    assert "reasoning_effort" not in recorder.calls[0]
+    provider.target = replace(provider.target, effort="max")
+    await drain(provider, thinking=True)
+    assert recorder.calls[0]["reasoning_effort"] == "max"
+
+
+async def test_complete_uses_the_same_deepseek_thinking_contract() -> None:
+    provider, recorder = deepseek_with_recorder()
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await provider.complete(system="sys", prompt="hi", thinking=True)
+    assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert recorder.calls[0]["reasoning_effort"] == "high"
+
+    with pytest.raises(RuntimeError, match="stop"):
+        await provider.complete(system="sys", prompt="hi", thinking=False)
+    assert recorder.calls[1]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in recorder.calls[1]
 
 
 # ---------- Anthropic ----------
@@ -114,7 +132,8 @@ async def test_never_sends_reasoning_effort() -> None:
 
 async def test_anthropic_thinking_on_uses_adaptive() -> None:
     provider = AnthropicProvider(
-        settings=Settings(anthropic_api_key="t"), client=FakeAnthropic([text_turn("ok")])
+        settings=Settings(provider="anthropic", anthropic_api_key="t"),
+        client=FakeAnthropic([text_turn("ok")]),
     )
     await drain(provider, thinking=True)
     assert provider.client.messages.calls[0]["thinking"]["type"] == "adaptive"
@@ -123,7 +142,7 @@ async def test_anthropic_thinking_on_uses_adaptive() -> None:
 async def test_anthropic_thinking_off_caps_effort() -> None:
     """Opus 5 上「关闭思考」+ xhigh/max 会 400，必须把 effort 压到 high。"""
     provider = AnthropicProvider(
-        settings=Settings(anthropic_api_key="t", effort="xhigh"),
+        settings=Settings(provider="anthropic", anthropic_api_key="t", effort="xhigh"),
         client=FakeAnthropic([text_turn("ok")]),
     )
     await drain(provider, thinking=False)
@@ -135,7 +154,7 @@ async def test_anthropic_thinking_off_caps_effort() -> None:
 
 async def test_anthropic_thinking_on_keeps_configured_effort() -> None:
     provider = AnthropicProvider(
-        settings=Settings(anthropic_api_key="t", effort="xhigh"),
+        settings=Settings(provider="anthropic", anthropic_api_key="t", effort="xhigh"),
         client=FakeAnthropic([text_turn("ok")]),
     )
     await drain(provider, thinking=True)
@@ -294,3 +313,5 @@ def test_thinking_capability_is_not_the_users_on_off_preference() -> None:
     )
     assert off.capabilities["thinking"] is True
     assert off.thinking_default is False
+    assert off.thinking_efforts == ("low", "high", "max")
+    assert off.effort == "high"

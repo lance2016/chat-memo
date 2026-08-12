@@ -226,6 +226,23 @@ def record_llm_input(payload: Any, *, model: str = "") -> None:
     }
     if _capture_llm_content():
         attributes["input.value"] = _json_attribute(payload)
+    if isinstance(payload, Mapping):
+        # SDK auto-instrumentors intentionally summarize only parameters from
+        # their public signature.  Vendor extensions passed through
+        # ``extra_body`` (for example DeepSeek's ``thinking`` switch) therefore
+        # disappear from Phoenix's invocation panel even though the SDK merges
+        # them into the final HTTP JSON.  Record the effective wire-level
+        # parameters on our application-owned LLM span and omit bulky content
+        # fields that already live in ``input.value``.
+        invocation = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"messages", "input", "system", "tools"}
+        }
+        extra_body = invocation.pop("extra_body", None)
+        if isinstance(extra_body, Mapping):
+            invocation.update(extra_body)
+        attributes["llm.invocation_parameters"] = _json_attribute(invocation)
     if model:
         attributes["llm.model_name"] = model
     _set_span_attributes(attributes)

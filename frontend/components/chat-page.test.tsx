@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatPage } from "./chat-page";
 
@@ -88,6 +88,7 @@ async function startConversation() {
 describe("ChatPage streaming lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     mocks.searchParams = "";
     mocks.listConversations.mockResolvedValue([]);
     mocks.listMessages.mockResolvedValue([]);
@@ -105,7 +106,7 @@ describe("ChatPage streaming lifecycle", () => {
     cleanup();
   });
 
-  it("keeps the redundant conversation title out of the toolbar", async () => {
+  it("keeps the active conversation title visible in the navigation bar", async () => {
     let finishStream!: () => void;
     mocks.streamChat.mockImplementation(async (_id, _content, _modelProfileId, onEvent) => {
       onEvent({ type: "conversation", conversation });
@@ -115,7 +116,7 @@ describe("ChatPage streaming lifecycle", () => {
 
     await startConversation();
 
-    expect(screen.queryByText("服务端标题")).not.toBeInTheDocument();
+    expect(screen.getByText("服务端标题")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "选择聊天模型" })).toBeInTheDocument();
     finishStream();
   });
@@ -138,16 +139,116 @@ describe("ChatPage streaming lifecycle", () => {
       expect.any(AbortSignal),
       true,
       [],
+      undefined,
+      null,
     ));
   });
 
-  it("keeps image upload inside the tool menu", async () => {
+  it("shows DeepSeek thinking depth and sends the selected effort", async () => {
+    mocks.streamChat.mockResolvedValue(undefined);
+    mocks.getModelCatalog.mockResolvedValue({
+      purpose: "chat",
+      default_profile_id: 1,
+      services: [{ id: 7, slug: "deepseek", name: "DeepSeek" }],
+      profiles: [{
+        id: 1,
+        slug: "builtin:deepseek",
+        service_id: 7,
+        model_id: "deepseek-v4-flash",
+        is_default: true,
+        available: true,
+        capabilities: { thinking: true },
+        thinking_default: true,
+        thinking_efforts: ["low", "high", "max"],
+        thinking_effort_default: "high",
+      }],
+    });
+
+    render(<ChatPage />);
+    const thinking = await screen.findByRole("button", { name: "思考设置" });
+    expect(thinking).toHaveTextContent("思考");
+    expect(thinking).not.toHaveAttribute("title");
+    fireEvent.click(thinking);
+    expect(screen.queryByText("当前模型自动决定，未提供可调档位")).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "轻量" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "深入" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "最深入" }));
+    expect(thinking).toHaveTextContent("思考");
+
+    const input = screen.getByPlaceholderText("和我聊聊，或告诉我一件想记住的事……");
+    fireEvent.change(input, { target: { value: "认真分析一下" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => expect(mocks.streamChat).toHaveBeenCalledWith(
+      null,
+      "认真分析一下",
+      1,
+      expect.any(Function),
+      expect.any(AbortSignal),
+      false,
+      [],
+      true,
+      "max",
+    ));
+  });
+
+  it("keeps one popover shape and explains automatic depth for boolean-only models", async () => {
+    mocks.getModelCatalog.mockResolvedValue({
+      purpose: "chat",
+      default_profile_id: 2,
+      services: [{ id: 8, slug: "compatible", name: "Compatible" }],
+      profiles: [{
+        id: 2,
+        slug: "compatible:model",
+        service_id: 8,
+        model_id: "reasoner",
+        is_default: true,
+        available: true,
+        capabilities: { thinking: true },
+        thinking_default: false,
+        thinking_efforts: [],
+        thinking_effort_default: null,
+      }],
+    });
+
+    render(<ChatPage />);
+    const trigger = await screen.findByRole("button", { name: "思考设置" });
+    fireEvent.click(trigger);
+    const toggle = screen.getByRole("menuitemcheckbox", { name: /思考/ });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("当前模型自动决定，未提供可调档位")).toBeInTheDocument();
+    expect(trigger).toHaveTextContent("思考");
+  });
+
+  it("shows returned thinking without a separate settings-page preference", async () => {
+    mocks.searchParams = "conversation=42";
+    mocks.listConversations.mockResolvedValue([conversation]);
+    mocks.listMessages.mockResolvedValue([{
+      id: 301,
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "先分析问题结构" },
+        { type: "text", text: "最终回答" },
+      ],
+      usage: null,
+      created_at: "2026-08-07T00:00:00Z",
+    }]);
+
+    render(<ChatPage />);
+
+    expect(await screen.findByText("思考过程")).toBeInTheDocument();
+    expect(screen.getByText("最终回答")).toBeInTheDocument();
+  });
+
+  it("keeps attachment upload inside the tool menu", async () => {
     mocks.getRuntimeSettings.mockResolvedValue({ web_search_enabled: true, vision_enabled: true });
 
     render(<ChatPage />);
 
     fireEvent.click(await screen.findByRole("button", { name: "添加工具" }));
-    expect(await screen.findByRole("menuitem", { name: /添加图片/ })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: /添加附件/ })).toBeInTheDocument();
   });
 
   it("closes floating menus and context usage when clicking blank space", async () => {
@@ -207,6 +308,8 @@ describe("ChatPage streaming lifecycle", () => {
       expect.any(AbortSignal),
       false,
       [],
+      undefined,
+      null,
     ));
   });
 
@@ -273,6 +376,7 @@ describe("ChatPage streaming lifecycle", () => {
 describe("ChatPage keyboard and screen-reader affordances", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
     mocks.searchParams = "";
     mocks.listConversations.mockResolvedValue([]);
     mocks.listMessages.mockResolvedValue([]);
@@ -304,6 +408,13 @@ describe("ChatPage keyboard and screen-reader affordances", () => {
     render(<ChatPage />);
     const trigger = await screen.findByRole("combobox", { name: "选择聊天模型" });
     expect(trigger).toHaveTextContent("claude-opus-5");
+
+    // 「把目录默认模型落成当前选中项」是 chat-page 的一个 effect 干的（见 useEffect
+    // [conversations, default_profile_id, selectedId]）。findBy* 只等到 DOM 出现，
+    // 它的 MutationObserver 回调是微任务，会抢在 React 的 passive effect 前面 ——
+    // 不 flush 的话，菜单打开时的高亮起点会在「跟随默认」和 claude-opus-5 之间抖，
+    // 这一条用例就变成大约每 20 次挂 1 次。
+    await act(async () => {});
 
     // 方向键要能把菜单打开，而不是只有鼠标点得开。
     fireEvent.keyDown(trigger, { key: "ArrowDown" });

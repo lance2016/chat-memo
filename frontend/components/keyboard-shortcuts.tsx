@@ -9,6 +9,7 @@ import type { TranslationKey } from "@/lib/i18n";
 
 /** ⌘1…⌘5 的目标，顺序和侧栏导航一致。 */
 const pageRoutes = ["/", "/memories", "/review", "/timeline", "/settings"];
+export const newConversationEvent = "chat-memo:new-conversation";
 
 type Shortcut = { keys: string[]; label: TranslationKey; values?: Record<string, string | number> };
 
@@ -56,7 +57,14 @@ export function KeyboardShortcuts() {
       // 侧栏走同一道 confirmAppNavigation，不能直接 router.push。
       if (event.key.toLowerCase() === "n") {
         event.preventDefault();
-        if (confirmAppNavigation()) router.push("/");
+        if (!confirmAppNavigation()) return;
+        // 首页已经是新建会话的落点时，快捷键应该把焦点送进输入框，
+        // 而不是无效地重新 push 同一个 URL。
+        if (window.location.pathname === "/" && !window.location.search) {
+          window.dispatchEvent(new Event(newConversationEvent));
+        } else {
+          router.push("/");
+        }
         return;
       }
 

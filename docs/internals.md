@@ -231,9 +231,45 @@ settings 和 target）：图本来就在上下文里，再调一次工具纯属�
 - **`/api/conversations/{id}/context` 的窗口统计按引用算**，而视觉模型实际发出去的是
   base64，真实体量远大于显示值。统计的用途是「历史会不会被裁掉」，那个判断本来就发生在
   hydrate 之前，所以口径是自洽的 —— 但别拿它当「这轮花了多少 token」看。
+- **`Content-Disposition` 里的文件名必须按 RFC 6266 编码**。HTTP 头只能是 latin-1，
+  而附件名经常是中文（「截图 2026年7月19日.png」）。直接塞进 `filename="..."` 的后果
+  不是乱码，是 starlette 在 `init_headers` 里抛 `UnicodeEncodeError` —— 下载接口整个
+  500，而界面上的症状只是那张图变成一个警告图标，跟文件名看不出任何关系。
+  `paths.content_disposition` 同时给 ASCII 兜底和 `filename*=UTF-8''`。
+- **拒收时必须说清是哪个文件**。HEIC / AVIF / SVG 的 `content_type` 都是 `image/*`，
+  前端拦不住，到 `sniff` 才被拒；只回一句「只支持 PNG / JPEG / GIF / WebP」的话，
+  一次拖进来五个文件时没人知道是哪个出的问题。这些格式**不该**靠加解码库来支持 ——
+  模型侧本来也只收这四种（见 `image.py` 里不装 Pillow 的理由）。
 - **图片走 authed fetch → blob URL**，不是免鉴权直链。`<img src>` 带不了 `X-API-Key`，
   TTS 那套一次性票据（`app/tts/tickets.py`）在这里不适用 —— 它用一次即失效，而图片
   每次滚动/刷新都要重新渲染。代价是绕开了浏览器 HTTP 缓存，所以前端按 id 自己存一份。
+
+### 文本附件（txt / md）：复用同一张表，但不复用那个分支
+
+`kind="file"` 走的是**完全独立**的一条 hydrate 分支，只和图片共享上传、内容寻址、
+`attachment_ref` 这三样基建。理由很直白：任何模型都读得了文本，所以
+`supports_vision` 那个分支点在这里没有意义，`vision_*` 三列一直是空的。
+
+几个各自对应一类事故的决定：
+
+- **扩展名选路，内容才是准入判据。** `.txt` / `.md` 决定「走文本这条路、用文本的
+  体积上限和错误消息」，但一个改名成 `.md` 的二进制仍然要在 `text.decode` 那步被
+  拒掉。反过来，图片走文件头嗅探，两条路各自确认各自的内容，谁也不信文件名。
+- **只接 UTF-8，不猜编码。** 猜错的代价是一整篇乱码进上下文，而模型会照着乱码答；
+  让用户自己转一次便宜得多。BOM 和 CRLF 在解码时归一 —— 归一的是**发出去的**那份，
+  磁盘上存的永远是原始上传字节。
+- **必须有 `TEXT_INLINE_CHARS` 这道闸。** 上传上限 512KB，而 `trim_history` 的预算
+  是 12 万字符 —— 一个文件就能把整段历史挤掉，症状是「模型忘了前面聊过什么」，
+  几乎不可能联想到是附件干的。超出部分**不是静默截断**：末尾留一句明说这是片段。
+  完整读取要等 roadmap 第 10 条的 `doc_read`，那才是长文档的正确形态。
+- **正文用围栏包起来，且围栏长度按内容算。** 围栏是「这是用户上传的资料，不是他说的
+  话」这条边界的唯一载体 —— 上传的文件是第四个内容来源，里面写的任何指令都不是用户的
+  指令。固定三个反引号的话，一个自带代码块的 Markdown 会把围栏提前闭合，后半段正文
+  就跑到边界外面去了。
+- **视觉拦截的判据是「这批附件里有没有图」，不是「有没有附件」。** `/api/chat` 那道
+  「当前模型看不了图」的拦截照着 `attachment_ids` 非空判的话，给纯文本模型传一个 `.md`
+  会被判成传图直接拒发。判据落在 `store.has_images` 一处，前端的上传入口同理 ——
+  它不再随视觉能力禁用，只是说明文案变了。
 
 ## 语音：别让用户干等
 
@@ -356,6 +392,7 @@ app/
     catalog.py              模型服务 / 模型档案（数据库里的模型目录）
     anthropic_provider.py   Claude 的流式 agent loop
     deepseek_provider.py    OpenAI 兼容协议的 agent loop + 消息格式互转
+    openai_responses_provider.py  OpenAI Responses API 的 agent loop + 事件互转
     factory.py              按**协议**选实现
     composite.py            按工具名把多个 executor 拼成一个
     events.py               agent 事件定义
@@ -401,9 +438,13 @@ app/
 
 分两种情况，成本差很远：
 
-**OpenAI 兼容的服务**（硅基流动、OpenRouter、本地 vLLM…）—— **不用改代码**。
+**OpenAI Chat Completions 兼容的服务**（硅基流动、OpenRouter、本地 vLLM…）—— **不用改代码**。
 在模型页加一个「模型服务」（填 base_url 和凭据引用）再加模型即可。
 `factory.py` 的注册表按**协议**分发，所有兼容服务共用同一个实现。
+
+如果服务要求 Responses API（例如 `openai-api-server-via-codex`），选择
+`OpenAI Responses API` 协议；它使用 `client.responses.create`，并单独处理 Responses
+的 input item、函数调用和流式事件。
 
 **新协议**（比如 Gemini 原生）—— 实现 `app/llm/provider.py` 的 `LLMProvider` 协议，
 在 `factory._BY_PROTOCOL` 注册一行。不用动 `Settings`，不用动 chat / jobs / eval
@@ -416,7 +457,22 @@ app/
 - **`provider == "anthropic"` 只允许出现在 `ModelTarget.from_settings()` 里**，
   那是老配置的兼容入口，模型目录接管之后整个函数可以删掉。
 
-DeepSeek 侧的两个注意点：思考内容不能回传（翻译时丢弃）；没有原生记忆工具，
+⚠️ **两代配置并存期的一个坑**：设了 `chat_model_profile_id` 之后，
+`resolve_model_target` 直接走档案，`provider` / `model` / `deepseek_model`
+**完全不参与解析** —— 但它们还在设置页上，是可编辑的下拉框。改了不报错也没反应，
+是整个设置页里唯一一处静默失效。现在由 `settings_store.inactive_reason()`
+在 `GET /api/settings` 里如实标记（`fields[].inactive_reason`），界面压暗并说明原因。
+**不禁用输入**：档案被删或停用时它们又会重新兜底，那时候这里是唯一还能改的地方。
+`max_tokens` / `effort` / `deepseek_thinking` 不在此列 —— 档案 options 没填时它们
+仍然是生效的兜底值。
+
+同一个坑的另一面：注入给模型的 runtime context 里的「你实际运行在 X / Y」，
+X 以前取的是 `settings.provider`，选了档案之后会告诉模型一个错的出处。
+现在由 `ChatService.service_slug` 从 target 上带下来。
+
+DeepSeek 侧的两个注意点：官方 Chat Completions 接口支持
+`reasoning_effort=low/high/max`（默认 `high`）；带工具调用时，模型返回的
+`reasoning_content` 必须在后续请求中完整回传，否则上游会返回 400。没有原生记忆工具，
 schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。
 
 ## 加新工具
@@ -437,8 +493,9 @@ executor 是工具定义的唯一事实来源，也正是聊天时交给模型�
 在 `TOOLKITS` 加一条。聊天注册、整理排除、提示词分段、界面目录四处自动跟上，
 `tests/test_agent_context.py` 和 `tests/test_api_endpoints.py` 会钉住它们不漂移。
 
-DeepSeek 侧的两个注意点：思考内容不能回传（翻译时丢弃）；没有原生记忆工具，
-schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。
+DeepSeek 侧的两个注意点：思考强度使用 `reasoning_effort=low/high/max`；当请求携带
+工具时，`reasoning_content` 必须在后续请求中完整回传。没有原生记忆工具，schema
+写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现依赖这段描述质量。
 
 ## 几个容易踩的坑
 
@@ -567,7 +624,9 @@ schema 写在 `app/memory/tool.py` 的 `MEMORY_TOOL_PARAMETERS`，模型表现�
 热重载每次改代码都重启进程、把 sleep 从头算起 —— 60s 的通知还有机会，
 600s 的整理基本永远等不到第一次 tick。等于用「不能改代码」换「任务能跑」。
 
-`JOBS_ENABLED` 把这两件事拆开，开发期是 `RELOAD=1 JOBS_ENABLED=0`：
+Compose 默认使用 `RELOAD=1`，所以第一次启动和日常开发直接执行 `docker compose up -d` 即可。
+需要稳定运行后台 ticker 或部署生产时，再显式设置 `RELOAD=0`。`JOBS_ENABLED=0` 只用于
+临时调试后台任务：
 
 | | `JOBS_ENABLED=1`（默认） | `JOBS_ENABLED=0` |
 |---|---|---|

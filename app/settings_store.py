@@ -49,6 +49,15 @@ class Field:
     group: str = ""
     # 机密值只用于一次性写入，描述接口不回传原文。
     secret: bool = False
+    # 高级选项：前端默认折叠。判据是「改了多半更糟」而不是「不常用」——
+    # 超时、上限、格式这类默认值已经调对的旋钮，摆在首屏只会让人以为必须配。
+    # 以前这份名单硬编码在 settings-page.tsx 里（四个 *PrimaryFieldKeys 集合），
+    # 加一个字段要在两处同步；现在字段自己声明，前端只读这个布尔值。
+    advanced: bool = False
+    # 属于哪个可选能力。非空 = 这一组在能力没启用时不该占据首屏 ——
+    # 语音要先在宿主机跑 mlx-audio 并下载权重，通知要先装 Bark，
+    # 没做这些之前把十几个输入框摆出来，等于让新手以为它们是必配项。
+    capability: str = ""
 
 
 # 白名单。**不在这里的字段一律拒绝写入**，包括密钥、数据库连接、CORS、日志。
@@ -61,90 +70,116 @@ WRITABLE: tuple[Field, ...] = (
     # 首轮之后命中缓存，成本可以接受；再长就该写成记忆文件让模型按需 view 了。
     Field("custom_instructions", "自定义指令", "text", allow_empty=True,
           maximum=4000, group="prompt"),
-    Field("provider", "模型厂商", "enum", choices=("anthropic", "deepseek")),
+    Field("provider", "模型厂商", "enum", choices=("anthropic", "deepseek", "openai")),
     # 可观测性的两个开关。运行时生效（apply_tracing 会重新 instrument），
     # 所以可以放这儿 —— 其余 obs_* 是启动期读的，不进白名单，由状态卡如实报告。
     Field("backup_auto", "每天自动备份", "bool"),
-    Field("backup_keep", "保留备份份数", "int", minimum=1, maximum=365),
-    Field("obs_tracing", "记录模型调用链路", "bool", group="debug"),
-    Field("obs_capture_content", "链路里保存对话正文", "bool", group="debug"),
+    Field("backup_keep", "保留备份份数", "int", minimum=1, maximum=365,
+          advanced=True),
+    Field("obs_tracing", "记录模型调用链路", "bool", group="debug",
+          capability="debug"),
+    Field("obs_capture_content", "链路里保存对话正文", "bool", group="debug",
+          capability="debug", advanced=True),
     # 由模型目录管理，保留在 Settings 里只是为了让旧的配置解析链路能够读取。
     # group 非空，所以不会作为普通数字输入暴露在设置页。
     Field("chat_model_profile_id", "聊天模型档案", "int", minimum=1,
           group="model-routing"),
     Field("consolidate_model_profile_id", "整理模型档案", "int", minimum=1,
           group="model-routing"),
+    Field("title_model_profile_id", "标题模型档案", "int", minimum=1,
+          group="model-routing"),
     Field("vision_model_profile_id", "视觉模型档案", "int", minimum=1,
           group="model-routing"),
     Field("deepseek_model", "DeepSeek 模型", "str", provider="deepseek"),
     Field("deepseek_max_tokens", "输出上限", "int", minimum=256, maximum=128000,
-          provider="deepseek"),
+          provider="deepseek", advanced=True),
     Field("deepseek_thinking", "默认思考", "bool", provider="deepseek"),
+    Field("openai_model", "OpenAI Responses 模型", "str", provider="openai"),
+    Field("openai_max_tokens", "输出上限", "int", minimum=256, maximum=128000,
+          provider="openai", advanced=True),
+    Field("openai_thinking", "默认思考", "bool", provider="openai"),
+    Field("openai_effort", "推理强度", "enum",
+          choices=("none", "low", "medium", "high", "xhigh", "max"), provider="openai"),
     Field("model", "Claude 模型", "str", provider="anthropic"),
     Field("max_tokens", "输出上限", "int", minimum=256, maximum=128000,
-          provider="anthropic"),
+          provider="anthropic", advanced=True),
     Field("effort", "推理强度", "enum",
           choices=("low", "medium", "high", "xhigh", "max"), provider="anthropic"),
-    Field("consolidate_model", "整理专用模型", "str", allow_empty=True),
+    Field("consolidate_model", "整理专用模型", "str", allow_empty=True,
+          advanced=True),
     # 配了 SILICONFLOW_API_KEY 或旧的 ZHIPU_API_KEY 时生效。
-    Field("title_model", "标题专用模型", "str", allow_empty=True),
+    Field("title_model", "标题专用模型", "str", allow_empty=True, advanced=True),
     # 技能的总开关。目录位置是挂载点（ENV_ONLY），但「这轮对话要不要带技能」
     # 是每次装配时重读的，所以可以放在设置页里，关掉立刻生效。
-    Field("skills_enabled", "启用技能", "bool", group="skills"),
+    Field("skills_enabled", "启用技能", "bool", group="skills",
+          capability="skills"),
+    Field("toolkits_disabled", "停用工具组", "str", allow_empty=True,
+          maximum=256, group="tools"),
     Field("consolidate_auto", "自动每日整理", "bool"),
     Field("consolidate_hour", "自动整理时间（点）", "int", minimum=0, maximum=23),
-    Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30),
+    Field("max_tool_iterations", "单轮最大工具次数", "int", minimum=1, maximum=30,
+          advanced=True),
     Field("history_max_chars", "历史上下文上限", "int", minimum=8_000,
-          maximum=500_000),
-    Field("notify_enabled", "主动通知", "bool", group="notify"),
+          maximum=500_000, advanced=True),
+    Field("notify_enabled", "主动通知", "bool", group="notify",
+          capability="notify"),
     Field("notify_channels", "启用的通道", "str", allow_empty=True, maximum=120,
-          group="notify"),
-    Field("notify_briefing", "每日简报", "bool", group="notify"),
+          group="notify", capability="notify", advanced=True),
+    Field("notify_briefing", "每日简报", "bool", group="notify",
+          capability="notify"),
     Field("notify_briefing_hour", "简报时间（点）", "int", minimum=0, maximum=23,
-          group="notify"),
+          group="notify", capability="notify"),
     Field("notify_all_day_hour", "全天事项提醒时间（点）", "int", minimum=0, maximum=23,
-          group="notify"),
+          group="notify", capability="notify"),
     Field("notify_default_lead_minutes", "未分类事项默认提前量（分钟）", "int", minimum=0,
-          maximum=10080, group="notify"),
+          maximum=10080, group="notify", capability="notify"),
     Field("notify_catchup_hours", "补发窗口（小时）", "int", minimum=1, maximum=168,
-          group="notify"),
-    Field("notify_smart_copy", "让模型写提醒文案", "bool", group="notify"),
+          group="notify", capability="notify", advanced=True),
+    Field("notify_smart_copy", "让模型写提醒文案", "bool", group="notify",
+          capability="notify", advanced=True),
     Field("notify_timeout", "通知请求超时（秒）", "int", minimum=1, maximum=120,
-          group="notify"),
+          group="notify", capability="notify", advanced=True),
     Field("notify_public_base_url", "通知跳转地址", "str", allow_empty=True,
-          maximum=200, group="notify"),
+          maximum=200, group="notify", capability="notify"),
     Field("bark_server", "Bark 服务器", "str", allow_empty=True, maximum=200,
-          group="notify"),
+          group="notify", capability="notify", advanced=True),
     Field("bark_key", "Bark 设备 key", "str", allow_empty=True, maximum=120,
-          group="notify", secret=True),
+          group="notify", secret=True, capability="notify"),
     Field("bark_sound", "Bark 提示音", "str", allow_empty=True, maximum=60,
-          group="notify"),
+          group="notify", capability="notify", advanced=True),
     Field("bark_icon", "Bark 图标地址", "str", allow_empty=True, maximum=200,
-          group="notify"),
+          group="notify", capability="notify", advanced=True),
     Field("tts_mode", "语音播放", "enum", choices=("off", "manual", "auto"),
-          group="tts"),
-    Field("tts_model", "语音模型", "str", group="tts"),
-    Field("tts_voice", "音色", "str", allow_empty=True, group="tts"),
-    Field("tts_lang_code", "语种", "str", group="tts"),
+          group="tts", capability="voice"),
+    Field("tts_model", "语音模型", "str", group="tts", capability="voice"),
+    Field("tts_voice", "音色", "str", allow_empty=True, group="tts",
+          capability="voice"),
+    Field("tts_lang_code", "语种", "str", group="tts", capability="voice",
+          advanced=True),
     Field("tts_instruct", "语气指令", "str", allow_empty=True, maximum=200,
-          group="tts"),
+          group="tts", capability="voice"),
     Field("tts_format", "音频格式", "enum", choices=("mp3", "wav", "flac", "opus"),
-          group="tts"),
-    Field("tts_stream", "流式合成", "bool", group="tts"),
+          group="tts", capability="voice", advanced=True),
+    Field("tts_stream", "流式合成", "bool", group="tts", capability="voice",
+          advanced=True),
     Field("tts_speed_percent", "语速（%）", "int", minimum=50, maximum=200,
-          group="tts"),
+          group="tts", capability="voice"),
     Field("tts_max_chars", "单次朗读字数上限", "int", minimum=50, maximum=5000,
-          group="tts"),
-    Field("tts_timeout", "合成超时（秒）", "int", minimum=5, maximum=600, group="tts"),
-    Field("tts_warmup", "启动时预热语音模型", "bool", group="tts"),
-    Field("asr_model", "识别模型", "str", group="asr"),
+          group="tts", capability="voice", advanced=True),
+    Field("tts_timeout", "合成超时（秒）", "int", minimum=5, maximum=600, group="tts",
+          capability="voice", advanced=True),
+    Field("tts_warmup", "启动时预热语音模型", "bool", group="tts",
+          capability="voice", advanced=True),
+    Field("asr_model", "识别模型", "str", group="asr", capability="voice_input"),
     Field("asr_language", "识别语言", "enum",
-          choices=("Chinese", "English", "Auto"), group="asr"),
+          choices=("Chinese", "English", "Auto"), group="asr",
+          capability="voice_input"),
     Field("asr_max_tokens", "识别长度上限", "int", minimum=64, maximum=2048,
-          group="asr"),
+          group="asr", capability="voice_input", advanced=True),
     Field("asr_timeout", "识别超时（秒）", "int", minimum=5, maximum=600,
-          group="asr"),
-    Field("debug_prompts", "记录发给模型的请求", "bool", group="debug"),
+          group="asr", capability="voice_input", advanced=True),
+    Field("debug_prompts", "记录发给模型的请求", "bool", group="debug",
+          capability="debug"),
 )
 
 WRITABLE_BY_KEY = {f.key: f for f in WRITABLE}
@@ -156,6 +191,9 @@ ENV_ONLY = (
     "anthropic_api_key",
     "deepseek_api_key",
     "deepseek_base_url",
+    "openai_api_key",
+    "openai_base_url",
+    "openai_models",
     "siliconflow_api_key",
     "siliconflow_base_url",
     "siliconflow_title_model",
@@ -233,9 +271,10 @@ def validate(key: str, value: Any, settings: Settings) -> Any:
                 f"{field.label}只能是 {'、'.join(field.choices)} 之一"
             )
         if key == "provider" and not _has_key(value, settings):
-            # 切到没配 key 的 provider，之后每条消息都会 401，
+            # 切到没配凭据/地址的 provider，之后每条消息都会失败，
             # 而且设置页自己也会显示错误状态 —— 直接拦在这里。
-            raise SettingError(f"未配置 {value.upper()}_API_KEY，无法切换到该 provider")
+            missing = "OPENAI_BASE_URL" if value == "openai" else f"{value.upper()}_API_KEY"
+            raise SettingError(f"未配置 {missing}，无法切换到该 provider")
         return value
 
     if key == "notify_channels":
@@ -279,6 +318,33 @@ async def apply(
             existing.value = checked
 
 
+# 被模型档案接管的旧配置。**这不是装饰，是止损**：设了 chat_model_profile_id 之后，
+# `resolve_model_target` 直接走档案，这几项完全不参与解析（见 app/llm/catalog.py）——
+# 而它们仍然是可编辑的下拉框，改了不报错也没反应，是设置页里唯一一处静默失效。
+#
+# 只报「不生效」，不隐藏也不禁用：档案被删或停用时它们又会重新兜底，
+# 藏掉会让人在那种时候找不到唯一还能改的地方。
+_SUPERSEDED_BY_PROFILE: dict[str, tuple[str, str]] = {
+    # 配置项 → （哪个档案配置接管了它，界面上怎么说）
+    "provider": ("chat_model_profile_id", "聊天模型档案"),
+    "model": ("chat_model_profile_id", "聊天模型档案"),
+    "deepseek_model": ("chat_model_profile_id", "聊天模型档案"),
+    "consolidate_model": ("consolidate_model_profile_id", "整理模型档案"),
+    "title_model": ("title_model_profile_id", "标题模型档案"),
+}
+
+
+def inactive_reason(key: str, settings: Settings) -> str:
+    """这项配置当前生不生效；不生效时给出人话的原因。空串 = 生效。"""
+    superseded = _SUPERSEDED_BY_PROFILE.get(key)
+    if superseded is None:
+        return ""
+    profile_key, label = superseded
+    if getattr(settings, profile_key, None) is None:
+        return ""
+    return f"已由「{label}」接管，改这里不会换模型"
+
+
 def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
     """给设置页的完整描述：当前值 + 每项来自哪层 + 可选项。
 
@@ -310,6 +376,9 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
                 "provider": f.provider,
                 "group": f.group,
                 "secret": f.secret,
+                "advanced": f.advanced,
+                "capability": f.capability,
+                "inactive_reason": inactive_reason(f.key, settings),
             }
             for f in WRITABLE
         ],
@@ -318,9 +387,13 @@ def describe(settings: Settings, overrides: dict[str, Any]) -> dict[str, Any]:
                 "value": name,
                 "available": _has_key(name, settings),
                 "reason": "" if _has_key(name, settings)
-                else f"未配置 {name.upper()}_API_KEY",
+                else (
+                    "未配置 OPENAI_BASE_URL"
+                    if name == "openai"
+                    else f"未配置 {name.upper()}_API_KEY"
+                ),
             }
-            for name in ("deepseek", "anthropic")
+            for name in ("deepseek", "anthropic", "openai")
         ],
         "env_only": list(ENV_ONLY),
         "env_status": env_status(settings),
@@ -350,6 +423,7 @@ ENV_FIELDS: tuple[EnvField, ...] = (
              "未配置：Anthropic 的模型不可用"),
     EnvField("deepseek_api_key", "DeepSeek 密钥", "secret",
              "未配置：DeepSeek 的模型不可用"),
+    EnvField("openai_api_key", "OpenAI API Key", "secret"),
     EnvField("siliconflow_api_key", "硅基流动密钥", "secret",
              "未配置：标题生成退回聊天模型，更慢更贵"),
     EnvField("zhipu_api_key", "智谱密钥", "secret",
@@ -363,6 +437,9 @@ ENV_FIELDS: tuple[EnvField, ...] = (
     # 连接串里带密码，不能显示值
     EnvField("database_url", "数据库连接", "secret"),
     EnvField("deepseek_base_url", "DeepSeek 地址"),
+    EnvField("openai_base_url", "OpenAI Responses 地址",
+             "plain", "未配置：OpenAI Responses 模型不可用"),
+    EnvField("openai_models", "OpenAI 模型目录"),
     EnvField("siliconflow_base_url", "硅基流动地址"),
     EnvField("siliconflow_title_model", "标题模型"),
     EnvField("zhipu_base_url", "智谱地址"),
@@ -415,5 +492,7 @@ def _has_key(provider: str, settings: Settings) -> bool:
     return is_configured(
         settings.anthropic_api_key
         if provider == "anthropic"
+        else settings.openai_base_url
+        if provider == "openai"
         else settings.deepseek_api_key
     )

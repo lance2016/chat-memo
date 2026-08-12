@@ -1,15 +1,16 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, RefObject, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { ArrowDown, ArrowRight, CalendarClock, CalendarDays, Check, ChevronDown, Copy, ExternalLink, Gauge, Globe2, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, Send, Sparkles, Square, TriangleAlert, Volume2, X } from "lucide-react";
+import { ArrowDown, ArrowRight, BrainCircuit, Check, ChevronDown, Copy, ExternalLink, Gauge, Globe2, ImagePlus, LoaderCircle, Pencil, Plus, RefreshCw, Search, Send, Sparkles, Square, TriangleAlert, Volume2, X } from "lucide-react";
 import { apiUrl, attachmentObjectUrl, errorMessage, getContextPreview, getConversationContext, getMemoryStats, getModelCatalog, getNextSpeech, getRuntimeSettings, getTtsStatus, listConversations, listMessages, prepareSpeech, stopSpeech, streamChat, truncateMessages, uploadAttachment } from "@/lib/api";
-import { defaultPreferences, preferencesChangeEvent, readPreferences, type UserPreferences } from "@/lib/preferences";
+import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import { toTurns, toolLabel } from "@/lib/turns";
-import type { AttachmentMeta, ChatEvent, Conversation, ConversationContext, ModelCatalog, ToolActivity, Turn, TurnAttachment, TtsStatus } from "@/lib/types";
+import type { AttachmentMeta, ChatEvent, Conversation, ConversationContext, ModelCatalog, ModelProfileSummary, ToolActivity, Turn, TurnAttachment, TtsStatus } from "@/lib/types";
 import { Markdown } from "@/components/markdown";
-import { conversationsChangedEvent, notifyWorkspaceConversationsChanged, notifyWorkspaceSelectedConversationChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
+import { conversationsChangedEvent, MemoryMark, notifyWorkspaceConversationsChanged, notifyWorkspaceSelectedConversationChanged, type WorkspaceConversationChange, WorkspacePageFallback } from "@/components/workspace-topbar";
+import { newConversationEvent } from "@/components/keyboard-shortcuts";
 import { LatestRequest } from "@/lib/latest-request";
 import { resetMediaElement } from "@/lib/media-playback";
 import { VoiceInputButton } from "@/components/voice-input-button";
@@ -18,10 +19,6 @@ import { usePhoenixUrl } from "@/lib/phoenix";
 import { useDismissOnOutside } from "@/lib/use-dismiss-on-outside";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
-
-function dateLabel(value: string, locale: string) {
-  return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric" }).format(new Date(value));
-}
 
 function displayTool(tool: LiveTool | ToolActivity, t: ReturnType<typeof useI18n>["t"]) {
   const running = "status" in tool && tool.status === "running";
@@ -104,34 +101,119 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const menuId = useId();
-
-  useDismissOnOutside(pickerRef, open, () => setOpen(false));
+  const menuRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null);
+  const closeMenu = useCallback(() => {
+    setOpen(false);
+    setMenuPosition(null);
+    setSearchQuery("");
+  }, []);
 
   useEffect(() => {
-    if (disabled) setOpen(false);
-  }, [disabled]);
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && (pickerRef.current?.contains(event.target) || menuRef.current?.contains(event.target))) return;
+      closeMenu();
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") closeMenu();
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [closeMenu, open]);
+
+  useEffect(() => {
+    if (disabled) closeMenu();
+  }, [closeMenu, disabled]);
+
+  const visibleServices = useMemo(() => {
+    if (!catalog) return [];
+    const query = searchQuery.trim().toLocaleLowerCase();
+    return catalog.services.map((service) => ({
+      service,
+      profiles: catalog.profiles.filter((profile) => profile.service_id === service.id && (!query || [profile.display_name, profile.model_id, profile.service_name].some((value) => value.toLocaleLowerCase().includes(query)))),
+    })).filter((group) => group.profiles.length > 0 || !query);
+  }, [catalog, searchQuery]);
 
   // 扁平化的可选项顺序，和下面按服务分组的渲染顺序**必须一致** ——
   // 方向键走的是这个数组，高亮靠 index 对上 DOM id。
   const options = useMemo(() => {
     if (!catalog) return [] as { id: number | null; disabled: boolean }[];
     const flat: { id: number | null; disabled: boolean }[] = [{ id: null, disabled: false }];
-    for (const service of catalog.services) {
-      for (const profile of catalog.profiles.filter((item) => item.service_id === service.id)) {
+    for (const { profiles } of visibleServices) {
+      for (const profile of profiles) {
         flat.push({ id: profile.id, disabled: !profile.available && profile.id !== value });
       }
     }
     return flat;
-  }, [catalog, value]);
+  }, [catalog, value, visibleServices]);
 
   const optionId = (index: number) => `${menuId}-option-${index}`;
 
   useEffect(() => {
     if (!open) return;
-    document.getElementById(optionId(activeIndex))?.scrollIntoView({ block: "nearest" });
-    // optionId 只依赖 menuId，稳定
+    const menu = menuRef.current;
+    const option = document.getElementById(optionId(activeIndex));
+    if (!menu || !option || !menuPosition) return;
+    // Do not use scrollIntoView here: it may scroll the page-level composer
+    // container along with the menu and makes the whole UI jump.
+    const menuRect = menu.getBoundingClientRect();
+    const optionRect = option.getBoundingClientRect();
+    if (optionRect.top < menuRect.top) menu.scrollTop -= menuRect.top - optionRect.top + 8;
+    else if (optionRect.bottom > menuRect.bottom) menu.scrollTop += optionRect.bottom - menuRect.bottom + 8;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex, open, menuId]);
+  }, [activeIndex, open, menuId, menuPosition]);
+
+  useEffect(() => {
+    if (open && searchQuery) setActiveIndex(0);
+  }, [open, searchQuery]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const positionMenu = () => {
+      const trigger = pickerRef.current?.querySelector<HTMLButtonElement>(".chat-model-trigger");
+      const menu = menuRef.current;
+      if (!trigger || !menu) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const maxHeight = Math.min(420, Math.max(180, window.innerHeight - 32));
+      const menuHeight = Math.min(menu.scrollHeight, maxHeight);
+      const width = Math.min(Math.max(triggerRect.width, 250), Math.min(300, window.innerWidth - 32));
+      const spaceBelow = window.innerHeight - triggerRect.bottom - 16;
+      const spaceAbove = triggerRect.top - 16;
+      const openUp = spaceBelow < Math.min(menuHeight, 220) && spaceAbove > spaceBelow;
+      const top = openUp ? triggerRect.top - menuHeight - 8 : triggerRect.bottom + 8;
+      let left = triggerRect.left;
+      if (left + width > window.innerWidth - 16) left = triggerRect.right - width;
+      setMenuPosition({
+        left: Math.max(16, Math.min(left, window.innerWidth - width - 16)),
+        top: Math.max(16, Math.min(top, window.innerHeight - menuHeight - 16)),
+        width,
+        maxHeight,
+      });
+    };
+    positionMenu();
+    let frame = 0;
+    const reposition = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        positionMenu();
+      });
+    };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open, options.length]);
 
   if (!catalog) return null;
   const defaultProfile = catalog.profiles.find((profile) => profile.id === catalog.default_profile_id || profile.is_default);
@@ -140,10 +222,11 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
 
   const choose = (next: number | null) => {
     onChange(next);
-    setOpen(false);
+    closeMenu();
   };
 
   const openMenu = () => {
+    setSearchQuery("");
     const selectedIndex = options.findIndex((option) => option.id === value);
     setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
     setOpen(true);
@@ -180,8 +263,8 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
         if (option && !option.disabled) choose(option.id);
         break;
       }
-      case "Escape": event.preventDefault(); setOpen(false); break;
-      case "Tab": setOpen(false); break;
+      case "Escape": event.preventDefault(); closeMenu(); break;
+      case "Tab": closeMenu(); break;
       default: break;
     }
   };
@@ -189,19 +272,20 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
   // 渲染时和 options 同步推进的游标，保证 DOM id 和方向键索引一一对应。
   let cursor = 0;
 
-  return <div className="chat-model-picker" ref={pickerRef}>
+  return <div className={`chat-model-picker ${open ? "is-open" : ""}`} ref={pickerRef}>
     <span>{t("chat.model.label")}</span>
-    <button className="chat-model-trigger" type="button" role="combobox" aria-label={t("chat.model.select")} aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} aria-activedescendant={open ? optionId(activeIndex) : undefined} disabled={disabled} onClick={() => open ? setOpen(false) : openMenu()} onKeyDown={onTriggerKeyDown}>
+    <button className="chat-model-trigger" type="button" role="combobox" aria-label={t("chat.model.select")} aria-haspopup="listbox" aria-controls={menuId} aria-expanded={open} aria-activedescendant={open ? optionId(activeIndex) : undefined} disabled={disabled} onClick={() => open ? closeMenu() : openMenu()} onKeyDown={onTriggerKeyDown}>
       <span>{selectedLabel}</span><ChevronDown size={14} aria-hidden="true" />
     </button>
-    {open && <div className="chat-model-menu" id={menuId} role="listbox" aria-label={t("chat.model.list")}>
+    {open && typeof document !== "undefined" && createPortal(<div className="chat-model-menu" id={menuId} ref={menuRef} role="listbox" aria-label={t("chat.model.list")} style={{ left: menuPosition?.left ?? 0, top: menuPosition?.top ?? 0, width: menuPosition?.width ?? 250, maxHeight: menuPosition?.maxHeight ?? 420, visibility: menuPosition ? "visible" : "hidden" }}>
+      <div className="chat-model-search-wrap"><Search size={14} aria-hidden="true" /><input ref={searchRef} className="chat-model-search" type="search" value={searchQuery} placeholder={t("chat.model.search")} aria-label={t("chat.model.search")} onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu(); } }} /></div>
       {(() => { const index = cursor++; return <button className={`chat-model-option ${value === null ? "is-selected" : ""} ${activeIndex === index ? "is-active" : ""}`} id={optionId(index)} type="button" role="option" aria-selected={value === null} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(null)}>
         <span className="chat-model-option-copy"><strong>{t("chat.model.default")}</strong><small>{defaultProfile?.model_id ?? t("chat.model.followDefault")}</small></span>
         {value === null && <Check size={14} aria-hidden="true" />}
       </button>; })()}
-      {catalog.services.map((service) => <div className="chat-model-group" key={service.id}>
-        <div className="chat-model-group-label">{service.name}</div>
-        {catalog.profiles.filter((profile) => profile.service_id === service.id).map((profile) => {
+      {visibleServices.map(({ service, profiles }) => <div className="chat-model-group" key={service.id}>
+        <div className="chat-model-group-label">{service.name}<span>{profiles.length}</span></div>
+        {profiles.map((profile) => {
           const unavailable = !profile.available && profile.id !== value;
           const index = cursor++;
           return <button className={`chat-model-option ${profile.id === value ? "is-selected" : ""} ${activeIndex === index ? "is-active" : ""}`} id={optionId(index)} type="button" role="option" aria-selected={profile.id === value} disabled={unavailable} key={profile.id} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(profile.id)}>
@@ -210,7 +294,8 @@ function ModelPicker({ catalog, value, disabled, onChange }: { catalog: ModelCat
           </button>;
         })}
       </div>)}
-    </div>}
+      {searchQuery.trim() && visibleServices.length === 0 && <div className="chat-model-empty">{t("chat.model.noResults")}</div>}
+    </div>, document.body)}
   </div>;
 }
 
@@ -353,8 +438,52 @@ function ComposerToolMenu({ enabled, available, disabled, onChange, onPickImage,
   </div>;
 }
 
-function HomeDashboard({ conversations, input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onOpenConversation, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, webSearchEnabled, webSearchAvailable, onWebSearchChange, attachments, uploading, visionAvailable, onPickImage, onRemoveAttachment, onPasteFiles, dropTargetProps, dragActive, context }: {
-  conversations: Conversation[];
+function ThinkingControl({ profile, enabled, effort, disabled, onEnabledChange, onEffortChange }: {
+  profile: ModelProfileSummary | null;
+  enabled: boolean;
+  effort: string | null;
+  disabled: boolean;
+  onEnabledChange: (value: boolean) => void;
+  onEffortChange: (value: string) => void;
+}) {
+  const { t } = useI18n();
+  const controlRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const efforts = profile?.thinking_efforts ?? [];
+
+  useDismissOnOutside(controlRef, open, () => setOpen(false));
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  if (!profile?.capabilities?.thinking) return null;
+
+  const effortLabel = (value: string | null) => {
+    if (value === "low") return t("chat.thinking.effort.low");
+    if (value === "medium") return t("chat.thinking.effort.medium");
+    if (value === "high") return t("chat.thinking.effort.high");
+    if (value === "xhigh") return t("chat.thinking.effort.xhigh");
+    if (value === "max") return t("chat.thinking.effort.max");
+    return value || t("chat.thinking.effort.auto");
+  };
+  return <div className={`thinking-control-popover ${enabled ? "is-enabled" : ""}`} ref={controlRef}>
+    <button type="button" className={`thinking-trigger ${enabled ? "is-enabled" : ""}`} aria-label={t("chat.thinking.settings")} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((current) => !current)}><BrainCircuit size={14} /><span>{t("chat.thinking.control")}</span><ChevronDown size={12} className="thinking-trigger-chevron" /></button>
+    {open && <div className="thinking-menu" role="menu" aria-label={t("chat.thinking.settings")}>
+      <button type="button" className="thinking-menu-switch" role="menuitemcheckbox" aria-checked={enabled} onClick={() => onEnabledChange(!enabled)}>
+        <span><strong>{t("chat.thinking.control")}</strong><small>{t("chat.thinking.description")}</small></span>
+        <span className={`thinking-switch ${enabled ? "is-on" : ""}`} aria-hidden="true"><i /></span>
+      </button>
+      {enabled && <div className="thinking-effort-group" role="group" aria-label={t("chat.thinking.depth")}>
+        <div className="thinking-menu-heading"><span>{t("chat.thinking.depth")}</span><small>{t("chat.thinking.depthHint")}</small></div>
+        {efforts.length > 0 ? <div className="thinking-effort-options">
+          {efforts.map((value) => <button type="button" role="menuitemradio" aria-checked={effort === value} className={effort === value ? "is-selected" : ""} key={value} onClick={() => { onEffortChange(value); setOpen(false); }}><span>{effortLabel(value)}</span>{effort === value && <Check size={13} />}</button>)}
+        </div> : <div className="thinking-effort-automatic"><span><strong>{t("chat.thinking.effort.auto")}</strong><small>{t("chat.thinking.depthAutomatic")}</small></span><Check size={13} /></div>}
+      </div>}
+    </div>}
+  </div>;
+}
+
+function HomeDashboard({ input, memoryCount, sending, backgroundResponseTitle, composerRef, onInput, onTranscription, onKeyDown, onSubmit, onReturnToResponse, modelCatalog, modelProfileId, onModelChange, thinkingProfile, thinkingEnabled, thinkingEffort, onThinkingChange, onThinkingEffortChange, webSearchEnabled, webSearchAvailable, onWebSearchChange, attachments, uploading, visionAvailable, onPickImage, onRemoveAttachment, onPasteFiles, dropTargetProps, dragActive, context, profileName }: {
   input: string;
   memoryCount: number | null;
   sending: boolean;
@@ -364,11 +493,15 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   onTranscription: (value: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSubmit: (event: FormEvent) => void;
-  onOpenConversation: (id: number) => void;
   onReturnToResponse: () => void;
   modelCatalog: ModelCatalog | null;
   modelProfileId: number | null;
   onModelChange: (value: number | null) => void;
+  thinkingProfile: ModelProfileSummary | null;
+  thinkingEnabled: boolean;
+  thinkingEffort: string | null;
+  onThinkingChange: (value: boolean) => void;
+  onThinkingEffortChange: (value: string) => void;
   webSearchEnabled: boolean;
   webSearchAvailable: boolean;
   onWebSearchChange: (value: boolean) => void;
@@ -381,15 +514,21 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
   dropTargetProps: DropTargetProps;
   dragActive: boolean;
   context: ConversationContext | null;
+  profileName: string;
 }) {
   const { locale, t } = useI18n();
-  const recent = conversations.slice(0, 2);
+  useEffect(() => {
+    const focusComposer = () => window.requestAnimationFrame(() => composerRef.current?.focus());
+    window.addEventListener(newConversationEvent, focusComposer);
+    return () => window.removeEventListener(newConversationEvent, focusComposer);
+  }, [composerRef]);
   return <div className="memory-home-scroll">
     <div className="memory-home">
       <section className="memory-home-hero">
+        <div className="home-app-icon"><MemoryMark compact /></div>
         <div className="memory-home-copy">
-          <div className="home-hero-meta"><p className="memory-date"><i /><i /><i />{homeDateLabel(locale)}</p><span><Sparkles size={11} />{memoryCount ?? "—"} {t("chat.home.memories")}</span></div>
-          <h1>{greeting(t)}, Lance.<br /><em>{t("chat.home.question")}</em></h1>
+          <div className="home-hero-meta"><p className="memory-date"><i /><i /><i />{homeDateLabel(locale)}</p>{memoryCount !== null && <span><Sparkles size={11} />{memoryCount} {t("chat.home.memories")}</span>}</div>
+          <h1><span>{greeting(t)}, {profileName}</span><em>{t("chat.home.question")}</em></h1>
           <p>{t("chat.home.description")}</p>
         </div>
       </section>
@@ -399,21 +538,10 @@ function HomeDashboard({ conversations, input, memoryCount, sending, backgroundR
         {dragActive && <DropHint available={visionAvailable} />}
         <div className="home-capture-main"><span><Sparkles size={17} /></span><textarea ref={composerRef} rows={2} value={input} onChange={(event) => onInput(event.target.value)} onKeyDown={onKeyDown} onPaste={onPasteFiles} placeholder={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} aria-label={backgroundResponseTitle ? t("chat.composer.backgroundPlaceholder") : t("chat.home.placeholder")} disabled={sending} /></div>
         <ComposerAttachments items={attachments} uploading={uploading} onRemove={onRemoveAttachment} />
-        <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} onPickImage={onPickImage} imageAvailable={visionAvailable} /><div className="home-pills"><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div></div><div className="home-capture-actions"><ContextIndicator context={context} /><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={(!input.trim() && attachments.length === 0) || sending || uploading > 0} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
+        <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} onPickImage={onPickImage} imageAvailable={visionAvailable} /><ThinkingControl profile={thinkingProfile} enabled={thinkingEnabled} effort={thinkingEffort} disabled={sending} onEnabledChange={onThinkingChange} onEffortChange={onThinkingEffortChange} /></div><div className="home-capture-actions"><ContextIndicator context={context} /><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={(!input.trim() && attachments.length === 0) || sending || uploading > 0} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
+      <div className="home-pills" aria-label={t("chat.home.question")}><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div>
 
-      <section className="memory-home-grid">
-        <div className="home-panel">
-          <div className="home-panel-heading"><div><span>{t("chat.home.recentKicker")}</span><h2>{t("chat.home.recentTitle")}</h2></div><button type="button" onClick={() => conversations[0] && onOpenConversation(conversations[0].id)}>{t("chat.home.continue")} <ArrowRight size={13} /></button></div>
-          <div className="home-stream">
-            {recent.length ? recent.map((conversation, index) => <button className="home-stream-item" type="button" onClick={() => onOpenConversation(conversation.id)} key={conversation.id}><i className={`home-stream-pin tone-${index + 1}`}><span /></i><span><time>{dateLabel(conversation.updated_at, locale)}</time><strong>{conversation.title}</strong></span><ArrowRight size={15} /></button>) : <div className="home-stream-empty">{t("chat.home.empty")}</div>}
-          </div>
-        </div>
-        <aside className="home-rail home-quick-links">
-          <Link className="home-quick-card" href="/review"><span><CalendarDays size={17} /></span><div><small>{t("chat.home.reviewKicker")}</small><strong>{t("nav.review")}</strong><em>{t("chat.home.reviewAction")}</em></div><ArrowRight size={14} /></Link>
-          <Link className="home-quick-card" href="/timeline"><span><CalendarClock size={17} /></span><div><small>{t("nav.timeline")}</small><strong>{t("timeline.view.today")}</strong><em>{t("timeline.view.upcoming")}</em></div><ArrowRight size={14} /></Link>
-        </aside>
-      </section>
     </div>
   </div>;
 }
@@ -461,7 +589,7 @@ function InlineMessageEditor({ value, enterToSend, onChange, onSubmit, onCancel 
   </div>;
 }
 
-function TurnView({ turn, traceId, editing = false, editText = "", enterToSend = true, onEditChange, onEditSubmit, onEditCancel, streaming = false, highlighted = false, showThinking = true, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; traceId?: string; editing?: boolean; editText?: string; enterToSend?: boolean; onEditChange?: (value: string) => void; onEditSubmit?: () => void; onEditCancel?: () => void; streaming?: boolean; highlighted?: boolean; showThinking?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
+function TurnView({ turn, traceId, editing = false, editText = "", enterToSend = true, onEditChange, onEditSubmit, onEditCancel, streaming = false, highlighted = false, showToolActivity = true, showUsage = true, ttsLoading = false, ttsPlaying = false, ttsAvailable = false, ttsDisabledReason, turnRef, onEdit, onRegenerate, onSpeak }: { turn: Turn; traceId?: string; editing?: boolean; editText?: string; enterToSend?: boolean; onEditChange?: (value: string) => void; onEditSubmit?: () => void; onEditCancel?: () => void; streaming?: boolean; highlighted?: boolean; showToolActivity?: boolean; showUsage?: boolean; ttsLoading?: boolean; ttsPlaying?: boolean; ttsAvailable?: boolean; ttsDisabledReason?: string; turnRef?: (node: HTMLDivElement | null) => void; onEdit?: () => void; onRegenerate?: () => void; onSpeak?: () => void }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const unavailableReason = ttsDisabledReason ?? t("chat.tts.unknown");
@@ -475,7 +603,7 @@ function TurnView({ turn, traceId, editing = false, editText = "", enterToSend =
   }
   return (
     <div className={`turn assistant-turn ${streaming ? "is-streaming" : ""} ${highlighted ? "message-highlight" : ""}`} ref={turnRef} data-message-id={turn.messageId}>
-      {showThinking && turn.thinking && (
+      {turn.thinking && (
         <details className="thinking">
           <summary>{streaming ? t("chat.thinkingActive") : t("chat.thinking")}</summary>
           <div className="thinking-body">{turn.thinking}</div>
@@ -632,6 +760,49 @@ export function ChatPage() {
     setSelectedId(id);
   }, []);
 
+  const selectedModelProfile = useMemo(() => {
+    if (!modelCatalog) return null;
+    const profileId = selectedModelProfileId ?? modelCatalog.default_profile_id;
+    return modelCatalog.profiles.find((profile) => profile.id === profileId)
+      ?? modelCatalog.profiles.find((profile) => profile.is_default)
+      ?? null;
+  }, [modelCatalog, selectedModelProfileId]);
+  const selectedConversation = conversations.find((item) => item.id === selectedId);
+  const thinkingPreferenceKey = selectedModelProfile?.slug || (selectedModelProfile ? `profile:${selectedModelProfile.id}` : "");
+  const rememberedThinking = thinkingPreferenceKey ? preferences.modelThinking[thinkingPreferenceKey] : undefined;
+  const thinkingEnabled = selectedModelProfile?.capabilities?.thinking
+    ? rememberedThinking ?? selectedConversation?.thinking ?? selectedModelProfile.thinking_default ?? false
+    : false;
+  const thinkingEfforts = selectedModelProfile?.thinking_efforts ?? [];
+  const rememberedEffort = thinkingPreferenceKey ? preferences.modelThinkingEffort[thinkingPreferenceKey] : undefined;
+  const thinkingEffort = rememberedEffort && thinkingEfforts.includes(rememberedEffort)
+    ? rememberedEffort
+    : selectedModelProfile?.thinking_effort_default && thinkingEfforts.includes(selectedModelProfile.thinking_effort_default)
+      ? selectedModelProfile.thinking_effort_default
+      : thinkingEfforts[0] ?? null;
+
+  const updateThinkingPreference = (value: boolean) => {
+    if (!thinkingPreferenceKey) return;
+    const current = readPreferences();
+    const next = {
+      ...current,
+      modelThinking: { ...current.modelThinking, [thinkingPreferenceKey]: value },
+    };
+    setPreferences(next);
+    writePreferences(next);
+  };
+
+  const updateThinkingEffortPreference = (value: string) => {
+    if (!thinkingPreferenceKey || !thinkingEfforts.includes(value)) return;
+    const current = readPreferences();
+    const next = {
+      ...current,
+      modelThinkingEffort: { ...current.modelThinkingEffort, [thinkingPreferenceKey]: value },
+    };
+    setPreferences(next);
+    writePreferences(next);
+  };
+
   useEffect(() => {
     void getMemoryStats(30, 1).then((stats) => setMemoryCount(stats.total_memories)).catch(() => undefined);
     void getModelCatalog().then(setModelCatalog).catch(() => undefined);
@@ -639,7 +810,8 @@ export function ChatPage() {
       if (selectedIdRef.current === null) setConversationContext(context);
     }).catch(() => undefined);
     void getRuntimeSettings().then((settings) => {
-      setWebSearchAvailable(Boolean(settings.web_search_enabled));
+      const disabled = new Set(String(settings.values?.toolkits_disabled ?? "").split(",").map((value) => value.trim()).filter(Boolean));
+      setWebSearchAvailable(Boolean(settings.web_search_enabled) && !disabled.has("web_search"));
       setVisionAvailable(Boolean(settings.vision_enabled));
     }).catch(() => { setWebSearchAvailable(false); setVisionAvailable(false); });
   }, []);
@@ -1332,7 +1504,7 @@ export function ChatPage() {
       await streamChat(activeConversationId, content, selectedModelProfileId, (event) => {
         if (event.type === "conversation") activeConversationId = event.conversation.id;
         handleEvent(event, activeConversationId);
-      }, controller.signal, webSearchEnabled, outgoingAttachments.map((item) => item.id));
+      }, controller.signal, webSearchEnabled, outgoingAttachments.map((item) => item.id), selectedModelProfile?.capabilities?.thinking ? thinkingEnabled : undefined, thinkingEnabled ? thinkingEffort : null);
       if (ttsStatus?.mode === "auto" && streamDoneRef.current && draftTextRef.current.trim()) {
         await flushAutoSpeech();
       }
@@ -1371,7 +1543,7 @@ export function ChatPage() {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       // Esc 在这个应用里还负责关浮层和退出编辑，更「近」的意图优先。
       if (editingTarget !== null) return;
-      if (document.querySelector(".search-dialog, .confirm-dialog, .shortcuts-dialog, .chat-model-menu, .composer-tool-menu, .workspace-conversation-menu")) return;
+      if (document.querySelector(".search-dialog, .confirm-dialog, .shortcuts-dialog, .chat-model-menu, .composer-tool-menu, .thinking-menu, .workspace-conversation-menu")) return;
       abortRef.current?.abort();
     };
     window.addEventListener("keydown", onEscape);
@@ -1456,17 +1628,18 @@ export function ChatPage() {
   return (
     <div className="app-shell">
       <main className="main-panel" ref={mainPanelRef}>
-        {selectedId === null ? <HomeDashboard conversations={conversations} input={input} memoryCount={memoryCount} sending={sending} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onOpenConversation={selectConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} attachments={attachments} uploading={uploading} visionAvailable={visionAvailable} onPickImage={pickImage} onRemoveAttachment={removeAttachment} onPasteFiles={onPasteFiles} dropTargetProps={dropTargetProps} dragActive={dragActive} context={conversationContext} /> : <>
+        {selectedId === null ? <HomeDashboard input={input} memoryCount={memoryCount} sending={sending} profileName={preferences.profileName || defaultPreferences.profileName} backgroundResponseTitle={sending && streamConversationId !== null ? streamConversation?.title ?? t("chat.current") : undefined} composerRef={composerRef} onInput={setInput} onTranscription={appendTranscription} onKeyDown={onKeyDown} onSubmit={startHomeConversation} onReturnToResponse={() => { if (streamConversationId !== null) selectConversation(streamConversationId); }} modelCatalog={modelCatalog} modelProfileId={selectedModelProfileId} onModelChange={setSelectedModelProfileId} thinkingProfile={selectedModelProfile} thinkingEnabled={thinkingEnabled} thinkingEffort={thinkingEffort} onThinkingChange={updateThinkingPreference} onThinkingEffortChange={updateThinkingEffortPreference} webSearchEnabled={webSearchEnabled} webSearchAvailable={webSearchAvailable} onWebSearchChange={setWebSearchEnabled} attachments={attachments} uploading={uploading} visionAvailable={visionAvailable} onPickImage={pickImage} onRemoveAttachment={removeAttachment} onPasteFiles={onPasteFiles} dropTargetProps={dropTargetProps} dragActive={dragActive} context={conversationContext} /> : <>
           <div className="chat-conversation-toolbar">
             <div className="chat-conversation-toolbar-inner">
-              <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
+              <div className="chat-conversation-identity"><MemoryMark /><strong title={selectedConversation?.title}>{selectedConversation?.title ?? t("chat.current")}</strong></div>
               <div className="chat-conversation-toolbar-right">
                 {sending && !streamBelongsToSelection && streamConversationId !== null && <button type="button" className="background-stream-button" onClick={() => selectConversation(streamConversationId)} title={t("chat.returnToResponse")}><LoaderCircle size={13} className="spin" /><span>{t("chat.backgroundResponse", { title: streamConversation?.title ?? t("chat.current") })}</span><ArrowRight size={13} /></button>}
+                <ModelPicker catalog={modelCatalog} value={selectedModelProfileId} disabled={sending} onChange={setSelectedModelProfileId} />
               </div>
             </div>
           </div>
           <div className="message-scroll" ref={scrollRef} onWheel={(event) => { if (event.deltaY < 0) pauseAutoScroll(); }} onTouchStart={(event) => { touchStartYRef.current = event.touches[0]?.clientY ?? null; }} onTouchMove={(event) => { const start = touchStartYRef.current; const current = event.touches[0]?.clientY; if (start !== null && current !== undefined && current > start + 4) pauseAutoScroll(); }} onTouchEnd={() => { touchStartYRef.current = null; }} onScroll={(event) => handleMessageScroll(event.currentTarget)}>
-            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showThinking={preferences.showThinking} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId, undefined, previousUser.attachments ?? []) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={turnKey(turn, index)} />; })}
+            {loadingMessages && !(streamBelongsToSelection && pendingUser) ? <div className="centered-empty">{t("chat.loadingMessages")}</div> : displayTurns.length === 0 ? <div className="chat-empty-state"><span><Sparkles size={18} /></span><h2>{t("chat.empty.title")}</h2><p>{t("chat.empty.description")}</p></div> : displayTurns.map((turn, index) => { const previous = index > 0 ? displayTurns[index - 1] : undefined; const previousUser = previous?.kind === "user" ? previous : undefined; const isAssistant = turn.kind === "assistant"; const editing = turn.kind === "user" && turn.messageId === editingTarget; const hasSpeechButton = isAssistant && turn.messageId !== undefined && ttsStatus?.mode !== undefined && ttsStatus.mode !== "off"; const isLatestAssistant = isAssistant && index === displayTurns.length - 1; return <TurnView turn={turn} traceId={isLatestAssistant ? selectedTraceId : undefined} editing={editing} editText={editing ? editDraft : ""} enterToSend={preferences.enterToSend} onEditChange={editing ? setEditDraft : undefined} onEditSubmit={editing ? submitEditing : undefined} onEditCancel={editing ? cancelEditing : undefined} showToolActivity={preferences.showToolActivity} showUsage={preferences.showUsage} highlighted={turn.messageId === highlightedMessageId} ttsAvailable={ttsAvailable} ttsDisabledReason={ttsDisabledReason} ttsLoading={isAssistant && turn.messageId !== undefined && ttsLoadingId === turn.messageId} ttsPlaying={isAssistant && turn.messageId !== undefined && ttsPlayingId === turn.messageId} turnRef={(node) => { if (turn.messageId !== undefined) { if (node) messageRefs.current.set(turn.messageId, node); else messageRefs.current.delete(turn.messageId); } }} onEdit={turn.kind === "user" && !sending && !editing ? () => editMessage(turn) : undefined} onRegenerate={turn.kind === "assistant" && !sending && previousUser?.messageId !== undefined ? () => void send(previousUser.text, previousUser.messageId, undefined, previousUser.attachments ?? []) : undefined} onSpeak={hasSpeechButton ? () => void speakText(turn.text, turn.messageId) : undefined} streaming={sending && streamBelongsToSelection && index === displayTurns.length - 1 && turn.kind === "assistant"} key={turnKey(turn, index)} />; })}
           </div>
           {awayFromBottom && <button className="chat-scroll-latest" type="button" aria-label={t("chat.scrollToBottom")} title={t("chat.scrollToBottom")} onClick={scrollToLatest}><ArrowDown size={17} /><span>{t("chat.scrollToBottom")}</span></button>}
           <div className="composer-wrap" ref={composerWrapRef}>
@@ -1478,6 +1651,7 @@ export function ChatPage() {
               <div className="composer-bottom">
                 <div className="composer-meta">
                   <ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={setWebSearchEnabled} onPickImage={pickImage} imageAvailable={visionAvailable} />
+                  <ThinkingControl profile={selectedModelProfile} enabled={thinkingEnabled} effort={thinkingEffort} disabled={sending} onEnabledChange={updateThinkingPreference} onEffortChange={updateThinkingEffortPreference} />
                   <ContextIndicator context={conversationContext} />
                   <span className="composer-hint">{sending && !streamBelongsToSelection ? t("chat.backgroundHint") : t("chat.sendHint")}</span>
                 </div>

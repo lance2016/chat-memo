@@ -170,7 +170,13 @@ Claude 之后，原生视觉是**零改动**自动生效的。看不了图时走
   现在没有理由主动去触发它
 - **第一版只解析 md / txt / pdf**。这就是「一开始不需要支持那么多文件」的正确切法：
   纯文本零依赖，pdf 加一个 `pypdf`（纯 Python）。docx / xlsx 等真需要了再说 ——
-  它们各自要一个解析库，而目前没有证据说明会用到
+  它们各自要一个解析库，而目前没有证据说明会用到。
+  ⚠️ **txt / md 的「上传 + 整块进上下文」已经先做掉了**（`kind="file"`，
+  见 internals「文本附件」那节），但那**不是**这一条：它没有 `documents` 表、
+  没有切块、没有检索，长文件靠 `TEXT_INLINE_CHARS` 截断并明说。
+  这一条要补的正是截断之外的那部分 —— 落库、切块、`doc_search` / `doc_read`。
+  解析层要抽成按 mime 分发的 parser 协议，txt / md 那个 parser 直接复用
+  `app/attachments/text.py`，pdf 只是多注册一个
 - `documents` + `document_chunks` 两张表，chunk 上一列 `vector(1024)`
 - **检索用混合而不是纯向量**：`pg_trgm` 子串（基建已在 `messages.search_text` 上跑了）
   + 向量余弦。这个仓库踩过「Postgres 中文全文检索要额外装分词」的坑，
@@ -254,7 +260,7 @@ pdf / docx / pptx / xlsx / canvas-design 全靠跑脚本，现在装得上但用
   两个进程同时跑 ticker 会让同一天整理两次（`backfill.record` 是 SELECT-then-insert，
   挡不住并发），双倍 token + 模型对同一批摘要写两遍记忆。完整论证见
   [internals.md](internals.md#后台任务为什么还在-api-进程里)。
-  耦合真正的代价在开发体验上，已由 `JOBS_ENABLED` 解掉（`RELOAD=1 JOBS_ENABLED=0`）。
+  耦合真正的代价在开发体验上，Compose 默认用 `RELOAD=1`；生产或需要稳定 ticker 时再显式设 `RELOAD=0`，临时调试后台任务才使用 `JOBS_ENABLED=0`。
   重新考虑的信号：API 要跑多副本（和否决 Redis 那条同一个信号）、Phoenix 上看得出整理
   占用可感的内存/CPU、或者出现真正 CPU 密集的后台任务（比如本地跑 embedding 建归档索引）
 - **自动向外部日历写入**：时间线只进不出，出错的代价不对称

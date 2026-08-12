@@ -25,11 +25,37 @@ from app.config import Settings
 
 # 协议决定用哪个 provider 实现。加一个新协议 = 加一个实现 + 在 factory 注册，
 # 不需要动 Settings，也不需要动任何调用方。
-ProtocolName = Literal["anthropic", "openai_compatible"]
+ProtocolName = Literal["anthropic", "openai_compatible", "openai_responses"]
+
+# These are provider request values, not UI labels.  Keep the supported subset
+# on the resolved target so request validation never has to guess from a model
+# name.  Individual catalog profiles may narrow this list in ``options``.
+THINKING_EFFORTS_BY_PROTOCOL: dict[str, tuple[str, ...]] = {
+    "anthropic": ("low", "medium", "high", "xhigh", "max"),
+    "openai_responses": ("low", "medium", "high", "xhigh", "max"),
+    # Chat Completions-compatible services have several incompatible dialects.
+    # They still get the boolean switch, but no depth UI unless a future native
+    # protocol implementation can enforce it.
+    "openai_compatible": (),
+}
+
+# DeepSeek Chat Completions is an intentional service-specific exception to the
+# generic OpenAI-compatible rule above.  Its public API documents exactly these
+# request values and defaults to ``high``.  Do not put them on the protocol-wide
+# list: unrelated compatible services may reject ``reasoning_effort`` outright.
+DEEPSEEK_THINKING_EFFORTS = ("low", "high", "max")
+
+
+def thinking_efforts_for(protocol: str, service_slug: str = "") -> tuple[str, ...]:
+    """Return effort values our concrete provider can safely send."""
+    if protocol == "openai_compatible" and service_slug == "deepseek":
+        return DEEPSEEK_THINKING_EFFORTS
+    return THINKING_EFFORTS_BY_PROTOCOL.get(protocol, ())
 
 DEFAULT_CAPABILITIES: dict[str, bool] = {
     "streaming": True,
     "tool_calling": True,
+    "text_generation": True,
     "thinking": False,
     "vision": False,
     "json_mode": False,
@@ -56,8 +82,11 @@ class ModelTarget:
     context_window_tokens: int | None = None
     # 该模型默认要不要思考。单次请求仍可覆盖
     thinking_default: bool = False
-    # Anthropic 的推理强度；其他协议留空表示不传
+    # Provider request value.  Empty means the concrete service has no safe,
+    # standardized effort parameter.
     effort: str = ""
+    # 当前模型真正接受的思考强度。空元组表示只支持开关、不支持调档。
+    thinking_efforts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.capabilities is None:
@@ -75,6 +104,10 @@ class ModelTarget:
         Claude 之后，原生视觉是自动生效的 —— 没有任何一处代码需要改。
         """
         return bool(self.capabilities.get("vision", False))
+
+    @property
+    def supports_thinking(self) -> bool:
+        return bool(self.capabilities.get("thinking", False))
 
     def with_model(self, model_id: str) -> ModelTarget:
         """换一个模型 ID，其余（地址、密钥、参数）不变。
@@ -113,6 +146,35 @@ class ModelTarget:
                 max_tokens=settings.max_tokens,
                 thinking_default=True,
                 effort=settings.effort,
+                thinking_efforts=THINKING_EFFORTS_BY_PROTOCOL["anthropic"],
+            )
+        elif settings.provider in {"openai", "openai_responses"} or (
+            # 仅当 provider 仍是代码默认值时，OPENAI_BASE_URL 才自动接管。
+            # 用户在设置页/环境变量明确选回 deepseek 后，不能被这个临时环境变量
+            # 悄悄覆盖。
+            settings.provider == "deepseek"
+            and settings.openai_base_url
+            and "provider" not in settings.model_fields_set
+        ):
+            target = cls(
+                protocol="openai_responses",
+                model_id=settings.openai_model,
+                display_name=f"OpenAI Responses · {settings.openai_model}",
+                base_url=settings.openai_base_url,
+                # OpenAI SDK 要求 key 非空；本地代理默认只使用它的占位值。
+                api_key=settings.openai_api_key or "not-needed",
+                service_slug="openai-codex",
+                service_name="OpenAI via Codex",
+                capabilities={
+                    **DEFAULT_CAPABILITIES,
+                    "thinking": True,
+                    "vision": True,
+                    "json_mode": True,
+                },
+                max_tokens=settings.openai_max_tokens,
+                thinking_default=settings.openai_thinking,
+                effort=settings.openai_effort,
+                thinking_efforts=THINKING_EFFORTS_BY_PROTOCOL["openai_responses"],
             )
         else:
             target = cls(
@@ -135,5 +197,7 @@ class ModelTarget:
                 },
                 max_tokens=settings.deepseek_max_tokens,
                 thinking_default=settings.deepseek_thinking,
+                effort="high",
+                thinking_efforts=DEEPSEEK_THINKING_EFFORTS,
             )
         return target.with_model(model_override)

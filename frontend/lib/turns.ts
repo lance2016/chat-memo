@@ -40,6 +40,7 @@ export function toTurns(messages: ApiMessage[]): Turn[] {
         .map((block) => ({
           id: block.id,
           filename: block.filename,
+          ...(block.kind ? { kind: block.kind } : {}),
           ...(block.mime ? { mime: block.mime } : {}),
           ...(typeof block.bytes === "number" ? { bytes: block.bytes } : {}),
           ...(typeof block.width === "number" ? { width: block.width } : {}),

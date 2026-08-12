@@ -43,7 +43,14 @@ async def list_tools(
     protocols = supported_protocols()
 
     tools: list[dict[str, Any]] = []
+    disabled = {
+        name.strip()
+        for name in str(getattr(settings, "toolkits_disabled", "") or "").split(",")
+        if name.strip()
+    }
     for kit, enabled, executor in describe_toolkits(session, settings):
+        available = kit.enabled(settings, None)
+        user_enabled = kit.name not in disabled
         for definition in _readable(executor):
             tools.append(
                 {
@@ -51,15 +58,17 @@ async def list_tools(
                     "category": kit.name,
                     "category_label": kit.label,
                     "enabled": enabled,
+                    "available": available,
+                    "user_enabled": user_enabled,
                     "request_enabled": kit.request_enabled,
                     "availability": (
-                        (
-                            "在聊天输入框打开后可用"
-                            if kit.request_enabled
-                            else "可用于所有对话"
+                        "已关闭：可在设置 > 工具中重新开启"
+                        if not user_enabled
+                        else (
+                            ("在聊天输入框打开后可用" if kit.request_enabled else "可用于所有对话")
+                            if available
+                            else kit.disabled_hint or "未启用"
                         )
-                        if enabled
-                        else kit.disabled_hint or "未启用"
                     ),
                     "protocols": protocols,
                     "native_protocol": kit.native_protocol,

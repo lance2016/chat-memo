@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 PROBE_TIMEOUT = 2.0
 
 # Phoenix 没起时的补救命令。写在后端，前端不硬编码。
-START_COMMAND = "docker compose up -d phoenix"
+# Phoenix 是默认 Compose 栈的一部分；如果用户手动停掉容器，恢复整套依赖即可。
+START_COMMAND = "docker compose up -d"
 
 
 def _dependencies_installed() -> bool:

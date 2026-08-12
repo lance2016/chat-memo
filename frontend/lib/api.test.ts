@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiUrl, clearDebugRequests, createBackup, deleteConversation, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listConversations, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
+import { apiUrl, clearDebugRequests, createBackup, deleteConversation, getAsrStatus, getDebugPrompt, getDebugRequest, getNextSpeech, getToolCatalog, getTtsStatus, getTtsVoices, listConversations, listDebugRequests, listReviewDays, parseSseEventLine, prepareSpeech, restoreMemoryVersion, searchAll, stopSpeech, streamChat, synthesizeSpeech, transcribeAudio, updateConversation, updateRuntimeSettings, warmupSpeech } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -40,6 +40,26 @@ describe("parseSseEventLine", () => {
     await updateConversation(3, { thinking: null });
 
     expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/conversations/3", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ thinking: null }) }));
+  });
+
+  it("sends composer thinking and effort overrides with a chat turn", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await streamChat(3, "分析", 8, () => undefined, undefined, false, [], true, "high");
+
+    expect(fetchMock).toHaveBeenCalledWith("http://localhost:8000/api/chat", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({
+        conversation_id: 3,
+        content: "分析",
+        model_profile_id: 8,
+        web_search: false,
+        attachment_ids: [],
+        thinking: true,
+        thinking_effort: "high",
+      }),
+    }));
   });
 
   it("restores a memory by version id", async () => {

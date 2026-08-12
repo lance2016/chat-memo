@@ -22,8 +22,8 @@ def test_assistant_text_only() -> None:
     assert out == [{"role": "assistant", "content": "答案"}]
 
 
-def test_thinking_blocks_are_dropped() -> None:
-    """DeepSeek 不接受 reasoning_content 回传，必须丢掉。"""
+def test_thinking_blocks_are_dropped_for_generic_compatible_services() -> None:
+    """Compatible services do not share one portable reasoning dialect."""
     out = to_openai_messages(
         [
             {
@@ -37,6 +37,29 @@ def test_thinking_blocks_are_dropped() -> None:
     )
     assert out == [{"role": "assistant", "content": "答案"}]
     assert "内部推理" not in json.dumps(out, ensure_ascii=False)
+
+
+def test_deepseek_reasoning_is_restored_for_tool_followups() -> None:
+    """DeepSeek requires reasoning_content in later requests carrying tools."""
+    out = to_openai_messages(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "先查日期"},
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "get_date",
+                        "input": {},
+                    },
+                ],
+            }
+        ],
+        include_reasoning=True,
+    )
+    assert out[0]["reasoning_content"] == "先查日期"
+    assert out[0]["tool_calls"][0]["id"] == "call_1"
 
 
 def test_tool_use_becomes_tool_calls() -> None:

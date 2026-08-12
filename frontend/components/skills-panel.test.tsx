@@ -38,14 +38,14 @@ function catalog(overrides: Partial<SkillCatalog> = {}): SkillCatalog {
   return { root: "/skills", enabled: true, total: 1, active: 1, skills: [skill()], ...overrides };
 }
 
-it("列出技能并显示生效数量", async () => {
+it("列出技能并显示启用数量", async () => {
   api.listSkills.mockResolvedValue(catalog());
 
   render(<SkillsPanel />);
 
   expect(await screen.findByText("pdf")).toBeTruthy();
   expect(screen.getByText("处理 PDF 时使用。")).toBeTruthy();
-  expect(screen.getByText("对话中生效")).toBeTruthy();
+  expect(screen.getByText("1 个 · 1 个已启用")).toBeTruthy();
 });
 
 it("坏掉的技能仍然列出来，但开关不能动", async () => {
@@ -68,7 +68,8 @@ it("安装成功后刷新列表", async () => {
   render(<SkillsPanel />);
   await screen.findByText("还没有技能");
 
-  fireEvent.change(screen.getByPlaceholderText(/anthropics\/skills/), { target: { value: "anthropics/skills" } });
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  fireEvent.change(screen.getByRole("textbox", { name: "技能来源" }), { target: { value: "anthropics/skills" } });
   api.listSkills.mockResolvedValue(catalog());
   fireEvent.click(screen.getByRole("button", { name: "安装" }));
 
@@ -83,10 +84,23 @@ it("安装失败时显示后端给的原因", async () => {
   render(<SkillsPanel />);
   await screen.findByText("还没有技能");
 
-  fireEvent.change(screen.getByPlaceholderText(/anthropics\/skills/), { target: { value: "foo/bar" } });
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  fireEvent.change(screen.getByRole("textbox", { name: "技能来源" }), { target: { value: "foo/bar" } });
   fireEvent.click(screen.getByRole("button", { name: "安装" }));
 
   expect(await screen.findByText("这个包里没有找到 SKILL.md")).toBeTruthy();
+});
+
+it("按 Escape 关闭添加技能窗口", async () => {
+  api.listSkills.mockResolvedValue(catalog());
+
+  render(<SkillsPanel />);
+  await screen.findByText("pdf");
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  expect(screen.getByRole("dialog", { name: "添加技能" })).toBeTruthy();
+
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "添加技能" })).toBeNull();
 });
 
 it("被跳过的技能要单独说出来", async () => {
@@ -100,7 +114,8 @@ it("被跳过的技能要单独说出来", async () => {
   render(<SkillsPanel />);
   await screen.findByText("pdf");
 
-  fireEvent.change(screen.getByPlaceholderText(/anthropics\/skills/), { target: { value: "anthropics/skills" } });
+  fireEvent.click(screen.getByRole("button", { name: /添加技能/ }));
+  fireEvent.change(screen.getByRole("textbox", { name: "技能来源" }), { target: { value: "anthropics/skills" } });
   fireEvent.click(screen.getByRole("button", { name: "安装" }));
 
   expect(await screen.findByText("跳过了 1 个")).toBeTruthy();
@@ -109,12 +124,14 @@ it("被跳过的技能要单独说出来", async () => {
 
 it("删除要先确认", async () => {
   api.listSkills.mockResolvedValue(catalog());
+  api.getSkill.mockResolvedValue({ ...skill(), body: "# PDF" });
   api.deleteSkill.mockResolvedValue(undefined);
 
   render(<SkillsPanel />);
   await screen.findByText("pdf");
 
-  fireEvent.click(screen.getByRole("button", { name: "删除技能 pdf" }));
+  fireEvent.click(screen.getByRole("button", { name: "查看技能 pdf" }));
+  fireEvent.click(await screen.findByRole("button", { name: "删除技能 pdf" }));
   expect(api.deleteSkill).not.toHaveBeenCalled();
 
   fireEvent.click(screen.getByRole("button", { name: "删除" }));

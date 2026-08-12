@@ -44,7 +44,13 @@ make fix       # 能自动修的先修掉
 ```
 
 ⚠️ **测试不能依赖 `.env` 或真实密钥**。CI 里两者都没有，一旦有用例依赖就再也跑不起来。
-写用例时显式给出 `Settings(...)` 的相关字段（`Settings()` 会读开发机的 `.env`）。
+写用例时显式给出 `Settings(...)` 的相关字段。
+
+这条现在由 `tests/conftest.py` 的 `pytest_configure` 强制执行：它把 `Settings` 和
+仓库根的 `.env` 断开，所以本机和 CI 解析出的配置一定一致。**别去掉它** ——
+反例真实发生过：往 `.env` 加一个 `OPENAI_BASE_URL`，5 个跟 OpenAI 毫无关系的
+思考开关用例就开始失败（`ModelTarget.from_settings` 里有「provider 没被显式设置时
+OPENAI_BASE_URL 自动接管」这一支），而 CI 上一切正常。
 
 前端（在 `frontend/` 目录下）：
 

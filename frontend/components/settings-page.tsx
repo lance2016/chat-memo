@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
-import { Activity, AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronRight, Clipboard, Clock3, Copy, Download, Eye, Gauge, HardDriveDownload, Headphones, Mic2, Package, RefreshCw, RotateCcw, Save, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, X, type LucideIcon } from "lucide-react";
-import { apiBaseLabel, clearConversations, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
-import { defaultPreferences, preferencesChangeEvent, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
+import { AudioLines, BellRing, BrainCircuit, Bug, CalendarClock, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Clock3, Copy, Crop, Download, Eye, Gauge, HardDriveDownload, Headphones, ImagePlus, Mic2, Package, RefreshCw, RotateCcw, Save, Search, Send, ServerCog, Settings2, SlidersHorizontal, Smartphone, Trash2, TriangleAlert, UserRound, Volume2, Wrench, X, ZoomIn, type LucideIcon } from "lucide-react";
+import { apiBaseLabel, clearAllData, clearDebugRequests, createBackup, createModelProfile, createModelService, errorMessage, getAsrStatus, getDebugPrompt, getDebugRequest, getHealth, getModelCatalog, getNotifyStatus, getRuntimeSettings, getTtsStatus, getTtsVoices, listDebugRequests, sendTestNotification, setDefaultModel, synthesizeSpeech, updateModelProfile, updateRuntimeSettings, warmupSpeech } from "@/lib/api";
+import { defaultPreferences, isProfileAvatarImage, preferencesChangeEvent, profileInitials, readPreferences, writePreferences, type UserPreferences } from "@/lib/preferences";
 import type { AsrStatus, EnvFieldStatus, BackupResult, DebugPrompt, DebugRequestDetail, DebugRequestList, HealthStatus, ModelCatalog, NotifyStatus, RuntimeSettingField, RuntimeSettings, TtsStatus } from "@/lib/types";
 import { confirmAppNavigation, useNavigationGuard } from "@/lib/navigation-guard";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -14,37 +14,52 @@ import { ToolCatalog } from "@/components/tool-catalog";
 import { useI18n } from "@/components/i18n-provider";
 import { useToast } from "@/components/toast";
 import { notifyWorkspaceConversationsChanged } from "@/components/workspace-topbar";
+import { useDialogFocus } from "@/lib/use-dialog-focus";
 
-type SettingsSectionKey = "general" | "assistant" | "model" | "skills" | "review" | "timeline" | "notify" | "voice" | "voiceInput" | "system" | "advanced";
+type SettingsSectionKey = "profile" | "general" | "assistant" | "model" | "tools" | "skills" | "review" | "reminders" | "voice" | "system" | "advanced";
 
-const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2 }> = [
-  { key: "general", icon: SlidersHorizontal },
-  { key: "assistant", icon: UserRound },
-  { key: "model", icon: BrainCircuit },
-  { key: "skills", icon: Package },
-  { key: "review", icon: Clock3 },
-  { key: "timeline", icon: CalendarClock },
-  { key: "notify", icon: BellRing },
-  { key: "voice", icon: Headphones },
-  { key: "voiceInput", icon: Mic2 },
-  { key: "system", icon: HardDriveDownload },
-  { key: "advanced", icon: Bug },
+// 分区的图标和色号。色块是给「扫一眼找到」用的 —— 12 个同色线条图标堆在一起，
+// 找东西只能逐行读文字；给每个分区一个固定颜色之后，位置记忆才立得住。
+const settingsSections: Array<{ key: SettingsSectionKey; icon: typeof Settings2; tone: string }> = [
+  { key: "profile", icon: UserRound, tone: "blue" },
+  { key: "general", icon: SlidersHorizontal, tone: "slate" },
+  { key: "assistant", icon: UserRound, tone: "violet" },
+  { key: "model", icon: BrainCircuit, tone: "blue" },
+  { key: "tools", icon: Wrench, tone: "teal" },
+  { key: "skills", icon: Package, tone: "amber" },
+  { key: "review", icon: Clock3, tone: "teal" },
+  { key: "reminders", icon: BellRing, tone: "rose" },
+  { key: "voice", icon: Headphones, tone: "purple" },
+  { key: "system", icon: HardDriveDownload, tone: "green" },
+  { key: "advanced", icon: Bug, tone: "slate" },
 ];
 
-const settingsSectionGroups: Array<{ label: string; keys: SettingsSectionKey[] }> = [
-  { label: "个性化", keys: ["general", "assistant"] },
-  { label: "功能", keys: ["model", "skills", "review", "timeline", "notify", "voice", "voiceInput"] },
-  { label: "系统", keys: ["system", "advanced"] },
+// 分组只用分隔线，不再给组标题文字（macOS 设置就是这样）——
+// 「个性化 / 功能 / 系统」这三个词并不能帮人找到任何东西，只是多占三行。
+const settingsSectionGroups: SettingsSectionKey[][] = [
+  ["profile", "general", "assistant"],
+  ["model", "tools", "skills", "review"],
+  ["reminders", "voice"],
+  ["system", "advanced"],
 ];
 
+// 「这个字段属于哪个分区」仍由前端决定，因为一个 group 会被拆到多个分区
+// （notify 的字段分散在通知页和时间线页）。
+// 「这个字段是不是高级选项」已经交给后端的 field.advanced —— 原来这里还有四份
+// *PrimaryFieldKeys 名单，加一个配置项要在两处同步，漏一处就是字段凭空消失。
 const reviewFieldKeys = new Set(["consolidate_model", "consolidate_auto", "consolidate_hour"]);
 const systemFieldKeys = new Set(["backup_auto", "backup_keep"]);
-const modelPrimaryFieldKeys = new Set(["provider", "model", "deepseek_model", "effort", "deepseek_thinking"]);
-const ttsPrimaryFieldKeys = new Set(["tts_mode", "tts_model", "tts_voice", "tts_instruct", "tts_speed_percent"]);
-const asrPrimaryFieldKeys = new Set(["asr_model", "asr_language"]);
+// Thinking is a per-chat composer decision. Keep legacy runtime fields in the
+// API for old deployments, but never expose a second, conflicting UI here.
+const chatThinkingFieldKeys = new Set(["deepseek_thinking", "openai_thinking", "openai_effort", "effort"]);
+// Model profiles are the only model-routing UI. These fields stay in the API as
+// an upgrade fallback, but must not leak into the page or settings search.
+const legacyModelRoutingFieldKeys = new Set(["provider", "model", "deepseek_model", "openai_model"]);
 // 用户真正需要的通知设置只有总开关、设备 key 和提醒规则；通道注册表、图标和提示音暂不暴露。
 const notifyTimingFieldKeys = new Set(["notify_briefing", "notify_briefing_hour", "notify_all_day_hour", "notify_default_lead_minutes", "notify_catchup_hours", "notify_smart_copy", "notify_timeout"]);
-const timelinePrimaryFieldKeys = new Set(["notify_default_lead_minutes", "notify_all_day_hour", "notify_briefing", "notify_briefing_hour", "notify_public_base_url"]);
+
+const isPrimary = (field: RuntimeSettingField) => !field.advanced;
+const isAdvanced = (field: RuntimeSettingField) => Boolean(field.advanced);
 
 const fieldHelp: Record<string, string> = {
   owner_name: "助手在对话中对你的称呼",
@@ -54,8 +69,6 @@ const fieldHelp: Record<string, string> = {
   deepseek_model: "DeepSeek 对话模型",
   max_tokens: "单次回答允许生成的最大 token 数",
   deepseek_max_tokens: "单次回答允许生成的最大 token 数",
-  effort: "更高强度通常更慢，也会消耗更多 token",
-  deepseek_thinking: "新会话默认是否启用深度思考",
   max_tool_iterations: "限制模型连续调用记忆工具的轮次",
   consolidate_model: "留空时沿用日常聊天模型",
   title_model: "智谱兼容配置；设置 SILICONFLOW_API_KEY 后优先使用环境变量中的硅基流动标题模型",
@@ -80,6 +93,7 @@ const fieldHelp: Record<string, string> = {
   asr_max_tokens: "短语音建议保持 512，降低静音或噪声导致的异常长识别",
   asr_timeout: "语音识别服务单次请求最长等待时间",
   skills_enabled: "关掉后模型看不到任何技能；已装的技能不会被删",
+  toolkits_disabled: "关闭某类工具后，新对话不会把它交给模型；不会删除数据",
   debug_prompts: "临时保存最近请求，可能包含完整对话原文",
 };
 
@@ -113,8 +127,129 @@ function formatModelSize(bytes: number) {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+type AvatarCropSource = { url: string; image: HTMLImageElement };
+
+function loadProfileAvatar(file: File) {
+  return new Promise<AvatarCropSource>((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("请选择图片文件"));
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      reject(new Error("图片不能超过 8 MB"));
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.decoding = "async";
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片解析失败"));
+    };
+    image.onload = () => resolve({ url, image });
+    image.src = url;
+  });
+}
+
+function AvatarCropDialog({ source, onCancel, onConfirm }: { source: AvatarCropSource; onCancel: () => void; onConfirm: (dataUrl: string) => void }) {
+  const { t } = useI18n();
+  const dialogRef = useRef<HTMLElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const dragRef = useRef<{ pointerId: number; x: number; y: number; offsetX: number; offsetY: number } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const size = 280;
+  const [offset, setOffset] = useState(() => {
+    const scale = Math.max(size / source.image.width, size / source.image.height);
+    return { x: (size - source.image.width * scale) / 2, y: (size - source.image.height * scale) / 2 };
+  });
+
+  const metrics = useCallback((nextZoom = zoom) => {
+    const scale = Math.max(size / source.image.width, size / source.image.height) * nextZoom;
+    const width = source.image.width * scale;
+    const height = source.image.height * scale;
+    return { scale, width, height };
+  }, [source, zoom]);
+
+  const clampOffset = useCallback((next: { x: number; y: number }, nextZoom = zoom) => {
+    const { width, height } = metrics(nextZoom);
+    return {
+      x: Math.min(0, Math.max(size - width, next.x)),
+      y: Math.min(0, Math.max(size - height, next.y)),
+    };
+  }, [metrics, zoom]);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    const { scale } = metrics();
+    const safeOffset = clampOffset(offset);
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, size, size);
+    context.fillStyle = "#090c12";
+    context.fillRect(0, 0, size, size);
+    context.drawImage(source.image, safeOffset.x, safeOffset.y, source.image.width * scale, source.image.height * scale);
+  }, [clampOffset, metrics, offset, source]);
+
+  useEffect(() => {
+    draw();
+  }, [draw]);
+
+  useDialogFocus({ dialogRef, initialFocusRef: closeRef, onClose: onCancel });
+
+  const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, offsetX: offset.x, offsetY: offset.y };
+  };
+  const onPointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = rect.width ? size / rect.width : 1;
+    setOffset(clampOffset({ x: drag.offsetX + (event.clientX - drag.x) * ratio, y: drag.offsetY + (event.clientY - drag.y) * ratio }));
+  };
+  const stopDragging = () => { dragRef.current = null; };
+  const updateZoom = (value: number) => {
+    setZoom(value);
+    setOffset((current) => clampOffset(current, value));
+  };
+  const confirm = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const webp = canvas.toDataURL("image/webp", 0.84);
+    onConfirm(webp.length <= 180_000 ? webp : canvas.toDataURL("image/jpeg", 0.78));
+  };
+
+  return <div className="avatar-crop-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <section ref={dialogRef} className="avatar-crop-dialog" role="dialog" aria-modal="true" aria-labelledby="avatar-crop-title" tabIndex={-1}>
+      <header className="avatar-crop-header"><div><span className="card-kicker">PROFILE IMAGE</span><h2 id="avatar-crop-title">{t("settings.profile.cropTitle")}</h2><p>{t("settings.profile.cropDescription")}</p></div><button ref={closeRef} className="icon-button" type="button" aria-label={t("settings.profile.cropCancel")} onClick={onCancel}><X size={16} /></button></header>
+      <div className="avatar-crop-stage"><canvas ref={canvasRef} width={size} height={size} aria-label={t("settings.profile.cropPreview")} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={stopDragging} onPointerCancel={stopDragging} /></div>
+      <p className="avatar-crop-hint">{t("settings.profile.cropHint")}</p>
+      <label className="avatar-crop-zoom"><span><ZoomIn size={14} aria-hidden="true" />{t("settings.profile.cropZoom")}</span><input type="range" min="1" max="3" step="0.01" value={zoom} aria-label={t("settings.profile.cropZoom")} onChange={(event) => updateZoom(Number(event.target.value))} /><output>{Math.round(zoom * 100)}%</output></label>
+      <footer className="avatar-crop-actions"><button className="ghost-button" type="button" onClick={onCancel}>{t("settings.profile.cropCancel")}</button><button className="primary-button" type="button" onClick={confirm}><Crop size={14} />{t("settings.profile.cropConfirm")}</button></footer>
+    </section>
+  </div>;
+}
+
 function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: (checked: boolean) => void; label: string; description: string }) {
   return <label className="settings-toggle-row"><span className="settings-toggle-copy"><strong>{label}</strong><span>{description}</span></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span className="toggle-track" aria-hidden="true"><span /></span></label>;
+}
+
+function PreferenceSelectRow({ label, ariaLabel, value, options, onChange }: { label: string; ariaLabel: string; value: string; options: Array<{ value: string; label: string }>; onChange: (value: string) => void }) {
+  return <label className="settings-preference-row">
+    <strong>{label}</strong>
+    <span className="settings-preference-select">
+      <select aria-label={ariaLabel} value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+      </select>
+      <ChevronDown size={15} aria-hidden="true" />
+    </span>
+  </label>;
 }
 
 function SettingValue({ label, value, tone = "" }: { label: string; value: string; tone?: string }) {
@@ -135,7 +270,7 @@ function SettingsVisualGroup({ icon: Icon, title, description, tone = "neutral",
   </section>;
 }
 
-function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env" | "default"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
+function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, ttsVoices, ttsVoicesLoading, disabled, pendingReset = false, highlighted = false, onChange, onRestore }: { field: RuntimeSettingField; value: unknown; source?: "db" | "env" | "default"; providers: RuntimeSettings["providers"]; ttsStatus?: TtsStatus | null; asrStatus?: AsrStatus | null; ttsVoices: string[]; ttsVoicesLoading: boolean; disabled: boolean; pendingReset?: boolean; highlighted?: boolean; onChange: (value: unknown) => void; onRestore: () => void }) {
   const stringValue = value === null || value === undefined ? "" : String(value);
   const providerChoices = field.key === "provider" ? providers : [];
   const isTtsModel = field.key === "tts_model";
@@ -150,7 +285,16 @@ function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, t
 
   const controlDisabled = disabled || pendingReset || (isTtsVoice && ttsVoicesLoading);
 
-  return <div className={`runtime-setting-row ${pendingReset ? "pending-reset" : ""}`}>
+  // 不生效的项照常可改（档案被删/停用时它们又会重新兜底），只是要说清楚现在没用。
+  const inactive = field.inactive_reason ?? "";
+
+  // 搜索命中要滚到视野里 —— 命中项常常在折叠块下面，只切分区还是要人再找一遍。
+  const rowRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlighted) rowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [highlighted]);
+
+  return <div ref={rowRef} className={`runtime-setting-row ${pendingReset ? "pending-reset" : ""} ${inactive ? "is-inactive" : ""} ${highlighted ? "is-search-hit" : ""}`}>
     <div className="runtime-setting-label"><strong>{field.label}</strong><span>{fieldHelp[field.key] ?? (field.provider ? `仅用于 ${field.provider}` : "保存后立即生效")}</span></div>
     <div className={`runtime-setting-control ${multiline ? "multiline" : ""}`}>
       {field.kind === "bool" && <label className="runtime-checkbox"><input type="checkbox" aria-label={field.label} checked={value === true} disabled={controlDisabled} onChange={(event) => onChange(event.target.checked)} /><span>{value === true ? "开启" : "关闭"}</span></label>}
@@ -166,6 +310,7 @@ function RuntimeField({ field, value, source, providers, ttsStatus, asrStatus, t
     </div>
     {multiline && <span className="runtime-setting-hint runtime-character-count">已用 {stringValue.length}{field.maximum ? ` / ${field.maximum}` : ""} 字</span>}
     {providerReason && <span className="runtime-setting-hint">{providerReason}</span>}
+    {inactive && <span className="runtime-setting-hint runtime-inactive-hint"><TriangleAlert size={11} />{inactive}</span>}
   </div>;
 }
 
@@ -188,9 +333,12 @@ function DebugDialog({ kind, prompt, request, loading, error, copied, onClose, o
   const isPrompt = kind === "prompt";
   const promptText = prompt?.system ?? "";
   const payloadText = request ? JSON.stringify(request.payload, null, 2) : "";
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useDialogFocus({ dialogRef, initialFocusRef: closeRef, onClose });
   return <div className="debug-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="debug-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-dialog-title">
-      <header className="debug-dialog-header"><div><span className="card-kicker">{isPrompt ? "SYSTEM PROMPT" : "MODEL REQUEST"}</span><h2 id="debug-dialog-title">{isPrompt ? "当前 system prompt" : request ? `请求 #${request.id}` : "请求详情"}</h2></div><button className="icon-button" type="button" aria-label="关闭调试详情" onClick={onClose}><X size={16} /></button></header>
+    <section ref={dialogRef} className="debug-dialog" role="dialog" aria-modal="true" aria-labelledby="debug-dialog-title" tabIndex={-1}>
+      <header className="debug-dialog-header"><div><span className="card-kicker">{isPrompt ? "SYSTEM PROMPT" : "MODEL REQUEST"}</span><h2 id="debug-dialog-title">{isPrompt ? "当前 system prompt" : request ? `请求 #${request.id}` : "请求详情"}</h2></div><button ref={closeRef} className="icon-button" type="button" aria-label="关闭调试详情" onClick={onClose}><X size={16} /></button></header>
       {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取调试数据…</div> : error ? <div className="debug-dialog-error">{error}</div> : isPrompt && prompt ? <>
         <div className="debug-dialog-meta"><span>{prompt.chars.toLocaleString()} 字符</span><span>约 {prompt.approx_tokens.toLocaleString()} tokens</span></div>
         <pre className="debug-code debug-prompt-code">{promptText || "（当前 system prompt 为空）"}</pre>
@@ -207,15 +355,22 @@ function DebugDialog({ kind, prompt, request, loading, error, copied, onClose, o
   </div>;
 }
 
+function modelProtocolLabel(protocol: ModelCatalog["services"][number]["protocol"]) {
+  if (protocol === "openai_responses") return "OpenAI Responses API";
+  if (protocol === "openai_compatible") return "OpenAI Chat Completions";
+  return "Anthropic API";
+}
+
 function ModelServicesPanel() {
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const [consolidationCatalog, setConsolidationCatalog] = useState<ModelCatalog | null>(null);
+  const [titleCatalog, setTitleCatalog] = useState<ModelCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [serviceName, setServiceName] = useState("");
   const [serviceSlug, setServiceSlug] = useState("");
-  const [protocol, setProtocol] = useState<"anthropic" | "openai_compatible">("openai_compatible");
+  const [protocol, setProtocol] = useState<"anthropic" | "openai_compatible" | "openai_responses">("openai_compatible");
   const [baseUrl, setBaseUrl] = useState("");
   const [credentialRef, setCredentialRef] = useState("");
   const [profileServiceId, setProfileServiceId] = useState<number | "">("");
@@ -223,13 +378,16 @@ function ModelServicesPanel() {
   const [displayName, setDisplayName] = useState("");
   const [contextWindow, setContextWindow] = useState("");
   const [contextDrafts, setContextDrafts] = useState<Record<number, string>>({});
+  const [search, setSearch] = useState("");
+  const [serviceFilter, setServiceFilter] = useState("all");
 
   const refresh = async () => {
     setLoading(true);
     try {
-      const [next, consolidation] = await Promise.all([getModelCatalog(), getModelCatalog("consolidation")]);
+      const [next, consolidation, title] = await Promise.all([getModelCatalog(), getModelCatalog("consolidation"), getModelCatalog("title")]);
       setCatalog(next);
       setConsolidationCatalog(consolidation);
+      setTitleCatalog(title);
       setProfileServiceId((current) => current || next.services[0]?.id || "");
       setError("");
     } catch (cause) {
@@ -241,11 +399,12 @@ function ModelServicesPanel() {
 
   useEffect(() => { void refresh(); }, []);
 
-  const mutate = async (action: () => Promise<ModelCatalog>, purpose: "chat" | "consolidation" = "chat") => {
+  const mutate = async (action: () => Promise<ModelCatalog>, purpose: "chat" | "consolidation" | "title" = "chat") => {
     setBusy(true);
     try {
       const next = await action();
       if (purpose === "consolidation") setConsolidationCatalog(next);
+      else if (purpose === "title") setTitleCatalog(next);
       else setCatalog(next);
       setError("");
     } catch (cause) {
@@ -280,14 +439,52 @@ function ModelServicesPanel() {
     await mutate(() => updateModelProfile(profile.id, { context_window_tokens: parsed }));
   };
 
+  const visibleGroups = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    return (catalog?.services ?? [])
+      .filter((service) => serviceFilter === "all" || String(service.id) === serviceFilter)
+      .map((service) => ({
+        service,
+        profiles: (catalog?.profiles ?? []).filter((profile) => {
+          if (profile.service_id !== service.id) return false;
+          if (!normalizedSearch) return true;
+          return [profile.model_id, profile.display_name, profile.service_name]
+            .some((value) => value.toLowerCase().includes(normalizedSearch));
+        }),
+      }))
+      .filter((group) => group.profiles.length > 0 || !normalizedSearch);
+  }, [catalog, search, serviceFilter]);
+
+  const visibleProfileCount = visibleGroups.reduce((total, group) => total + group.profiles.length, 0);
+  const chatDefault = catalog?.profiles.find((profile) => profile.is_default);
+  const titleDefault = titleCatalog?.profiles.find((profile) => profile.is_default);
+
   return <SettingsVisualGroup icon={BrainCircuit} title="模型服务与模型" description="服务连接只保存凭据引用，具体模型可添加多个并在聊天页快速切换" tone="accent" className="model-services-group">
     {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型目录…</div> : <>
-      <div className="model-profile-list">
-        {(catalog?.profiles ?? []).map((profile) => <div className={`model-profile-row ${profile.is_default || consolidationCatalog?.default_profile_id === profile.id ? "is-default" : ""}`} key={profile.id}>
-          <div className="model-profile-main"><strong>{profile.display_name}</strong><span>{profile.service_name} · {profile.model_id}</span></div>
-          <div className="model-profile-meta"><span className={profile.available ? "value-success" : "value-warning"}>{profile.available ? "可用" : profile.reason || "不可用"}</span><label className="model-context-capacity" title="输入和输出合计的上下文窗口；未知时不会伪造数值"><span>上下文</span><input className="runtime-input" type="number" min={16384} max={2000000} step={1024} placeholder="未配置" value={contextDrafts[profile.id] ?? (profile.context_window_tokens ? String(profile.context_window_tokens) : "")} onChange={(event) => setContextDrafts((current) => ({ ...current, [profile.id]: event.target.value }))} onBlur={(event) => { const value = event.target.value; void saveContextWindow(profile, value); }} /></label><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("chat", profile.id))}>{profile.is_default ? "聊天默认" : "设为聊天默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("consolidation", profile.id), "consolidation")}>{consolidationCatalog?.default_profile_id === profile.id ? "整理默认" : "设为整理默认"}</button><button className="icon-button" type="button" disabled={busy} title={profile.enabled ? "停用模型" : "启用模型"} onClick={() => void mutate(() => updateModelProfile(profile.id, { enabled: !profile.enabled }))}>{profile.enabled ? <Check size={13} /> : <RotateCcw size={13} />}</button></div>
-        </div>)}
-        {!catalog?.profiles.length && <div className="settings-empty">还没有模型档案。</div>}
+      <div className="model-directory-summary">
+        <div><span>聊天默认</span><strong>{chatDefault?.model_id ?? "未选择"}</strong></div>
+        <div><span>标题默认</span><strong>{titleDefault?.model_id ?? "自动回退"}</strong></div>
+        <div><span>模型数量</span><strong>{visibleProfileCount} / {catalog?.profiles.length ?? 0}</strong></div>
+        <div><span>Provider 数量</span><strong>{catalog?.services.length ?? 0}</strong></div>
+      </div>
+      <div className="model-directory-toolbar">
+        <label className="model-directory-search"><Search size={14} aria-hidden="true" /><input aria-label="搜索模型" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型名称或 Provider" /></label>
+        <select className="runtime-select" aria-label="筛选 Provider" value={serviceFilter} onChange={(event) => setServiceFilter(event.target.value)}><option value="all">所有 Provider</option>{(catalog?.services ?? []).map((service) => <option value={service.id} key={service.id}>{service.name}</option>)}</select>
+      </div>
+      <div className="model-service-groups">
+        {visibleGroups.map(({ service, profiles }) => <details className="model-service-group" key={service.id}>
+          <summary>
+            <span className="model-service-summary-copy"><strong>{service.name}</strong><small>{modelProtocolLabel(service.protocol)} · {profiles.length} 个模型</small></span>
+            <span className={`model-service-status ${service.enabled ? "is-enabled" : "is-disabled"}`}>{service.enabled ? "已启用" : "已停用"}<ChevronRight size={13} /></span>
+          </summary>
+          <div className="model-profile-list model-profile-list-nested">
+            {profiles.map((profile) => <div className={`model-profile-row ${profile.is_default || titleDefault?.id === profile.id || consolidationCatalog?.default_profile_id === profile.id ? "is-default" : ""}`} key={profile.id}>
+              <div className="model-profile-main"><strong>{profile.display_name}</strong><span>{profile.model_id}</span></div>
+              <div className="model-profile-meta"><span className={profile.available ? "value-success" : "value-warning"}>{profile.available ? "可用" : profile.reason || "不可用"}</span><label className="model-context-capacity" title="输入和输出合计的上下文窗口；未知时不会伪造数值"><span>上下文</span><input className="runtime-input" aria-label={`${profile.model_id} 上下文窗口`} type="number" min={16384} max={2000000} step={1024} placeholder="未配置" value={contextDrafts[profile.id] ?? (profile.context_window_tokens ? String(profile.context_window_tokens) : "")} onChange={(event) => setContextDrafts((current) => ({ ...current, [profile.id]: event.target.value }))} onBlur={(event) => { const value = event.target.value; void saveContextWindow(profile, value); }} /></label><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("chat", profile.id))}>{profile.is_default ? "聊天默认" : "设为聊天默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("consolidation", profile.id), "consolidation")}>{consolidationCatalog?.default_profile_id === profile.id ? "整理默认" : "设为整理默认"}</button><button className="ghost-button" type="button" disabled={busy || !profile.available} onClick={() => void mutate(() => setDefaultModel("title", profile.id), "title")}>{titleDefault?.id === profile.id ? "标题默认" : "设为标题默认"}</button><button className="icon-button" type="button" disabled={busy} title={profile.enabled ? "停用模型" : "启用模型"} onClick={() => void mutate(() => updateModelProfile(profile.id, { enabled: !profile.enabled }))}>{profile.enabled ? <Check size={13} /> : <RotateCcw size={13} />}</button></div>
+            </div>)}
+          </div>
+        </details>)}
+        {!visibleGroups.length && <div className="settings-empty">没有匹配的模型。</div>}
       </div>
 
       <details className="model-service-editor">
@@ -295,7 +492,7 @@ function ModelServicesPanel() {
         <div className="model-service-form">
           <input className="runtime-input" value={serviceName} onChange={(event) => setServiceName(event.target.value)} placeholder="服务名称，例如 OpenRouter" />
           <input className="runtime-input" value={serviceSlug} onChange={(event) => setServiceSlug(event.target.value.toLowerCase())} placeholder="slug，例如 openrouter" />
-          <select className="runtime-select" value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)}><option value="openai_compatible">OpenAI Compatible</option><option value="anthropic">Anthropic</option></select>
+          <select className="runtime-select" value={protocol} onChange={(event) => setProtocol(event.target.value as typeof protocol)}><option value="openai_compatible">OpenAI Chat Completions</option><option value="openai_responses">OpenAI Responses API</option><option value="anthropic">Anthropic</option></select>
           <input className="runtime-input runtime-input-wide" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="Base URL，例如 https://openrouter.ai/api/v1" />
           <input className="runtime-input" value={credentialRef} onChange={(event) => setCredentialRef(event.target.value.toUpperCase())} placeholder="API Key 环境变量名" />
           <button className="ghost-button" type="button" disabled={busy || !serviceName.trim() || !serviceSlug.trim()} onClick={() => void addService()}>添加服务</button>
@@ -360,6 +557,9 @@ export function SettingsPage() {
   const { t } = useI18n();
   const toast = useToast();
   const [activeSection, setActiveSection] = useState<SettingsSectionKey>("general");
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [highlightedField, setHighlightedField] = useState("");
   const [runtime, setRuntime] = useState<RuntimeSettings | null>(null);
   const [draftValues, setDraftValues] = useState<Record<string, unknown>>({});
   const [pendingResets, setPendingResets] = useState<Set<string>>(() => new Set());
@@ -368,6 +568,8 @@ export function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
+  const [profileAvatarLoading, setProfileAvatarLoading] = useState(false);
+  const [avatarCropSource, setAvatarCropSource] = useState<AvatarCropSource | null>(null);
   const [backupLoading, setBackupLoading] = useState(false);
   const [backup, setBackup] = useState<BackupResult | null>(null);
   const [ttsStatus, setTtsStatus] = useState<TtsStatus | null>(null);
@@ -398,9 +600,9 @@ export function SettingsPage() {
   const [debugCopied, setDebugCopied] = useState<"prompt" | "payload" | null>(null);
   const [clearDebugPending, setClearDebugPending] = useState(false);
   const [clearingDebug, setClearingDebug] = useState(false);
-  const [clearConversationsPending, setClearConversationsPending] = useState(false);
-  const [clearingConversations, setClearingConversations] = useState(false);
-  const [clearConversationsMessage, setClearConversationsMessage] = useState("");
+  const [clearAllDataPending, setClearAllDataPending] = useState(false);
+  const [clearingAllData, setClearingAllData] = useState(false);
+  const [clearAllDataMessage, setClearAllDataMessage] = useState("");
 
   const loadRuntime = useCallback(async () => {
     setLoading(true);
@@ -486,20 +688,28 @@ export function SettingsPage() {
   useEffect(() => {
     setPreferences(readPreferences());
     void loadRuntime();
-    void refreshTtsStatus();
-    void refreshAsrStatus();
     const handlePreferenceChange = (event: Event) => {
       const detail = (event as CustomEvent<UserPreferences>).detail;
       if (detail) setPreferences(detail);
     };
     window.addEventListener(preferencesChangeEvent(), handlePreferenceChange);
     return () => window.removeEventListener(preferencesChangeEvent(), handlePreferenceChange);
-  }, [loadRuntime, refreshAsrStatus, refreshTtsStatus]);
+  }, [loadRuntime]);
+
+  useEffect(() => {
+    if (activeSection !== "voice") return;
+    if (!ttsStatus && !ttsStatusError && !ttsStatusLoading) void refreshTtsStatus();
+    if (!asrStatus && !asrStatusError && !asrStatusLoading) void refreshAsrStatus();
+  }, [activeSection, asrStatus, asrStatusError, asrStatusLoading, refreshAsrStatus, refreshTtsStatus, ttsStatus, ttsStatusError, ttsStatusLoading]);
 
   useEffect(() => () => {
     previewAudioRef.current?.pause();
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
   }, []);
+
+  useEffect(() => () => {
+    if (avatarCropSource) URL.revokeObjectURL(avatarCropSource.url);
+  }, [avatarCropSource]);
 
   const updatePreference = <K extends keyof UserPreferences>(key: K, value: UserPreferences[K]) => {
     const next = { ...preferences, [key]: value };
@@ -507,32 +717,133 @@ export function SettingsPage() {
     writePreferences(next);
   };
 
+  const closeAvatarCrop = useCallback(() => {
+    setAvatarCropSource((current) => {
+      if (current) URL.revokeObjectURL(current.url);
+      return null;
+    });
+  }, []);
+
+  const updateProfileAvatar = async (file: File | undefined) => {
+    if (!file) return;
+    setProfileAvatarLoading(true);
+    try {
+      setAvatarCropSource(await loadProfileAvatar(file));
+    } catch (cause) {
+      toast.push({ tone: "danger", message: errorMessage(cause, "头像上传失败") });
+    } finally {
+      setProfileAvatarLoading(false);
+    }
+  };
+
+  const confirmProfileAvatar = (dataUrl: string) => {
+    updatePreference("profileAvatar", dataUrl);
+    closeAvatarCrop();
+  };
+
   const activeProvider = typeof draftValues.provider === "string" ? draftValues.provider : runtime?.provider;
   const activeFields = useMemo(() => runtime?.fields?.filter((field) => !field.provider || field.provider === activeProvider) ?? [], [activeProvider, runtime]);
   const ungroupedFields = useMemo(() => activeFields.filter((field) => (field.group ?? "") === ""), [activeFields]);
-  const modelFields = useMemo(() => ungroupedFields.filter((field) => !reviewFieldKeys.has(field.key) && !systemFieldKeys.has(field.key)), [ungroupedFields]);
-  const modelPrimaryFields = useMemo(() => modelFields.filter((field) => modelPrimaryFieldKeys.has(field.key)), [modelFields]);
-  const modelAdvancedFields = useMemo(() => modelFields.filter((field) => !modelPrimaryFieldKeys.has(field.key)), [modelFields]);
+  const modelFields = useMemo(() => ungroupedFields.filter((field) => !reviewFieldKeys.has(field.key) && !systemFieldKeys.has(field.key) && !chatThinkingFieldKeys.has(field.key) && !legacyModelRoutingFieldKeys.has(field.key)), [ungroupedFields]);
+  const modelAdvancedFields = useMemo(() => modelFields.filter((field) => isAdvanced(field) && field.key !== "title_model"), [modelFields]);
   const reviewFields = useMemo(() => ungroupedFields.filter((field) => reviewFieldKeys.has(field.key)), [ungroupedFields]);
-  const reviewPrimaryFields = useMemo(() => reviewFields.filter((field) => field.key !== "consolidate_model"), [reviewFields]);
-  const reviewAdvancedFields = useMemo(() => reviewFields.filter((field) => field.key === "consolidate_model"), [reviewFields]);
+  const reviewPrimaryFields = useMemo(() => reviewFields.filter(isPrimary), [reviewFields]);
+  const reviewAdvancedFields = useMemo(() => reviewFields.filter(isAdvanced), [reviewFields]);
   const promptFields = useMemo(() => activeFields.filter((field) => field.group === "prompt"), [activeFields]);
   const ttsFields = useMemo(() => activeFields.filter((field) => field.group === "tts"), [activeFields]);
   const asrFields = useMemo(() => activeFields.filter((field) => field.group === "asr"), [activeFields]);
   const systemFields = useMemo(() => ungroupedFields.filter((field) => systemFieldKeys.has(field.key)), [ungroupedFields]);
   const ttsModeFields = useMemo(() => ttsFields.filter((field) => field.key === "tts_mode"), [ttsFields]);
-  const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => field.key !== "tts_mode" && ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
-  const ttsAdvancedFields = useMemo(() => ttsFields.filter((field) => !ttsPrimaryFieldKeys.has(field.key)), [ttsFields]);
-  const asrPrimaryFields = useMemo(() => asrFields.filter((field) => asrPrimaryFieldKeys.has(field.key)), [asrFields]);
-  const asrAdvancedFields = useMemo(() => asrFields.filter((field) => !asrPrimaryFieldKeys.has(field.key)), [asrFields]);
+  const ttsPrimaryFields = useMemo(() => ttsFields.filter((field) => field.key !== "tts_mode" && isPrimary(field)), [ttsFields]);
+  const ttsAdvancedFields = useMemo(() => ttsFields.filter(isAdvanced), [ttsFields]);
+  const asrPrimaryFields = useMemo(() => asrFields.filter(isPrimary), [asrFields]);
+  const asrAdvancedFields = useMemo(() => asrFields.filter(isAdvanced), [asrFields]);
   const notifyFields = useMemo(() => activeFields.filter((field) => field.group === "notify"), [activeFields]);
   const notifyEnabledFields = useMemo(() => notifyFields.filter((field) => field.key === "notify_enabled"), [notifyFields]);
-  const notifyDeliveryFields = useMemo(() => notifyFields.filter((field) => field.key === "bark_key"), [notifyFields]);
-  const timelineFields = useMemo(() => notifyFields.filter((field) => notifyTimingFieldKeys.has(field.key) || field.key === "notify_public_base_url"), [notifyFields]);
-  const timelinePrimaryFields = useMemo(() => timelineFields.filter((field) => timelinePrimaryFieldKeys.has(field.key)), [timelineFields]);
-  const timelineAdvancedFields = useMemo(() => timelineFields.filter((field) => !timelinePrimaryFieldKeys.has(field.key)), [timelineFields]);
+  const notifyDeliveryFields = useMemo(() => notifyFields.filter((field) => field.key === "bark_key" || field.key === "notify_public_base_url"), [notifyFields]);
+  const timelineFields = useMemo(() => notifyFields.filter((field) => notifyTimingFieldKeys.has(field.key)), [notifyFields]);
+  const timelinePrimaryFields = useMemo(() => timelineFields.filter(isPrimary), [timelineFields]);
+  const timelineAdvancedFields = useMemo(() => timelineFields.filter(isAdvanced), [timelineFields]);
   const skillFields = useMemo(() => activeFields.filter((field) => field.group === "skills"), [activeFields]);
+  const toolFields = useMemo(() => activeFields.filter((field) => field.group === "tools"), [activeFields]);
   const debugFields = useMemo(() => activeFields.filter((field) => field.group === "debug"), [activeFields]);
+
+  // ---- 搜索 ----
+  // 索引直接建在后端下发的 fields[] 上：label 和分区归属都是现成的，
+  // 不需要额外契约，也不存在「加了配置项忘记加进搜索」这种漏。
+  const searchIndex = useMemo(() => {
+    const buckets: Array<[SettingsSectionKey, RuntimeSettingField[]]> = [
+      ["assistant", promptFields],
+      ["model", modelFields],
+      ["tools", toolFields],
+      ["skills", skillFields],
+      ["review", reviewFields],
+      ["reminders", notifyFields],
+      ["voice", [...ttsFields, ...asrFields]],
+      ["system", systemFields],
+      ["advanced", debugFields],
+    ];
+    return [
+      { section: "general" as const, key: "", label: t("settings.general.appearance"), help: t("theme.select") },
+      { section: "general" as const, key: "", label: t("settings.general.language"), help: t("language.select") },
+      ...buckets.flatMap(([section, fields]) => fields.map((field) => ({
+      section,
+      key: field.key,
+      label: field.label,
+      help: fieldHelp[field.key] ?? "",
+      }))),
+    ];
+  }, [asrFields, debugFields, modelFields, notifyFields, promptFields, reviewFields, skillFields, systemFields, t, toolFields, ttsFields]);
+
+  const searchResults = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase();
+    if (!needle) return [];
+    const hits = searchIndex.filter((entry) =>
+      entry.label.toLowerCase().includes(needle)
+      || entry.key.toLowerCase().includes(needle)
+      || entry.help.toLowerCase().includes(needle));
+    // 分区名本身也能搜（搜「备份」要能命中「数据与备份」这一栏）
+    const sectionHits = settingsSections
+      .filter((section) => t(`settings.section.${section.key}.label`).toLowerCase().includes(needle))
+      .map((section) => ({ section: section.key, key: "", label: t(`settings.section.${section.key}.label`), help: "" }));
+    return [...sectionHits, ...hits].slice(0, 12);
+  }, [searchIndex, searchQuery, t]);
+
+  const openSearchHit = (section: SettingsSectionKey, key: string) => {
+    setActiveSection(section);
+    setMobileDetailOpen(true);
+    // 高亮而不是滚动到顶：搜到的那一行往往在折叠块里，光跳分区还是要人再找一遍。
+    setHighlightedField(key);
+    setSearchQuery("");
+  };
+
+  const openSection = (section: SettingsSectionKey) => {
+    setActiveSection(section);
+    setHighlightedField("");
+    setMobileDetailOpen(true);
+  };
+
+  const moveSectionSelection = (event: ReactKeyboardEvent<HTMLButtonElement>, section: SettingsSectionKey) => {
+    const keys = settingsSections.map((item) => item.key);
+    const current = keys.indexOf(section);
+    let next = current;
+    if (event.key === "ArrowDown") next = Math.min(keys.length - 1, current + 1);
+    else if (event.key === "ArrowUp") next = Math.max(0, current - 1);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = keys.length - 1;
+    else return;
+    event.preventDefault();
+    const nextKey = keys[next];
+    openSection(nextKey);
+    window.requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(`[data-settings-section="${nextKey}"]`)?.focus());
+  };
+
+  // 高亮只留几秒 —— 它是「你要找的在这」的指示，不是一个持久状态。
+  useEffect(() => {
+    if (!highlightedField) return;
+    const timer = window.setTimeout(() => setHighlightedField(""), 2600);
+    return () => window.clearTimeout(timer);
+  }, [highlightedField]);
   const changedKeys = useMemo(() => Array.from(new Set([
     ...activeFields.filter((field) => !Object.is(draftValues[field.key], runtime?.values?.[field.key])).map((field) => field.key),
     ...pendingResets,
@@ -540,10 +851,49 @@ export function SettingsPage() {
   useNavigationGuard(changedKeys.length > 0, "设置页有尚未保存的修改，确定放弃并离开吗？");
   const apiBase = apiBaseLabel();
   const connectionLabel = health?.status === "ok" ? "已连接" : health ? health.status : "未知";
-  const thinkingDefault = runtime ? runtime.thinking_default ? "开启" : "关闭" : "—";
   const ttsMode = draftValues.tts_mode === "manual" || draftValues.tts_mode === "auto" ? draftValues.tts_mode : "off";
   const notifyEnabled = typeof draftValues.notify_enabled === "boolean" ? draftValues.notify_enabled : notifyStatus?.enabled ?? false;
   const ttsPresentation = ttsStatusPresentation(ttsStatus, ttsStatusLoading);
+  const profileToneOptions = [
+    { value: "blue" as const, label: t("settings.profile.toneBlue") },
+    { value: "violet" as const, label: t("settings.profile.toneViolet") },
+    { value: "teal" as const, label: t("settings.profile.toneTeal") },
+    { value: "orange" as const, label: t("settings.profile.toneOrange") },
+  ];
+
+  // 左栏的状态点：不点进去就知道哪些能力还没配好。
+  // **只给真的拿到了状态的分区**——凭空给每一项都点一个圆点，那是装饰不是信息。
+  const sectionStatus: Partial<Record<SettingsSectionKey, { tone: string; hint: string }>> = {
+    voice: ttsMode === "off"
+      ? { tone: "off", hint: "语音未启用" }
+      : ttsStatus && !ttsStatus.reachable
+        ? { tone: "warn", hint: "语音服务离线" }
+        : { tone: "on", hint: "语音已启用" },
+    reminders: !notifyEnabled
+      ? { tone: "off", hint: "主动通知未开启" }
+      : notifyStatus?.ready
+        ? { tone: "on", hint: "通知已就绪" }
+        : { tone: "warn", hint: "已开启，但推送通道还没配置" },
+  };
+  if (typeof draftValues.skills_enabled === "boolean") {
+    sectionStatus.skills = draftValues.skills_enabled
+      ? { tone: "on", hint: "技能已启用" }
+      : { tone: "off", hint: "技能已关闭" };
+  }
+  const disabledToolkits = typeof draftValues.toolkits_disabled === "string" ? draftValues.toolkits_disabled : "";
+  const toggleToolkit = (toolkit: string, enabled: boolean) => {
+    const field = toolFields.find((item) => item.key === "toolkits_disabled");
+    if (!field) return;
+    const disabled = new Set(disabledToolkits.split(",").map((value) => value.trim()).filter(Boolean));
+    if (enabled) disabled.delete(toolkit);
+    else disabled.add(toolkit);
+    changeRuntimeField(field, Array.from(disabled).sort().join(","));
+  };
+  if (toolFields.length > 0) {
+    sectionStatus.tools = disabledToolkits
+      ? { tone: "warn", hint: "部分工具已关闭" }
+      : { tone: "on", hint: "工具已启用" };
+  }
   const selectedTtsModel = typeof draftValues.tts_model === "string" ? draftValues.tts_model : ttsStatus?.model ?? "";
   const selectedCachedModel = ttsStatus?.cached_models?.find((item) => item.id === selectedTtsModel);
   const selectedModelLoaded = ttsStatus?.models.includes(selectedTtsModel) ?? false;
@@ -556,7 +906,7 @@ export function SettingsPage() {
   }, [debugFields.length, refreshDebugRequests]);
 
   useEffect(() => {
-    if (activeSection === "notify") void refreshNotifyStatus();
+    if (activeSection === "reminders") void refreshNotifyStatus();
   }, [activeSection, refreshNotifyStatus]);
 
   const saveRuntime = async () => {
@@ -569,8 +919,8 @@ export function SettingsPage() {
       setRuntime(updated);
       setDraftValues(updated.values ?? {});
       setPendingResets(new Set());
-      void refreshTtsStatus();
-      void refreshAsrStatus();
+      if (changedKeys.some((key) => key.startsWith("tts_"))) void refreshTtsStatus();
+      if (changedKeys.some((key) => key.startsWith("asr_"))) void refreshAsrStatus();
       if (debugFields.length > 0) void refreshDebugRequests();
       toast.push({ message: "设置已保存", description: "已立即生效，无需重启", tone: "success" });
     } catch (cause) {
@@ -726,19 +1076,19 @@ export function SettingsPage() {
     }
   };
 
-  const clearAllConversations = async () => {
-    if (clearingConversations) return;
-    setClearingConversations(true);
-    setClearConversationsMessage("");
+  const clearAllDataAction = async () => {
+    if (clearingAllData) return;
+    setClearingAllData(true);
+    setClearAllDataMessage("");
     try {
-      const result = await clearConversations();
-      setClearConversationsPending(false);
-      setClearConversationsMessage(`已清空 ${result.deleted_conversations} 段对话、${result.deleted_messages} 条消息`);
+      const result = await clearAllData();
+      setClearAllDataPending(false);
+      setClearAllDataMessage(`已清空 ${result.deleted_conversations} 段对话、${result.deleted_memories} 条记忆、${result.deleted_timeline_items} 条时间事项、${result.deleted_daily_digests} 条每日回顾`);
       notifyWorkspaceConversationsChanged({ type: "cleared" });
     } catch (cause) {
-      setError(errorMessage(cause, "清空对话失败"));
+      setError(errorMessage(cause, "清空所有数据失败"));
     } finally {
-      setClearingConversations(false);
+      setClearingAllData(false);
     }
   };
 
@@ -765,40 +1115,118 @@ export function SettingsPage() {
       ttsVoicesLoading={ttsVoicesLoading}
       disabled={saving}
       pendingReset={pendingResets.has(field.key)}
+      highlighted={highlightedField === field.key}
       onChange={(value) => changeTtsField(field, value)}
       onRestore={() => toggleRuntimeReset(field)}
     />)}
   </div>;
 
-  return <div className="settings-shell">
+  return <div className={`settings-shell ${mobileDetailOpen ? "mobile-detail-open" : ""}`}>
     <main className="settings-content settings-content-refined">
+      <header className="settings-app-toolbar">
+        <Link className="settings-app-back" href="/" onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><ChevronLeft size={18} />朝花夕拾</Link>
+        <button className="settings-detail-back" type="button" onClick={() => setMobileDetailOpen(false)}><ChevronLeft size={18} />设置</button>
+        <strong>设置</strong>
+        <div className={`settings-service-status ${health?.status === "ok" ? "is-online" : ""}`} role="status">
+          <span className="settings-service-dot" aria-hidden="true" />
+          <span>{health?.status === "ok" ? t("settings.service.ok") : health ? connectionLabel : t("settings.service.unknown")}</span>
+        </div>
+      </header>
       {error && <div className="settings-error"><X size={15} /><span>{error}</span><button className="ghost-button" onClick={() => void loadRuntime()} disabled={loading}><RefreshCw size={12} />{t("settings.retry")}</button></div>}
 
       <div className="settings-layout settings-layout-aligned">
         <aside className="settings-section-nav settings-nav-rail" aria-label={t("settings.navLabel")}>
-          {settingsSectionGroups.map((group) => <div className="settings-nav-group" key={group.label}>
-            <span className="settings-nav-group-label">{group.label}</span>
-            {group.keys.map((key) => {
+          <div className="settings-page-title">
+            <span className="settings-page-eyebrow">{t("settings.eyebrow")}</span>
+            <h1>{t("settings.title")}</h1>
+            <p>{t("settings.description")}</p>
+          </div>
+          <div className="settings-nav-search" role="search">
+            <Search size={13} aria-hidden="true" />
+            <input value={searchQuery} aria-label="搜索设置" placeholder="搜索设置" onChange={(event) => setSearchQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setSearchQuery(""); }} />
+            {searchQuery && <button className="icon-button" type="button" aria-label="清空搜索" onClick={() => setSearchQuery("")}><X size={12} /></button>}
+          </div>
+
+          {searchQuery.trim() ? <div className="settings-nav-results">
+            {searchResults.length ? searchResults.map((hit) => <button className="settings-nav-result" type="button" key={`${hit.section}-${hit.key}`} onClick={() => openSearchHit(hit.section, hit.key)}>
+              <span className="settings-nav-result-label">{hit.label}</span>
+              <span className="settings-nav-result-path">{t(`settings.section.${hit.section}.label`)}</span>
+            </button>) : <p className="settings-nav-empty">没有匹配的设置项</p>}
+          </div> : settingsSectionGroups.map((group, index) => <div className="settings-nav-group" key={index}>
+            {group.map((key) => {
               const section = settingsSections.find((item) => item.key === key);
               if (!section) return null;
               const Icon = section.icon;
-              return <button className={activeSection === key ? "active" : ""} type="button" aria-current={activeSection === key ? "page" : undefined} key={key} onClick={() => setActiveSection(key)}><Icon size={15} /><span><strong>{t(`settings.section.${key}.label`)}</strong><small>{t(`settings.section.${key}.description`)}</small></span><ChevronRight size={13} /></button>;
+              const status = sectionStatus[key];
+              return <button className={activeSection === key ? "active" : ""} type="button" data-settings-section={key} aria-current={activeSection === key ? "page" : undefined} key={key} onClick={() => openSection(key)} onKeyDown={(event) => moveSectionSelection(event, key)} title={status?.hint}>
+                <span className={`settings-nav-icon tone-${section.tone}`} aria-hidden="true"><Icon size={13} /></span>
+                <span className="settings-nav-label">{t(`settings.section.${key}.label`)}</span>
+                {status && <span className={`settings-nav-dot ${status.tone}`} role="img" aria-label={status.hint} />}
+              </button>;
             })}
           </div>)}
         </aside>
 
         <div className="settings-section-content settings-detail-column">
+          {activeSection === "profile" && <section className="settings-card settings-panel-card settings-profile-panel">
+            <div className="settings-card-heading"><div><span className="card-kicker">PROFILE</span><h2>{t("settings.profile.title")}</h2><p>{t("settings.profile.description")}</p></div><UserRound size={17} /></div>
+            <div className="settings-profile-preview">
+              <div className={`settings-profile-avatar tone-${preferences.profileTone}`} aria-hidden="true">{isProfileAvatarImage(preferences.profileAvatar) ? <>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={preferences.profileAvatar} alt="" />
+              </> : profileInitials(preferences.profileName || defaultPreferences.profileName, preferences.profileAvatar)}</div>
+              <div className="settings-profile-preview-copy"><span>{t("settings.profile.preview")}</span><strong>{preferences.profileName || defaultPreferences.profileName}</strong><small>{t("workspace.localMemory")}</small></div>
+              <div className="settings-profile-preview-tools">
+                <label className="settings-profile-avatar-upload"><ImagePlus size={14} aria-hidden="true" /><span>{profileAvatarLoading ? t("settings.profile.uploading") : t("settings.profile.upload")}</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void updateProfileAvatar(event.target.files?.[0]); event.currentTarget.value = ""; }} disabled={profileAvatarLoading || Boolean(avatarCropSource)} /></label>
+                {isProfileAvatarImage(preferences.profileAvatar) && <button className="settings-profile-avatar-remove" type="button" onClick={() => updatePreference("profileAvatar", "")} disabled={profileAvatarLoading}><Trash2 size={13} aria-hidden="true" />{t("settings.profile.remove")}</button>}
+                <small aria-live="polite">{profileAvatarLoading ? t("settings.profile.uploading") : t("settings.profile.imageHint")}</small>
+              </div>
+            </div>
+            <div className="settings-profile-form">
+              <label className="settings-profile-field"><span><strong>{t("settings.profile.name")}</strong><small>{t("settings.profile.nameHint")}</small></span><input className="runtime-input" type="text" autoComplete="name" maxLength={32} value={preferences.profileName} onChange={(event) => updatePreference("profileName", event.target.value.slice(0, 32))} /></label>
+              <label className="settings-profile-field"><span><strong>{t("settings.profile.avatar")}</strong><small>{isProfileAvatarImage(preferences.profileAvatar) ? t("settings.profile.avatarImageActive") : t("settings.profile.avatarHint")}</small></span><input className="runtime-input settings-profile-avatar-input" type="text" inputMode="text" maxLength={2} placeholder={isProfileAvatarImage(preferences.profileAvatar) ? t("settings.profile.avatarImagePlaceholder") : undefined} value={isProfileAvatarImage(preferences.profileAvatar) ? "" : preferences.profileAvatar} disabled={isProfileAvatarImage(preferences.profileAvatar)} onChange={(event) => updatePreference("profileAvatar", event.target.value.replace(/\s/g, "").slice(0, 2))} /></label>
+            </div>
+            <fieldset className="settings-profile-tone-fieldset">
+              <legend>{t("settings.profile.tone")}</legend>
+              <div className="settings-profile-tones">
+                {profileToneOptions.map((tone) => <button className={`settings-profile-tone tone-${tone.value} ${preferences.profileTone === tone.value ? "is-selected" : ""}`} type="button" key={tone.value} aria-label={tone.label} aria-pressed={preferences.profileTone === tone.value} onClick={() => updatePreference("profileTone", tone.value)}><span aria-hidden="true" /></button>)}
+              </div>
+            </fieldset>
+            <div className="settings-card-actions"><span>{t("settings.profile.saved")}</span></div>
+          </section>}
           {activeSection === "general" && <section className="settings-card settings-panel-card">
             <div className="settings-card-heading"><div><span className="card-kicker">CHAT & DISPLAY</span><h2>聊天与显示</h2><p>消息发送、回答跟随和过程信息都在这里。</p></div><SlidersHorizontal size={17} /></div>
+            <section className="settings-preference-surface" aria-label={t("settings.general.appearanceLanguage")}>
+              <PreferenceSelectRow
+                label={t("settings.general.appearance")}
+                ariaLabel={t("theme.select")}
+                value={preferences.theme}
+                options={[
+                  { value: "system", label: t("theme.system") },
+                  { value: "light", label: t("theme.light") },
+                  { value: "dark", label: t("theme.dark") },
+                ]}
+                onChange={(value) => updatePreference("theme", value as UserPreferences["theme"])}
+              />
+              <PreferenceSelectRow
+                label={t("settings.general.language")}
+                ariaLabel={t("language.select")}
+                value={preferences.locale}
+                options={[
+                  { value: "zh-CN", label: t("language.zh-CN") },
+                  { value: "en-US", label: t("language.en-US") },
+                ]}
+                onChange={(value) => updatePreference("locale", value as UserPreferences["locale"])}
+              />
+            </section>
             <SettingsVisualGroup icon={SlidersHorizontal} title="对话行为" description="发送方式与回答跟随" tone="accent">
               <div className="settings-toggle-list">
                 <Toggle label={t("settings.general.enter")} description={t("settings.general.enterDescription")} checked={preferences.enterToSend} onChange={(value) => updatePreference("enterToSend", value)} />
                 <Toggle label={t("settings.general.scroll")} description={t("settings.general.scrollDescription")} checked={preferences.autoScroll} onChange={(value) => updatePreference("autoScroll", value)} />
               </div>
             </SettingsVisualGroup>
-            <SettingsVisualGroup icon={Eye} title="界面信息" description="控制思考、工具活动和 token 用量的呈现" tone="neutral">
+            <SettingsVisualGroup icon={Eye} title="界面信息" description="控制工具活动和 token 用量的呈现" tone="neutral">
               <div className="settings-toggle-list">
-                <Toggle label={t("settings.general.thinking")} description={t("settings.general.thinkingDescription")} checked={preferences.showThinking} onChange={(value) => updatePreference("showThinking", value)} />
                 <Toggle label={t("settings.general.tools")} description={t("settings.general.toolsDescription")} checked={preferences.showToolActivity} onChange={(value) => updatePreference("showToolActivity", value)} />
                 <Toggle label={t("settings.general.usage")} description={t("settings.general.usageDescription")} checked={preferences.showUsage} onChange={(value) => updatePreference("showUsage", value)} />
               </div>
@@ -814,29 +1242,38 @@ export function SettingsPage() {
             </SettingsVisualGroup>
           </section>}
 
+          {/* 模型目录和「Provider 与回答」原来是两个分区，名字几乎一样、内容重叠 ——
+              而且只有目录是真的在决定用哪个模型。合成一页，目录放最上面。 */}
           {activeSection === "model" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">MODEL</span><h2>模型与回答</h2><p>选择日常对话模型和思考方式。</p></div><Activity size={17} /></div>
+            <div className="settings-card-heading"><div><span className="card-kicker">MODELS</span><h2>模型</h2><p>添加模型服务、选择默认模型，以及回答和工具调用参数。</p></div><ServerCog size={17} /></div>
+            <ModelServicesPanel />
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取模型设置…</div> : modelFields.length ? <>
-              <SettingsVisualGroup icon={BrainCircuit} title="日常模型" description="模型厂商、具体模型与默认推理方式" tone="accent">{modelPrimaryFields.length ? renderRuntimeFields(modelPrimaryFields) : <div className="settings-empty">当前没有日常模型字段。</div>}</SettingsVisualGroup>
               <details className="settings-disclosure settings-field-disclosure">
                 <summary><span><strong><Gauge size={14} />回答与工具限制</strong><small>输出上限、标题模型和最大工具次数</small></span><ChevronRight size={14} /></summary>
                 {modelAdvancedFields.length ? renderRuntimeFields(modelAdvancedFields) : <div className="settings-empty">当前没有回答限制字段。</div>}
               </details>
-              <details className="settings-disclosure settings-model-management">
-                <summary><span><strong><BrainCircuit size={14} />模型档案与服务</strong><small>只有需要切换模型或添加服务时才打开</small></span><ChevronRight size={14} /></summary>
-                <ModelServicesPanel />
-              </details>
             </> : <div className="settings-empty">当前后端没有提供模型配置。</div>}
           </section>}
 
-          {activeSection === "skills" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">SKILLS</span><h2>技能</h2><p>把某类任务的做法装成说明书，模型判断相关时自己去读。</p></div><Package size={17} /></div>
-            <SettingsVisualGroup icon={Package} title="技能开关" description="关掉后模型看不到任何技能，已装的技能不会被删" tone="neutral">
-              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能设置…</div> : skillFields.length ? renderRuntimeFields(skillFields) : <div className="settings-empty">当前后端没有提供技能配置。</div>}
+          {activeSection === "tools" && <section className="settings-card settings-panel-card tools-settings-card">
+            <div className="settings-card-heading"><div><span className="card-kicker">TOOLS</span><h2>{t("settings.tools.title")}</h2><p>{t("settings.tools.description")}</p></div><Wrench size={17} /></div>
+            <SettingsVisualGroup icon={Wrench} title={t("settings.tools.controlTitle")} description={t("settings.tools.controlDescription")} tone="accent">
+              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />{t("settings.tools.loading")}</div> : toolFields.length ? <>
+                <div className="settings-card-callout"><Wrench size={14} /><span>{t("settings.tools.saveHint")}</span></div>
+                <ToolCatalog disabledToolkits={disabledToolkits} onToggleToolkit={toggleToolkit} />
+              </> : <div className="settings-empty">{t("settings.tools.unavailable")}</div>}
             </SettingsVisualGroup>
-            <SettingsVisualGroup icon={Download} title="已安装的技能" description="从 GitHub 安装、上传 zip，或直接把技能目录拷进技能目录" tone="accent">
-              <SkillsPanel />
-            </SettingsVisualGroup>
+          </section>}
+
+          {activeSection === "skills" && <section className="settings-card settings-panel-card skills-settings-card">
+            <div className="settings-card-heading"><div><h2>技能</h2><p>按需为助手添加专门能力。相关任务出现时，助手会自动读取对应说明。</p></div></div>
+            <div className="skills-master-group">
+              <h3 className="settings-group-label">通用</h3>
+              <section className="skills-master-section" aria-label="技能总开关">
+                {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能设置…</div> : skillFields.length ? renderRuntimeFields(skillFields) : <div className="settings-empty">当前后端没有提供技能配置。</div>}
+              </section>
+            </div>
+            <SkillsPanel />
           </section>}
 
           {activeSection === "review" && <section className="settings-card settings-panel-card">
@@ -851,23 +1288,11 @@ export function SettingsPage() {
             <div className="settings-card-callout"><Clock3 size={14} /><span>关闭自动整理后，仍可在每日回顾页按需整理。</span></div>
           </section>}
 
-          {activeSection === "timeline" && <section className="settings-card settings-panel-card timeline-settings-panel">
-            <div className="settings-card-heading"><div><span className="card-kicker">TIMELINE & REMINDERS</span><h2>时间线与提醒</h2><p>管理事项什么时候提醒你，以及每天的简报时间。</p></div><CalendarClock size={17} /></div>
-            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取时间线设置…</div> : timelineFields.length ? <>
-              <SettingsVisualGroup icon={CalendarClock} title="提醒规则" description="新建事项默认使用的提前量和全天事项提醒时间" tone="accent">
-                {timelinePrimaryFields.length ? renderRuntimeFields(timelinePrimaryFields) : <div className="settings-empty">当前后端没有提供时间线规则配置。</div>}
-                <div className="settings-card-callout"><Clock3 size={14} /><span>会议默认提前 15 分钟，出行和生日提前一天，截止日期提前三天；单条事项可以在时间线编辑页单独调整。</span></div>
-              </SettingsVisualGroup>
-              <details className="settings-disclosure settings-field-disclosure">
-                <summary><span><strong><Gauge size={14} />每日简报与补发</strong><small>简报时间、错过提醒的补发窗口和文案生成</small></span><ChevronRight size={14} /></summary>
-                {timelineAdvancedFields.length ? renderRuntimeFields(timelineAdvancedFields) : <div className="settings-empty">当前没有额外的时间线设置。</div>}
-              </details>
-            </> : <div className="settings-empty">当前后端没有提供时间线设置。</div>}
-          </section>}
-
-          {activeSection === "notify" && <section className="settings-card settings-panel-card notify-settings-panel">
-            <div className="settings-card-heading"><div><span className="card-kicker">NOTIFICATIONS</span><h2>通知通道</h2><p>打开主动通知，配置设备，并用测试发送确认通道真的可用。</p></div><div className={`tts-status-badge ${notifyStatus?.ready ? "success" : "neutral"}`}><span className="tts-status-dot" />{notifyStatus?.ready ? t("settings.notify.channelReady") : t("settings.notify.channelMissing")}</div></div>
-            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取通知设置…</div> : notifyFields.length ? <>
+          {/* 「时间线与提醒」和「手机提醒」原来是两个分区，但前者的字段**全部**是 notify_*，
+              通知一关就整页失效。合成一页：先决定发不发，再决定什么时候发。 */}
+          {activeSection === "reminders" && <section className="settings-card settings-panel-card notify-settings-panel">
+            <div className="settings-card-heading"><div><span className="card-kicker">REMINDERS</span><h2>提醒</h2><p>决定要不要主动提醒你、推到哪台设备，以及提前多久。</p></div><div className={`tts-status-badge ${notifyStatus?.ready ? "success" : "neutral"}`}><span className="tts-status-dot" />{notifyStatus?.ready ? t("settings.notify.channelReady") : t("settings.notify.channelMissing")}</div></div>
+            {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取提醒设置…</div> : notifyFields.length ? <>
               <SettingsVisualGroup icon={BellRing} title="通知总览" description="控制是否发送主动提醒，并检查当前通道是否可以工作" tone="accent" className="notify-overview-group">
                 <div className="notify-overview-grid">
                   <div className={`notify-toggle-card ${notifyEnabled ? "is-enabled" : ""}`}>
@@ -883,47 +1308,70 @@ export function SettingsPage() {
                 </div>
                 {notifyMessage && <div className="notify-test-message"><BellRing size={14} /><span>{notifyMessage}</span></div>}
               </SettingsVisualGroup>
+
+              {/* 通道没配好之前，下面的提前量调了也送不出去 —— 顺序就是这个道理。 */}
               <SettingsVisualGroup icon={Smartphone} title="Bark 设备" description="只需粘贴一次设备 key；已保存的 key 不会再次回显" tone="success">
                 <div className="notify-channel-list">{(notifyStatus?.channels ?? []).map((channel) => <div className={`notify-channel-row ${channel.configured ? "ready" : ""}`} key={channel.name}><span className="notify-channel-dot" /><div><strong>{channel.name}</strong><small>{channel.configured ? t("settings.notify.channelReady") : channel.reason || t("settings.notify.channelMissing")}</small></div><span className="notify-channel-flag">{channel.enabled ? "已启用" : "未启用"}</span></div>)}</div>
                 {notifyDeliveryFields.length ? renderRuntimeFields(notifyDeliveryFields) : <div className="settings-empty">当前后端没有提供通道配置。</div>}
                 <div className="settings-card-callout"><Smartphone size={14} /><span>在 Bark App 中复制设备 key 粘贴到这里。保存后只显示“已配置”，需要更换时直接输入新的 key。</span></div>
               </SettingsVisualGroup>
-            </> : <div className="settings-empty">当前后端没有提供通知配置。</div>}
+
+              {/* 提前量仍然会算进条目的 remind_at 并显示在时间线上，所以不隐藏 ——
+                  但「算得出时刻」和「到点会提醒你」是两回事，别让人以为配了就有用。 */}
+              <SettingsVisualGroup icon={CalendarClock} title="提醒规则" description="新建事项默认使用的提前量和全天事项提醒时间" tone="violet">
+                {!notifyEnabled && <div className="settings-card-callout"><BellRing size={14} /><span>主动通知未开启，下面的时刻只会显示在时间线上，到点不会推送给你。</span></div>}
+                {timelinePrimaryFields.length ? renderRuntimeFields(timelinePrimaryFields) : <div className="settings-empty">当前后端没有提供时间线规则配置。</div>}
+                <div className="settings-card-callout"><Clock3 size={14} /><span>会议默认提前 15 分钟，出行和生日提前一天，截止日期提前三天；单条事项可以在时间线编辑页单独调整。</span></div>
+              </SettingsVisualGroup>
+
+              {/* 简报和补发都是「推送」行为，通知关着的时候它们一条也不会发出去。
+                  摆在这里只会让人调完一圈发现什么都没收到。 */}
+              {notifyEnabled && <details className="settings-disclosure settings-field-disclosure">
+                <summary><span><strong><Gauge size={14} />每日简报与补发</strong><small>简报时间、错过提醒的补发窗口和文案生成</small></span><ChevronRight size={14} /></summary>
+                {timelineAdvancedFields.length ? renderRuntimeFields(timelineAdvancedFields) : <div className="settings-empty">当前没有额外的提醒设置。</div>}
+              </details>}
+            </> : <div className="settings-empty">当前后端没有提供提醒配置。</div>}
           </section>}
 
           {activeSection === "voice" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">VOICE PLAYBACK</span><h2>语音朗读</h2><p>设置回答是否朗读，以及模型、音色和播放质量。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div>{ttsMode !== "off" && <button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button>}</div></div>
+            <div className="settings-card-heading"><div><span className="card-kicker">VOICE</span><h2>语音</h2><p>回答朗读和录音输入，两者共用本机的 mlx-audio 服务。</p></div><div className="tts-section-tools"><div className={`tts-status-badge ${ttsPresentation.tone}`} title={ttsStatus?.detail || undefined}><span className="tts-status-dot" />{ttsPresentation.label}</div>{ttsMode !== "off" && <button className="ghost-button tts-preview-button" type="button" onClick={() => void runTtsPreview()} disabled={ttsPreviewLoading || ttsStatusLoading || !ttsStatus || ttsStatus.mode === "off" || !ttsStatus.enabled}><Headphones size={13} />{ttsPreviewLoading ? "试听中…" : "试听"}</button>}</div></div>
             {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取语音设置…</div> : ttsFields.length ? <>
               <SettingsVisualGroup icon={Volume2} title="播放方式" description="关闭、手动播放或回答后自动朗读" tone="accent">
                 {renderRuntimeFields(ttsModeFields)}
-                {ttsMode === "off" && <div className="settings-card-callout"><Headphones size={14} /><span>当前不会朗读回答；模型和音色仍可提前配置。</span></div>}
               </SettingsVisualGroup>
-              <SettingsVisualGroup icon={AudioLines} title="声音与表达" description="选择模型、音色、语气和语速" tone="violet">
-                <div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
-                {renderRuntimeFields(ttsPrimaryFields)}
-              </SettingsVisualGroup>
-              <details className="settings-disclosure settings-field-disclosure">
-                <summary><span><strong><Gauge size={14} />高级合成设置</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>
-                {ttsAdvancedFields.length ? renderRuntimeFields(ttsAdvancedFields) : <div className="settings-empty">当前没有高级合成配置。</div>}
-              </details>
+              {/* 语音关着的时候不摆出十几个输入框：朗读依赖宿主机的 mlx-audio 和几 GB 权重，
+                  没做这两件事之前，那些字段只会让人以为它们是必配项。 */}
+              {ttsMode === "off" ? <div className="settings-card-callout"><Headphones size={14} /><span>语音未启用，当前不会朗读回答。启用前需要在宿主机跑 <code>mlx_audio.server --port 8001</code>；首次合成会自动下载约 1.7GB 权重。选择「手动播放」或「自动朗读」后，这里会出现模型、音色和语速设置。</span></div> : <>
+                <SettingsVisualGroup icon={AudioLines} title="声音与表达" description="选择模型、音色、语气和语速" tone="violet">
+                  <div className="tts-model-overview"><div><span>本地缓存</span><strong>{ttsStatus?.cached_models?.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedTtsModel}>{selectedTtsModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedModelLoaded ? "online" : selectedCachedModel ? "cached" : ""}>{selectedModelLoaded ? "已加载" : selectedCachedModel ? `已缓存 · ${formatModelSize(selectedCachedModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
+                  {renderRuntimeFields(ttsPrimaryFields)}
+                </SettingsVisualGroup>
+                <details className="settings-disclosure settings-field-disclosure">
+                  <summary><span><strong><Gauge size={14} />高级合成设置</strong><small>语种、格式、流式传输及性能限制</small></span><ChevronRight size={14} /></summary>
+                  {ttsAdvancedFields.length ? renderRuntimeFields(ttsAdvancedFields) : <div className="settings-empty">当前没有高级合成配置。</div>}
+                </details>
+              </>}
             </> : <div className="settings-empty">当前后端没有提供语音配置。</div>}
             {(ttsStatusError || ttsStatus?.detail || ttsPreviewMessage) && <div className="tts-status-detail">{ttsStatusError || ttsStatus?.detail || ttsPreviewMessage}<button className="icon-button" type="button" aria-label="刷新语音服务状态" title="刷新状态" onClick={() => void refreshTtsStatus()} disabled={ttsStatusLoading}><RefreshCw size={12} className={ttsStatusLoading ? "spin" : ""} /></button></div>}
             <audio ref={previewAudioRef} className="tts-audio" onEnded={() => setTtsPreviewMessage("")} />
-          </section>}
 
-          {activeSection === "voiceInput" && <section className="settings-card settings-panel-card">
-            <div className="settings-card-heading"><div><span className="card-kicker">VOICE INPUT</span><h2>语音输入</h2><p>设置录音转文字所使用的识别模型和语言。</p></div><Mic2 size={17} /></div>
-            <SettingsVisualGroup icon={Mic2} title="识别设置" description={asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"} tone={asrStatus?.reachable ? "success" : "neutral"} className="settings-voice-input-group">
-              {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <>
-                <div className="tts-model-overview"><div><span>本地缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
-                {renderRuntimeFields(asrPrimaryFields)}
-                {asrAdvancedFields.length > 0 && <details className="settings-disclosure settings-field-disclosure">
-                  <summary><span><strong><Gauge size={14} />识别高级设置</strong><small>识别长度和请求超时</small></span><ChevronRight size={14} /></summary>
-                  {renderRuntimeFields(asrAdvancedFields)}
-                </details>}
-              </> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}
-              {(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}
-            </SettingsVisualGroup>
+            {/* 语音输入原来是独立一页，但它和朗读共用同一个 mlx-audio 服务、同一份
+                模型缓存、同一个「服务没起来」的状态。分成两页只会让人配两遍。 */}
+              <SettingsVisualGroup icon={Mic2} title="识别设置" description={asrStatusLoading ? "正在检查识别服务" : !asrStatus?.reachable ? "识别服务离线" : asrStatus.loaded ? "识别模型已加载" : "录音时按需加载模型"} tone={asrStatus?.reachable ? "success" : "neutral"} className="settings-voice-input-group">
+                {loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取识别设置…</div> : asrFields.length ? <>
+                  {/* 和朗读同理：识别服务没起来时，模型和语言选项都还不能生效，
+                      先说清楚缺什么，别让人对着一排下拉框猜。 */}
+                  {asrStatus && !asrStatus.reachable ? <div className="settings-card-callout"><Mic2 size={14} /><span>识别服务未运行，语音输入按钮不可用。在宿主机跑 <code>mlx_audio.server --port 8001</code> 后刷新；首次识别会自动下载权重。</span></div> : <>
+                    <div className="tts-model-overview"><div><span>本地缓存</span><strong>{asrStatus?.cached_models.length ?? 0} 个模型</strong></div><div><span>当前选择</span><strong title={selectedAsrModel}>{selectedAsrModel.split("/").at(-1) || "—"}</strong></div><div><span>状态</span><strong className={selectedAsrModelLoaded ? "online" : selectedCachedAsrModel ? "cached" : ""}>{selectedAsrModelLoaded ? "已加载" : selectedCachedAsrModel ? `已缓存 · ${formatModelSize(selectedCachedAsrModel.size_bytes)}` : "未检测到缓存"}</strong></div></div>
+                    {renderRuntimeFields(asrPrimaryFields)}
+                    {asrAdvancedFields.length > 0 && <details className="settings-disclosure settings-field-disclosure">
+                      <summary><span><strong><Gauge size={14} />识别高级设置</strong><small>识别长度和请求超时</small></span><ChevronRight size={14} /></summary>
+                      {renderRuntimeFields(asrAdvancedFields)}
+                    </details>}
+                  </>}
+                </> : <div className="settings-empty">当前后端没有提供语音识别配置。</div>}
+                {(asrStatusError || asrStatus?.detail) && <div className="tts-status-detail">{asrStatusError || asrStatus?.detail}<button className="icon-button" type="button" aria-label="刷新语音识别状态" onClick={() => void refreshAsrStatus()} disabled={asrStatusLoading}><RefreshCw size={12} className={asrStatusLoading ? "spin" : ""} /></button></div>}
+              </SettingsVisualGroup>
           </section>}
 
           {activeSection === "system" && <section className="settings-card settings-panel-card">
@@ -936,11 +1384,11 @@ export function SettingsPage() {
                 <summary><span><strong><HardDriveDownload size={14} />自动备份</strong><small>备份频率和保留数量</small></span><ChevronRight size={14} /></summary>
                 {renderRuntimeFields(systemFields)}
               </details>}
-              <div className="settings-system-actions settings-danger-action"><div><strong>清空测试对话</strong><span>永久删除全部会话、消息和会话摘要；长期记忆、每日回顾、时间线和关注事项会保留。</span></div><button className="danger-button" type="button" onClick={() => setClearConversationsPending(true)} disabled={clearingConversations}><Trash2 size={13} />清空对话</button></div>
-              {clearConversationsMessage && <div className="settings-backup-result"><Check size={14} /><span>{clearConversationsMessage}</span></div>}
+              <div className="settings-system-actions settings-danger-action"><div><strong>清空所有数据</strong><span>永久删除全部会话、记忆、每日回顾、时间线、关注事项、附件和使用记录。应用设置、模型配置和已安装技能会保留。</span></div><button className="danger-button" type="button" onClick={() => setClearAllDataPending(true)} disabled={clearingAllData}><Trash2 size={13} />清空所有数据</button></div>
+              {clearAllDataMessage && <div className="settings-backup-result"><Check size={14} /><span>{clearAllDataMessage}</span></div>}
             </SettingsVisualGroup>
             <SettingsVisualGroup icon={ServerCog} title="运行与环境" description="服务地址、Provider 和需要重启的环境变量" tone="neutral" className="settings-runtime-group">
-              <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /><SettingValue label="默认思考" value={thinkingDefault} /><SettingValue label="会话级开关" value={runtime ? runtime.thinking_toggle ? "可用" : "不可用" : "—"} /></>}</div>
+              <div className="settings-values">{loading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取运行状态…</div> : <><SettingValue label="服务地址" value={apiBase} /><SettingValue label="Provider" value={runtime?.provider ?? "—"} /></>}</div>
               <EnvStatusList rows={runtime?.env_status ?? []} fallback={runtime?.env_only ?? []} />
             </SettingsVisualGroup>
           </section>}
@@ -950,7 +1398,6 @@ export function SettingsPage() {
             <SettingsVisualGroup icon={Bug} title="开发者选项" description="工具定义与可能包含对话原文的请求调试" tone="warm" className="settings-developer-group" action={<button className="ghost-button" type="button" onClick={() => void openDebugPrompt()} disabled={debugPromptLoading}><Eye size={13} />{debugPromptLoading ? "读取中…" : "查看 System Prompt"}</button>}>
               <div className="settings-developer-stack">
                 <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>{t("settings.obs.title")}</strong><small>Phoenix 链路追踪：状态、入口和启用方式</small></span><ChevronRight size={14} /></summary><ObservabilityCard /></details>
-                <details className="tts-advanced-settings settings-disclosure"><summary><span><strong>工具目录</strong><small>查看模型可用能力和参数约定</small></span><ChevronRight size={14} /></summary><div className="tool-catalog-card"><ToolCatalog /></div></details>
                 <details className="tts-advanced-settings settings-disclosure settings-danger-zone">
                   <summary><span><strong>请求调试</strong><small>仅排查问题时开启；快照可能包含完整对话</small></span><ChevronRight size={14} /></summary>
                   {debugFields.length ? renderRuntimeFields(debugFields) : <div className="settings-empty">当前后端没有提供调试配置。</div>}
@@ -965,8 +1412,9 @@ export function SettingsPage() {
 
       {changedKeys.length > 0 && <div className="settings-savebar" role="status"><div><strong>{changedKeys.length} 项更改尚未保存</strong><span>切换分类不会丢失当前修改</span></div><div><button className="ghost-button" type="button" onClick={discardRuntimeChanges} disabled={saving}>放弃更改</button><button className="primary-button" type="button" onClick={() => void saveRuntime()} disabled={saving}><Save size={13} />{saving ? "保存中…" : "保存更改"}</button></div></div>}
     </main>
+    {avatarCropSource && <AvatarCropDialog source={avatarCropSource} onCancel={closeAvatarCrop} onConfirm={confirmProfileAvatar} />}
     {debugDialog && <DebugDialog kind={debugDialog} prompt={debugPrompt} request={debugDetail} loading={debugDialog === "prompt" ? debugPromptLoading : debugDetailLoading} error={debugError} copied={debugCopied} onClose={() => setDebugDialog(null)} onCopy={(text, target) => void copyDebugText(text, target)} />}
     <ConfirmDialog open={clearDebugPending} title="清空调试请求？" description="最近的模型请求快照会从后端内存中全部移除，服务重启后本来也会自动清空。" confirmLabel="清空请求" busy={clearingDebug} onCancel={() => setClearDebugPending(false)} onConfirm={() => void clearDebug()} />
-    <ConfirmDialog open={clearConversationsPending} title="清空全部对话？" description="全部会话、消息和会话摘要都会被永久删除，不能恢复。长期记忆、每日回顾、时间线和关注事项不会删除。" warning="如果只是想清理某一段对话，请使用侧栏里的单独删除。" confirmLabel="永久清空对话" busy={clearingConversations} onCancel={() => setClearConversationsPending(false)} onConfirm={() => void clearAllConversations()} />
+    <ConfirmDialog open={clearAllDataPending} title="清空所有数据？" description="全部会话、消息、记忆、每日回顾、时间线、关注事项、附件和历史记录都会被永久删除，不能恢复。" warning="应用设置、模型配置和已安装技能不会删除；如果只想删除某一段会话，请使用侧栏里的单独删除。" confirmLabel="永久清空所有数据" busy={clearingAllData} onCancel={() => setClearAllDataPending(false)} onConfirm={() => void clearAllDataAction()} />
   </div>;
 }

@@ -69,13 +69,17 @@ def extract_text(blocks: list[dict[str, Any]]) -> str:
 
 
 def _attachment_seed(blocks: list[dict[str, Any]]) -> str:
-    names = [
-        b.get("filename", "")
+    """只发了附件、一个字没打时，拿附件名当标题的种子。"""
+    refs = [
+        b
         for b in blocks
-        if isinstance(b, dict) and b.get("type") == "attachment_ref"
+        if isinstance(b, dict) and b.get("type") == "attachment_ref" and b.get("filename")
     ]
-    names = [name for name in names if name]
-    return f"（用户发来图片：{'、'.join(names)}）" if names else ""
+    if not refs:
+        return ""
+    label = "文件" if all(b.get("kind") == "file" for b in refs) else "图片"
+    names = "、".join(str(b["filename"]) for b in refs)
+    return f"（用户发来{label}：{names}）"
 
 
 def _preview(text: str, limit: int = 60) -> str:
@@ -315,7 +319,10 @@ def sanitize_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_runtime_context(
-    settings: Settings, now: dt.datetime | None = None, model: str = ""
+    settings: Settings,
+    now: dt.datetime | None = None,
+    model: str = "",
+    service: str = "",
 ) -> str:
     """注入到本轮 user 消息前的运行时信息。
 
@@ -330,11 +337,15 @@ def build_runtime_context(
     # 模型名由调用方从 provider 拿（`provider.model_name`），这里不再按厂商字段猜 ——
     # 猜的那份在换 provider 或用模型目录选模型之后就会和实际调用的对不上。
     model = model or ModelTarget.from_settings(settings).model_id
+    # 服务名同理，来自实际解析出的 target。选了模型档案之后 `settings.provider`
+    # 就不再参与解析了，拿它当身份会告诉模型一个错的出处（档案是 Anthropic、
+    # 这里却写着 deepseek）。留着兜底只是为了没有 target 的调用方。
+    service = service or settings.provider
     return (
         "<runtime_context>\n"
         f"当前时间：{now:%Y-%m-%d} 星期{weekday} {now:%H:%M}\n"
         f"当前时区：{os.environ.get('TZ', 'Asia/Shanghai')}\n"
-        f"你实际运行在：{settings.provider} / {model}\n"
+        f"你实际运行在：{service} / {model}\n"
         "以上是系统注入的运行时信息，不是用户的话。除非用户问起，不要主动提及。\n"
         "</runtime_context>"
     )
@@ -376,6 +387,7 @@ class ChatService:
         title_client: TitleClient | None = None,
         model_profile_id: int | None = None,
         hydrator: AttachmentHydrator | None = None,
+        service_slug: str = "",
     ) -> None:
         self.session = session
         self.provider = provider
@@ -389,6 +401,8 @@ class ChatService:
         # None = 用聊天 provider 兜底（同样关思考）。
         self.title_client = title_client
         self.model_profile_id = model_profile_id
+        # 实际解析出的服务标识，注入 runtime context 用。空 = 退回 settings.provider。
+        self.service_slug = service_slug
 
     async def load_history(self, conversation_id: int) -> list[dict[str, Any]]:
         """按原样取回历史。
@@ -541,7 +555,9 @@ class ChatService:
             {
                 "type": "text",
                 "text": build_runtime_context(
-                    self.settings, model=self.provider.model_name
+                    self.settings,
+                    model=self.provider.model_name,
+                    service=self.service_slug,
                 ),
             },
             *user_content,

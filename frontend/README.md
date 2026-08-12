@@ -12,6 +12,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+默认 Compose 栈会一并启动 API、前端、PostgreSQL 和 Phoenix；API/前端源码都支持
+热更新，不需要另加 `--profile` 或单独启动 Phoenix。生产环境再在 `.env` 中设置
+`RELOAD=0` 关闭 API 热重载。
+
 Open <http://localhost:13000> with the example configuration. The host ports are
 configured by `FRONTEND_PORT` and `API_PORT` in the repository-level `.env`.
 Browser API calls use the same-origin `/backend` path; the frontend container
@@ -49,7 +53,7 @@ Available pages:
 - `/memories` — memory files, Markdown editor, versions and diff
 - `/review` — daily conversations, memory changes and manual consolidation
 - `/timeline` — extracted and manually entered time-based items in today, upcoming, and month views
-- `/settings` — runtime model status, browser-side chat preferences, and light/dark/system appearance
+- `/settings` — profile/avatar, appearance, models, tools, skills, reminders, voice, runtime status, and advanced diagnostics
 
 Global search is available on every page with the search button or `Cmd/Ctrl + K`.
 Conversation results open the matching conversation and jump to the matched message;
@@ -70,16 +74,21 @@ the selected locale with the other browser preferences.
 Keep API field names, tool names, and user-authored content locale-neutral. Only
 user-facing interface copy belongs in the message dictionaries.
 
-The settings page stores appearance and chat interaction preferences in the current
-browser only. The theme can follow the macOS/system appearance or be fixed to
-light/dark. Backend runtime settings (provider, model, thinking, consolidation) are
+The settings page stores the profile name/avatar, appearance, locale, and chat
+interaction preferences in the current browser. The theme can follow the system
+appearance or be fixed to light/dark. Backend runtime settings (model routing,
+assistant instructions, tools, skills, consolidation, reminders, and TTS/ASR) are
 edited on the same page: the form is rendered from the `fields` returned by
 `GET /api/settings` and saved with `PATCH /api/settings`, which takes effect
-immediately without a restart. Fields listed in `env_only` are not shown yet.
+immediately without a restart. Environment-only fields are shown as read-only
+deployment status. TTS/ASR service probes are deferred until the voice section is
+opened so unrelated settings do not wait on an optional local service.
 
 Memory version restore uses `POST /api/memories/restore` with a `version_id`.
 `PATCH /api/conversations/{id}` still supports the three-state per-conversation
-thinking setting, but no page currently exposes it.
+thinking setting. Both home and conversation composers expose a capability-aware
+thinking control; adjustable effort values come from the selected model profile
+rather than model-name checks and are remembered per profile in browser preferences.
 
 Validation commands:
 

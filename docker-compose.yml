@@ -58,15 +58,10 @@ services:
       # 覆盖 .env 里的宿主机地址 —— 容器内要走 compose 网络的服务名和内部端口。
       # 环境变量优先级高于 .env 文件，所以这行一定生效。
       DATABASE_URL: postgresql+asyncpg://chat:chat@db:5432/chat
-      # 默认是「能跑任务」的那一档：不重启，ticker 正常工作。
-      #
-      # 改代码时用另一档：`RELOAD=1 JOBS_ENABLED=0 docker compose up -d api`。
-      # 两个必须一起换 —— 热重载会把 lifespan 里的 ticker 反复掐掉重来，sleep 从头
-      # 算起，600s 的整理 tick 基本永远等不到第一次触发，留着只是半死不活地空转。
-      # 那一档下要测任务就手动触发：
-      #   POST /api/jobs/consolidate?day=YYYY-MM-DD   POST /api/jobs/backup
-      #   POST /api/notify/sweep                       （跑的是和 ticker 同一个 sweep）
-      RELOAD: ${RELOAD:-0}
+      # 默认直接进入开发体验：源码挂载后修改 app/ 会自动重载，前端也会 HMR。
+      # 需要稳定运行后台 ticker、部署到生产或执行长时间任务时，显式设置 RELOAD=0。
+      # RELOAD=0 是特殊场景，不是首次启动的必填项；`docker compose up -d` 即可启动完整栈。
+      RELOAD: ${RELOAD:-1}
       JOBS_ENABLED: ${JOBS_ENABLED:-1}
       # TTS_BASE_URL 是宿主机直跑后端时使用的 127.0.0.1 地址，不能直接复用：
       # 容器里的 127.0.0.1 是容器自己。单独提供 Docker 覆盖项，避免 .env 中的
@@ -79,7 +74,7 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       # 浏览器默认经 frontend 的同源代理访问 API；仍保留 CORS，方便直接调试宿主机端口。
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:${FRONTEND_PORT:-13000}"]}
-      # Phoenix 随 compose 常起，不再是可选 profile。开关在设置页里（改完立刻生效），
+      # Phoenix 随 compose 一起启动，不使用可选 profile。开关在设置页里（改完立刻生效），
       # 这里只给出容器网络里的上报地址。
       PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://phoenix:6006}
       OBS_PROJECT_NAME: ${OBS_PROJECT_NAME:-chat-memo}

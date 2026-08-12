@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceTopbar } from "./workspace-topbar";
 import { ToastProvider } from "./toast";
@@ -101,6 +101,20 @@ describe("WorkspaceTopbar conversation actions", () => {
     expect(await screen.findByText("已删除会话「你好」")).toBeInTheDocument();
   });
 
+  it("keeps the conversation row and chat surface intact while preparing a delete", async () => {
+    renderTopbar();
+
+    fireEvent.click(await screen.findByRole("button", { name: /你好/ }));
+    const menu = await screen.findByRole("menu");
+    expect(menu.parentElement).toBe(document.body);
+    expect(screen.getByRole("link", { name: "你好" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除" }));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "你好" })).toBeInTheDocument();
+    expect(mocks.deleteConversation).not.toHaveBeenCalled();
+  });
+
   it("offers a real undo for archiving, which needs no soft delete", async () => {
     renderTopbar();
     fireEvent.click(await screen.findByRole("button", { name: /你好/ }));
@@ -111,5 +125,61 @@ describe("WorkspaceTopbar conversation actions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "撤销" }));
     await waitFor(() => expect(mocks.archiveConversation).toHaveBeenCalledWith(7, false));
+  });
+
+  it("groups the icon-only search and collapse controls beside the logo", () => {
+    const onCollapsedChange = vi.fn();
+    render(<ToastProvider><WorkspaceTopbar active="chat" onSidebarCollapsedChange={onCollapsedChange} /></ToastProvider>);
+
+    const sidebar = screen.getByRole("complementary");
+    const header = sidebar.querySelector<HTMLElement>(".workspace-sidebar-header");
+    const primaryActions = sidebar.querySelector<HTMLElement>(".workspace-sidebar-primary-actions");
+    expect(within(sidebar).queryByText("朝花夕拾")).not.toBeInTheDocument();
+    expect(header).not.toBeNull();
+    expect(primaryActions).not.toBeNull();
+    expect(within(header!).getByRole("button", { name: "搜索" })).toBeInTheDocument();
+    expect(within(primaryActions!).queryByRole("button", { name: "搜索" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps the collapsed rail to logo, new chat, search, and recent chats", () => {
+    const onCollapsedChange = vi.fn();
+    render(<ToastProvider><WorkspaceTopbar active="chat" sidebarCollapsed onSidebarCollapsedChange={onCollapsedChange} /></ToastProvider>);
+
+    const sidebar = screen.getByRole("complementary");
+    expect(within(sidebar).queryByRole("navigation")).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("link", { name: "新建会话" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "搜索" })).toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "最近对话" })).toBeInTheDocument();
+    fireEvent.click(within(sidebar).getByRole("button", { name: "展开侧栏" }));
+    expect(onCollapsedChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps common destinations visible and reserves the profile menu for secondary controls", () => {
+    renderTopbar();
+    const sidebar = screen.getByRole("complementary");
+
+    const navigation = within(sidebar).getByRole("navigation");
+    expect(within(navigation).getByRole("link", { name: "记忆库" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("link", { name: "每日回顾" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("link", { name: "时间线" })).toBeInTheDocument();
+    expect(within(navigation).queryByRole("link", { name: "设置" })).not.toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: "已归档对话" })).toBeInTheDocument();
+    fireEvent.click(within(sidebar).getByRole("button", { name: "打开个人菜单" }));
+
+    const menu = within(sidebar).getByRole("menu");
+    expect(within(menu).getByRole("menuitem", { name: "设置" })).toBeInTheDocument();
+    expect(within(menu).queryByRole("menuitem", { name: "已归档对话" })).not.toBeInTheDocument();
+  });
+
+  it("opens archived chats directly from the recent-chat section", async () => {
+    renderTopbar();
+    const sidebar = screen.getByRole("complementary");
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "已归档对话" }));
+
+    expect(await within(sidebar).findByRole("button", { name: "返回最近对话" })).toBeInTheDocument();
+    expect(mocks.listConversations).toHaveBeenCalledWith(20, true, 0);
   });
 });

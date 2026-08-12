@@ -177,6 +177,15 @@ async def test_memory_is_always_on(purpose: str) -> None:
     assert "memory" in {kit.name for kit in active_toolkits(_settings(), purpose)}
 
 
+def test_user_disabled_toolkits_are_not_registered() -> None:
+    settings = _settings(toolkits_disabled="timeline, web_search")
+    active = {kit.name for kit in active_toolkits(settings, "chat")}
+
+    assert "memory" in active
+    assert "timeline" not in active
+    assert "web_search" not in active
+
+
 # ---------- 给人看的目录 ----------
 
 

@@ -37,6 +37,37 @@ jobs:
       - run: uv run pytest -q
       - run: uv run ruff check app/
 
+  # SQLite 单测保留快速反馈；这个独立任务只验证生产数据库最容易漂移的部分：
+  # Alembic 全链、PostgreSQL 原生 JSONB、pg_trgm / pgvector 和搜索索引。
+  postgres-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: chat
+          POSTGRES_PASSWORD: chat
+          POSTGRES_DB: chat
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chat -d chat"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://chat:chat@localhost:5432/chat
+      POSTGRES_SMOKE_DATABASE_URL: postgresql+asyncpg://chat:chat@localhost:5432/chat
+      OBS_TRACING: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --group dev --frozen
+      - run: uv run alembic upgrade head
+      - run: uv run pytest tests/test_postgres_smoke.py -q
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

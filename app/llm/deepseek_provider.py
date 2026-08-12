@@ -5,7 +5,7 @@
 
 和 Anthropic 版的差异：
 - 没有原生记忆工具，用 memory/tool.py 里手写的 function schema
-- 思考内容走 ``reasoning_content`` 字段，且**不能回传**（回传会 400），所以翻译时丢弃
+- 思考内容走 ``reasoning_content`` 字段；DeepSeek 的工具子轮次必须原样回传
 - 上下文缓存是自动的，不需要也不支持 ``cache_control``
 """
 
@@ -77,8 +77,8 @@ class DeepSeekProvider:
     def model_name(self) -> str:
         return self.target.model_id
 
-    def _should_disable_thinking(self, want_thinking: bool) -> bool:
-        """要不要发那个「关掉思考」的透传参数。
+    def _thinking_extra_body(self, want_thinking: bool) -> dict[str, Any] | None:
+        """Return the model-specific thinking override when one is safe.
 
         ⚠️ **不思考的模型不需要被关掉思考。** 这个参数是 DeepSeek 的方言，
         而这条协议下挂着一整类兼容服务。硅基流动上的 Qwen3-VL-Instruct 收到它
@@ -86,8 +86,33 @@ class DeepSeekProvider:
         一个纯粹多余的参数把整次调用打死了。
 
         判据用档案声明的能力：没有思考能力就什么都不发，让服务端用它自己的默认。
+        内置 DeepSeek 服务开启时显式发送 enabled，避免服务端默认值或模型别名让
+        聊天界面的开关看起来已打开、实际仍走普通回答。其他兼容服务仍保持隐式开启，
+        因为它们未必接受 DeepSeek 方言。
         """
-        return not want_thinking and bool(self.target.capabilities.get("thinking", False))
+        if not self.target.capabilities.get("thinking", False):
+            return None
+        if want_thinking:
+            return (
+                {"thinking": {"type": "enabled"}}
+                if self.target.service_slug == "deepseek"
+                else None
+            )
+        return {"thinking": {"type": "disabled"}}
+
+    def _apply_thinking(self, request: dict[str, Any], want_thinking: bool) -> None:
+        """Apply the switch and service-specific effort to one SDK request."""
+        if thinking_extra_body := self._thinking_extra_body(want_thinking):
+            # ``thinking`` is a DeepSeek extension and must be merged into the
+            # HTTP body through the OpenAI SDK's ``extra_body`` escape hatch.
+            request["extra_body"] = thinking_extra_body
+        if (
+            want_thinking
+            and self.target.service_slug == "deepseek"
+            and self.target.effort in self.target.thinking_efforts
+        ):
+            # Unlike ``thinking``, this is a first-class OpenAI SDK argument.
+            request["reasoning_effort"] = self.target.effort
 
     async def run(
         self,
@@ -110,19 +135,17 @@ class DeepSeekProvider:
                 "max_tokens": self.target.max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
-                    *to_openai_messages(working),
+                    *to_openai_messages(
+                        working,
+                        include_reasoning=self.target.service_slug == "deepseek",
+                    ),
                 ],
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
             if tools:
                 request["tools"] = tools
-            if self._should_disable_thinking(want_thinking):
-                # DeepSeek 用和 Anthropic 一样的形状，但它不是 OpenAI 标准字段 ——
-                # SDK 的 create() 会拒绝未知 kwarg，必须走 extra_body 透传。
-                # 不传就是默认开着，所以只在要关的时候发。
-                # （reasoning_effort 是标准字段但 DeepSeek 静默忽略，别用。）
-                request["extra_body"] = {"thinking": {"type": "disabled"}}
+            self._apply_thinking(request, want_thinking)
 
             # 记录的就是下面那个 request 本身，不另拼一份
             snapshot = (
@@ -288,10 +311,7 @@ class DeepSeekProvider:
                 {"role": "user", "content": content},
             ],
         }
-        if self._should_disable_thinking(thinking):
-            # 和 run() 同一个形状：不是 OpenAI 标准字段，必须走 extra_body 透传，
-            # 而且不传就是默认开着，所以只在要关的时候发。
-            request["extra_body"] = {"thinking": {"type": "disabled"}}
+        self._apply_thinking(request, thinking)
         with trace(
             "llm",
             f"openai/{self.target.model_id}",
@@ -336,10 +356,15 @@ class DeepSeekProvider:
 # ---------- 标准格式（Anthropic content blocks）与 OpenAI 消息的互转 ----------
 
 
-def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def to_openai_messages(
+    messages: list[dict[str, Any]], *, include_reasoning: bool = False
+) -> list[dict[str, Any]]:
     """content block 数组 → OpenAI 消息数组。
 
-    thinking 块会被丢弃：DeepSeek 不接受 reasoning_content 回传。
+    Generic compatible services keep dropping thinking blocks because their
+    dialects differ.  DeepSeek opts in: when a response contains tool calls,
+    its official API requires ``reasoning_content`` on every subsequent tool
+    request in that turn (and on later requests carrying tools).
     """
     out: list[dict[str, Any]] = []
     for message in messages:
@@ -365,6 +390,11 @@ def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         text = "\n".join(
             b.get("text", "") for b in blocks if b.get("type") == "text"
         ).strip()
+        reasoning = "".join(
+            b.get("thinking", "")
+            for b in blocks
+            if b.get("type") == "thinking"
+        )
 
         if role == "user" and any(b.get("type") == "image" for b in blocks):
             # 只有带图时才换成多模态数组：纯文本消息保持字符串形状，
@@ -386,6 +416,8 @@ def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if b.get("type") == "tool_use"
             ]
             entry: dict[str, Any] = {"role": "assistant", "content": text or None}
+            if include_reasoning and reasoning:
+                entry["reasoning_content"] = reasoning
             if tool_calls:
                 entry["tool_calls"] = tool_calls
             out.append(entry)
@@ -432,7 +464,8 @@ def to_content_blocks(
     """OpenAI 响应 → content block 数组（落库用的标准格式）。"""
     blocks: list[dict[str, Any]] = []
     if reasoning:
-        # 没有 signature —— 那是 Anthropic 特有的，这里也不需要回传。
+        # 没有 signature —— 那是 Anthropic 特有的。DeepSeek 需要回传的是
+        # ``reasoning_content`` 这段文本本身，翻译请求时再放回对应字段。
         blocks.append({"type": "thinking", "thinking": reasoning})
     if text:
         blocks.append({"type": "text", "text": text})

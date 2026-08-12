@@ -15,6 +15,7 @@ from app.chat.service import TITLE_MAX_TOKENS, ChatService
 from app.config import Settings
 from app.db.models import Conversation
 from app.llm.deepseek_provider import DeepSeekProvider
+from app.llm.target import DEFAULT_CAPABILITIES, ModelTarget
 from app.llm.title import TitleClient, get_title_client
 
 
@@ -187,4 +188,32 @@ async def test_consolidation_keeps_thinking(recorder: RecordingCompletions) -> N
 
     await provider.complete(system="sys", prompt="整理今天的对话")
 
-    assert "extra_body" not in recorder.calls[0]
+    assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+async def test_title_client_can_use_a_model_profile() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class ProfileProvider:
+        async def complete(self, **kwargs: Any) -> str:
+            calls.append(kwargs)
+            return "来自模型档案的标题"
+
+    target = ModelTarget(
+        protocol="openai_responses",
+        model_id="gpt-5.6-luna",
+        display_name="Luna",
+        base_url="http://127.0.0.1:8317/v1",
+        api_key="test",
+        service_slug="openai-codex",
+        capabilities={**DEFAULT_CAPABILITIES, "thinking": True},
+    )
+    client = TitleClient(
+        settings=settings(),
+        provider=ProfileProvider(),  # type: ignore[arg-type]
+        target=target,
+    )
+
+    assert await client.complete(system="sys", prompt="问", max_tokens=64) == "来自模型档案的标题"
+    assert client.route == "openai-codex/gpt-5.6-luna"
+    assert calls[0]["thinking"] is False

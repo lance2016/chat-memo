@@ -12,6 +12,7 @@ export interface Conversation {
 export interface ModelCapabilities {
   streaming: boolean;
   tool_calling: boolean;
+  text_generation: boolean;
   thinking: boolean;
   vision: boolean;
   json_mode: boolean;
@@ -22,7 +23,7 @@ export interface ModelServiceSummary {
   id: number;
   slug: string;
   name: string;
-  protocol: "anthropic" | "openai_compatible";
+  protocol: "anthropic" | "openai_compatible" | "openai_responses";
   base_url: string;
   credential_configured: boolean;
   enabled: boolean;
@@ -34,20 +35,25 @@ export interface ModelProfileSummary {
   service_id: number;
   service_slug: string;
   service_name: string;
-  protocol: "anthropic" | "openai_compatible";
+  protocol: "anthropic" | "openai_compatible" | "openai_responses";
   model_id: string;
   display_name: string;
   enabled: boolean;
   available: boolean;
   reason: string;
   capabilities: ModelCapabilities;
+  /** Whether this profile enables reasoning before any per-composer override. */
+  thinking_default: boolean;
+  /** Provider request values accepted by this exact profile; empty = on/off only. */
+  thinking_efforts: string[];
+  thinking_effort_default: string | null;
   /** 输入 + 输出总上下文窗口；第三方服务未配置时为空。 */
   context_window_tokens: number | null;
   is_default: boolean;
 }
 
 export interface ModelCatalog {
-  purpose: "chat" | "consolidation";
+  purpose: "chat" | "consolidation" | "title";
   default_profile_id: number | null;
   services: ModelServiceSummary[];
   profiles: ModelProfileSummary[];
@@ -100,6 +106,12 @@ export interface RuntimeSettingField {
   provider?: string;
   group: string;
   secret?: boolean;
+  /** 默认折叠。判据是「改了多半更糟」，由后端 WRITABLE 声明，前端不再自己维护名单 */
+  advanced?: boolean;
+  /** 属于哪个可选能力（voice / voice_input / notify / skills / debug）。空 = 核心配置 */
+  capability?: string;
+  /** 非空 = 这项当前**不生效**，内容是人话的原因（例如已被模型档案接管）。照原样显示 */
+  inactive_reason?: string;
 }
 
 export interface RuntimeProvider {
@@ -134,6 +146,9 @@ export interface ToolDefinition {
   category: string;
   category_label: string;
   enabled: boolean;
+  /** Whether the underlying dependency is available; separate from user preference. */
+  available?: boolean;
+  user_enabled?: boolean;
   request_enabled?: boolean;
   availability: string;
   /** 能跑这个工具的协议，从后端 provider 注册表推导（不再是写死的厂商名） */
@@ -313,6 +328,8 @@ export type ContentBlock =
 
 export interface AttachmentMeta {
   id: number;
+  // image | file。渲染缩略图还是文件卡片看它，别去猜 mime。
+  kind: string;
   filename: string;
   mime: string;
   bytes: number;
@@ -354,6 +371,7 @@ export interface ToolActivity {
 
 export interface TurnAttachment {
   id: number;
+  kind?: string;
   filename: string;
   mime?: string;
   bytes?: number;
@@ -484,6 +502,23 @@ export interface ConversationClearResult {
   deleted_conversations: number;
   deleted_messages: number;
   deleted_summaries: number;
+}
+
+export interface DataClearResult {
+  deleted_conversations: number;
+  deleted_messages: number;
+  deleted_summaries: number;
+  deleted_memories: number;
+  deleted_memory_versions: number;
+  deleted_memory_reads: number;
+  deleted_kb_reads: number;
+  deleted_daily_digests: number;
+  deleted_open_loops: number;
+  deleted_timeline_items: number;
+  deleted_consolidation_runs: number;
+  deleted_notifications: number;
+  deleted_attachments: number;
+  deleted_attachment_files: number;
 }
 
 export type TimelineKind = "todo" | "event" | "reminder" | "birthday" | "travel" | "deadline" | "note";

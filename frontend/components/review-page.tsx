@@ -62,6 +62,7 @@ export function ReviewPage() {
   const day = validDay(requestedDay) && (availableDays === null || availableDays.includes(requestedDay))
     ? requestedDay
     : availableDays?.[0] ?? today();
+  const [loadingDays, setLoadingDays] = useState(true);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [changes, setChanges] = useState<MemoryVersion[]>([]);
   const [summaries, setSummaries] = useState<ConversationSummary[]>([]);
@@ -83,17 +84,22 @@ export function ReviewPage() {
     selectedDayRef.current = day;
   }, [day]);
 
-  useEffect(() => {
-    let active = true;
-    void listReviewDays()
-      .then((days) => { if (active) setAvailableDays(days); })
-      .catch((cause) => {
-        if (!active) return;
-        setAvailableDays([]);
-        setError(errorMessage(cause, t("review.days.error")));
-      });
-    return () => { active = false; };
+  const loadDays = useCallback(async () => {
+    setLoadingDays(true);
+    setError("");
+    try {
+      setAvailableDays(await listReviewDays());
+    } catch (cause) {
+      setAvailableDays([]);
+      setError(errorMessage(cause, t("review.days.error")));
+    } finally {
+      setLoadingDays(false);
+    }
   }, [t]);
+
+  useEffect(() => {
+    void loadDays();
+  }, [loadDays]);
 
   useEffect(() => {
     if (availableDays === null || availableDays.length === 0) return;
@@ -214,14 +220,17 @@ export function ReviewPage() {
 
   if (availableDays === null) return <div className="review-shell"><main className="review-content"><div className="review-loading review-page-state"><LoaderCircle size={18} className="spin" />{t("review.days.loading")}</div></main></div>;
 
-  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-page-header review-page-header-empty"><div className="review-title-block"><div className="eyebrow">{t("review.eyebrow")}</div><h1>{t("review.days.emptyTitle")}</h1><p>{t("review.days.emptyDescription")}</p></div></div>{error && <div className="review-error-banner"><TriangleAlert size={15} /><span>{error}</span></div>}</main></div>;
+  if (availableDays.length === 0) return <div className="review-shell"><main className="review-content"><div className="review-page-header review-page-header-empty"><div className="review-title-block"><div className="eyebrow">{t("review.eyebrow")}</div><h1>{error ? t("review.days.error") : t("review.days.emptyTitle")}</h1><p>{error ? t("review.retry") : t("review.days.emptyDescription")}</p></div></div>{error && <div className="review-error-banner" role="alert"><TriangleAlert size={15} /><span>{error}</span><button className="ghost-button" type="button" onClick={() => void loadDays()} disabled={loadingDays}><RefreshCw size={12} />{t("review.retry")}</button></div>}</main></div>;
 
   return <div className="review-shell">
     <main className="review-content">
       <header className="review-page-header">
-        <div className="review-day-context">
-          <div><strong>{formatDayTitle(day, locale)}</strong><span>{isToday ? t("review.today") : day.replaceAll("-", "/")}</span></div>
-          {dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}
+        <div className="review-header-copy">
+          <div className="review-title-block"><h1>{t("nav.review")}</h1><p>{t("review.subtitle", { date: formatDayTitle(day, locale) })}</p></div>
+          <div className="review-day-context">
+            <div><strong>{formatDayTitle(day, locale)}</strong><span>{isToday ? t("review.today") : day.replaceAll("-", "/")}</span></div>
+            {dayDigest && <span className="review-status-chip"><CheckCircle2 size={12} />{t("review.status.done", { time: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(new Date(dayDigest.updated_at)) })}</span>}
+          </div>
         </div>
 
         <div className="review-toolbar" role="toolbar" aria-label={t("review.date.select")}>

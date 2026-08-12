@@ -159,7 +159,7 @@ json 出口每行一个对象，字段名对齐 OTel 语义约定：
     image: arizephoenix/phoenix:latest
     container_name: chat-phoenix
     restart: unless-stopped
-    profiles: [obs]          # 默认不启动，`docker compose --profile obs up -d` 才起
+    # Phoenix 随默认 Compose 栈启动，不使用可选 profile。
     environment:
       # Phoenix ≥ 9.0：到期自动清 trace。里面存的是完整对话原文，这个必须配。
       PHOENIX_DEFAULT_RETENTION_POLICY_DAYS: ${PHOENIX_RETENTION_DAYS:-14}
@@ -339,7 +339,6 @@ CREATE INDEX llm_usage_at_idx ON llm_usage (at DESC);
     image: victoriametrics/victoria-logs:latest
     container_name: chat-logs
     restart: unless-stopped
-    profiles: [obs]
     command: [-storageDataPath=/vlogs, -retentionPeriod=30d]
     ports:
       - "${LOGS_PORT:-19428}:9428"   # vmui: /select/vmui
@@ -350,7 +349,6 @@ CREATE INDEX llm_usage_at_idx ON llm_usage (at DESC);
     image: timberio/vector:latest-alpine
     container_name: chat-collector
     restart: unless-stopped
-    profiles: [obs]
     depends_on: [logs]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -408,15 +406,14 @@ VictoriaLogs 也支持 syslog 入口，给 api 配 `logging: {driver: syslog, ..
   pretty/JSON 双 formatter；`app/logging_setup.py` 保留为兼容转发。
 - chat / title / consolidate / notify_copy 和后台 consolidation / notification ticker
   已接入 context；未安装 obs 依赖或 `OBS_TRACING=0` 时继续走无 trace 分支。
-- compose 已加入 `obs` profile 的 Phoenix + SQLite volume，默认 retention 14 天。
+- compose 已将 Phoenix + SQLite volume 纳入默认栈，默认 retention 14 天。
 - 默认跳过 GET/health span，手工 span 标注 OpenInference kind；对话 SSE 会把 trace_id
   传给前端，顶部可复制完整 ID 并打开本机 Phoenix。
 
-真实的阶段 0 覆盖验证仍需在有模型 key 的环境中完成。安装可选依赖并启动 Phoenix：
+真实的阶段 0 覆盖验证仍需在有模型 key 的环境中完成。Phoenix 已随默认栈启动：
 
 ```bash
-uv sync --extra obs
-INSTALL_OBS=1 OBS_TRACING=1 docker compose --profile obs up -d --build api phoenix
+docker compose up -d --build
 ```
 
 然后跑一轮带 `view` 工具调用的对话，在

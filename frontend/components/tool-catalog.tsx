@@ -12,7 +12,7 @@ function propertyType(property: ToolSchemaProperty) {
   return property.type ?? "any";
 }
 
-function ToolItem({ tool }: { tool: ToolDefinition }) {
+function ToolItem({ tool, enabled }: { tool: ToolDefinition; enabled: boolean }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const required = new Set(tool.input_schema.required ?? []);
@@ -29,15 +29,15 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
     window.setTimeout(() => setCopied(false), 1600);
   };
 
-  return <details ref={itemRef} className={`tool-catalog-item ${tool.enabled ? "" : "disabled"}`}>
+  return <details ref={itemRef} className={`tool-catalog-item ${enabled ? "" : "disabled"}`}>
     <summary>
       <span className="tool-catalog-glyph"><Wrench size={14} /></span>
       <span className="tool-catalog-summary-copy"><code>{tool.name}</code><small>{t("tools.parameters", { count: properties.length })} · {tool.protocols.join(" / ")}</small></span>
-      <span className={`tool-status-pill ${tool.enabled ? "enabled" : "disabled"}`}>{tool.enabled ? t("tools.enabled") : t("tools.disabled")}</span>
+      <span className={`tool-status-pill ${enabled ? "enabled" : "disabled"}`}>{enabled ? t("tools.enabled") : t("tools.disabled")}</span>
     </summary>
     <div className="tool-catalog-detail">
       <p className="tool-description">{tool.description}</p>
-      <div className="tool-availability"><span className={tool.enabled ? "online" : ""} />{tool.category === "kb" ? tool.enabled ? t("tools.availability.kbEnabled") : t("tools.availability.kbDisabled") : tool.request_enabled ? t("tools.availability.onDemand") : t("tools.availability.all")}{tool.native_protocol ? ` · ${t("tools.native", { provider: tool.native_protocol })}` : ""}</div>
+      <div className="tool-availability"><span className={enabled ? "online" : ""} />{tool.availability || (tool.request_enabled ? t("tools.availability.onDemand") : t("tools.availability.all"))}{tool.native_protocol ? ` · ${t("tools.native", { provider: tool.native_protocol })}` : ""}</div>
       <div className="tool-schema-heading"><strong>Input schema</strong><span>{properties.length ? t("tools.requiredCount", { count: required.size }) : t("tools.noInput")}</span></div>
       {properties.length > 0 ? <div className="tool-parameter-list">
         {properties.map(([name, property]) => <div className="tool-parameter-row" key={name}>
@@ -55,7 +55,7 @@ function ToolItem({ tool }: { tool: ToolDefinition }) {
   </details>;
 }
 
-export function ToolCatalog() {
+export function ToolCatalog({ disabledToolkits = "", onToggleToolkit }: { disabledToolkits?: string; onToggleToolkit?: (toolkit: string, enabled: boolean) => void }) {
   const { t } = useI18n();
   const [catalog, setCatalog] = useState<ToolCatalogData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,12 +85,18 @@ export function ToolCatalog() {
     }
     return [...entries.entries()];
   }, [catalog, t]);
+  const disabled = useMemo(() => new Set(disabledToolkits.split(",").map((value) => value.trim()).filter(Boolean)), [disabledToolkits]);
+  const effectiveTools = useMemo(() => (catalog?.tools ?? []).map((tool) => ({ ...tool, effectiveEnabled: (tool.available ?? tool.enabled) && !disabled.has(tool.category) })), [catalog, disabled]);
 
   if (loading && !catalog) return <div className="settings-loading"><RefreshCw size={15} className="spin" />{t("tools.loading")}</div>;
   if (error) return <div className="tool-catalog-error"><span>{error}</span><button className="ghost-button" type="button" onClick={() => void load()}><RefreshCw size={12} />{t("tools.retry")}</button></div>;
 
   return <div className="tool-catalog">
-    <div className="tool-catalog-overview"><div><strong>{catalog?.total ?? 0}</strong><span>{t("tools.total")}</span></div><div><strong>{catalog?.enabled ?? 0}</strong><span>{t("tools.enabledCount")}</span></div><div><strong>{(catalog?.total ?? 0) - (catalog?.enabled ?? 0)}</strong><span>{t("tools.waiting")}</span></div></div>
-    {groups.map(([key, group]) => <section className="tool-catalog-group" key={key}><header><strong>{group.label}</strong><span>{group.tools.filter((tool) => tool.enabled).length} / {group.tools.length} {t("tools.available")}</span></header><div>{group.tools.map((tool) => <ToolItem tool={tool} key={tool.name} />)}</div></section>)}
+    <div className="tool-catalog-overview"><div><strong>{catalog?.total ?? 0}</strong><span>{t("tools.total")}</span></div><div><strong>{effectiveTools.filter((tool) => tool.effectiveEnabled).length}</strong><span>{t("tools.enabledCount")}</span></div><div><strong>{effectiveTools.filter((tool) => !tool.effectiveEnabled).length}</strong><span>{t("tools.waiting")}</span></div></div>
+    {groups.map(([key, group]) => {
+      const available = group.tools.some((tool) => tool.available ?? tool.enabled);
+      const enabled = available && !disabled.has(key);
+      return <section className="tool-catalog-group" key={key}><header><div><strong>{group.label}</strong><span>{group.tools.filter((tool) => (tool.available ?? tool.enabled) && enabled).length} / {group.tools.length} {t("tools.available")}</span></div><button className={`tool-group-toggle ${enabled ? "is-on" : ""}`} type="button" role="switch" aria-checked={enabled} aria-label={`${enabled ? t("tools.disable") : t("tools.enable")} ${group.label}`} disabled={!available || !onToggleToolkit} onClick={() => onToggleToolkit?.(key, !enabled)}><span aria-hidden="true" /></button></header><div>{group.tools.map((tool) => <ToolItem tool={tool} enabled={(tool.available ?? tool.enabled) && enabled} key={tool.name} />)}</div></section>;
+    })}
   </div>;
 }

@@ -17,12 +17,13 @@ class Settings(BaseSettings):
     # 这段只有用户能改，每日整理不会碰它。留空则整段不出现。
     custom_instructions: str = ""
 
-    # anthropic | deepseek
+    # anthropic | deepseek | openai
     provider: str = "deepseek"
 
     # 新模型目录的全局默认。为空时兼容旧的 provider/model 配置。
     chat_model_profile_id: int | None = None
     consolidate_model_profile_id: int | None = None
+    title_model_profile_id: int | None = None
     # 聊天模型看不了图时，图交给它转成描述。和聊天模型正交：换聊天模型不该动这个。
     # 为空 = 只有聊天模型自己支持视觉时才能贴图。
     vision_model_profile_id: int | None = None
@@ -40,6 +41,25 @@ class Settings(BaseSettings):
     # 全局默认是否思考。单次请求可以覆盖，会话级覆盖见 conversations.thinking。
     # 实测 DeepSeek 关掉思考后工具调用仍正常，不像 Claude 有故障模式。
     deepseek_thinking: bool = False
+
+    # ---- OpenAI Responses API（例如本机 CLIProxyAPI / Codex 代理）----
+    # OPENAI_BASE_URL 为空时不启用内置 OpenAI Responses 服务。客户端仍会使用
+    # `not-needed` 作为 SDK 要求的占位 key；本地代理默认不校验这个值。
+    openai_api_key: str = ""
+    openai_base_url: str = ""
+    # 旧 provider/model 配置的兼容兜底。使用模型目录时由 chat_model_profile_id 接管，
+    # 不需要用户设置 OPENAI_MODEL。
+    openai_model: str = "gpt-5.6-luna"
+    # 内置 OpenAI 服务的模型目录，逗号分隔。代理升级后可只改 OPENAI_MODELS，
+    # 不必为新增模型再改代码；openai_model 始终是默认模型。
+    openai_models: str = (
+        "gpt-5.4,gpt-5.6-luna,codex-auto-review,gpt-image-1.5,"
+        "gpt-5.4-mini,gpt-5.5,gpt-5.6-sol,gpt-5.6-terra,gpt-image-2,"
+        "gpt-5.3-codex-spark"
+    )
+    openai_max_tokens: int = 8192
+    openai_thinking: bool = True
+    openai_effort: str = "medium"
 
     # 单人使用，仅防止端口意外暴露；空值表示不校验。
     api_key: str = ""
@@ -144,6 +164,10 @@ class Settings(BaseSettings):
     # 也是出问题时的第一道止血阀（某个技能的说明把模型带偏了）。
     skills_enabled: bool = True
 
+    # 逗号分隔的工具组黑名单。空值表示全部工具组按各自依赖正常工作；
+    # 这是运行时设置而不是环境变量，方便用户临时关闭某一类能力。
+    toolkits_disabled: str = ""
+
     # ---- 附件 ----
     # 附件目录（compose 把 ./attachments 可写挂到 /attachments）。和技能一样必须可写。
     # 正文落磁盘而不是进数据库：pg_dump 是备份主路径，blob 塞进去会被 14 份轮换乘一遍。
@@ -153,6 +177,10 @@ class Settings(BaseSettings):
     # 真正的约束在模型侧（Anthropic 单图 5MB、多数 OpenAI 兼容服务更小），
     # 所以这里只是防异常客户端撑爆 API 内存，不是「能发多大」的答案。
     attachment_max_bytes: int = 10 * 1024 * 1024
+    # 文本附件（txt / md）的上限，比图片小两个数量级是有意的：它的正文会**整块**
+    # 进上下文，而不是像图片那样折算成固定的几百 token。真正进上下文的还要再被
+    # `hydrate.TEXT_INLINE_CHARS` 截一次 —— 这一档只负责挡住「传一个 50MB 的日志」。
+    attachment_text_max_bytes: int = 512 * 1024
 
     # Obsidian vault 的挂载点（compose 把宿主机 VAULT_PATH 只读挂到 /vault 并注入本值）。
     # 留空 = 不启用知识库工具。基础设施配置，只能改 .env —— 挂载点本来就要改 compose 才能变。

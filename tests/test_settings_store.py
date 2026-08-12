@@ -12,8 +12,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.db.session import get_session
 from app.main import create_app
-from app.settings_store import ENV_ONLY, SettingError, apply, describe, load_overrides
-from app.settings_store import resolve_settings
+from app.settings_store import (
+    ENV_ONLY,
+    WRITABLE,
+    WRITABLE_BY_KEY,
+    SettingError,
+    apply,
+    describe,
+    load_overrides,
+    resolve_settings,
+)
 
 
 @pytest.fixture
@@ -230,3 +238,92 @@ async def test_health_reports_the_merged_model_not_the_env_snapshot(
 
     assert body["model"] == "deepseek-x"
     assert body["provider"] == "deepseek"
+
+
+async def test_fields_carry_advanced_and_capability(client: AsyncClient) -> None:
+    """分层信息必须由后端下发。
+
+    这两个维度以前硬编码在 settings-page.tsx 的 *PrimaryFieldKeys 里：加一个配置项
+    要在两处同步，漏掉前端那处的后果不是报错，而是**新字段在界面上凭空消失**。
+    """
+    fields = {f["key"]: f for f in (await client.get("/api/settings")).json()["fields"]}
+
+    assert fields["tts_timeout"]["advanced"] is True
+    assert fields["tts_timeout"]["capability"] == "voice"
+    # 首屏该有的东西不能被折叠掉
+    assert fields["tts_mode"]["advanced"] is False
+    assert fields["provider"]["capability"] == ""
+
+
+def test_core_settings_stay_out_of_the_advanced_drawer() -> None:
+    """新手一进来就要面对的字段，必须留在首屏。
+
+    钉住的是判据本身：`advanced` 是「改了多半更糟」，不是「我懒得排版」。
+    这几项是「不配就用不起来」的那一类，任何时候都不该被折叠。
+    """
+    for key in ("provider", "owner_name", "tts_mode", "notify_enabled",
+                "consolidate_auto", "backup_auto"):
+        assert WRITABLE_BY_KEY[key].advanced is False, key
+
+
+def test_optional_subsystems_declare_their_capability() -> None:
+    """可选子系统的字段必须认领能力。
+
+    漏标的后果是它会漏进核心配置里 —— 语音那 15 个字段依赖宿主机的 mlx-audio
+    和几 GB 权重，摆在首屏等于让新手以为不下模型就用不了这个助手。
+    """
+    expected = {"tts": "voice", "asr": "voice_input", "notify": "notify",
+                "skills": "skills", "debug": "debug"}
+    for field in WRITABLE:
+        want = expected.get(field.group)
+        if want:
+            assert field.capability == want, field.key
+
+
+def test_legacy_model_fields_report_themselves_as_inactive() -> None:
+    """设了聊天档案之后，旧的厂商/模型字段必须自报「不生效」。
+
+    `resolve_model_target` 一旦拿到 `chat_model_profile_id` 就直接走档案，这三项
+    完全不参与解析 —— 而它们在设置页仍然是可编辑的下拉框。不报的话，用户换了模型、
+    保存成功、什么都没变，且没有任何错误可查。这是设置页里唯一一处静默失效。
+    """
+    from app.settings_store import inactive_reason
+
+    without = Settings(chat_model_profile_id=None)
+    with_profile = Settings(chat_model_profile_id=3)
+
+    for key in ("provider", "model", "deepseek_model"):
+        assert inactive_reason(key, without) == ""
+        assert "接管" in inactive_reason(key, with_profile), key
+
+    # 整理模型看的是另一个档案配置，别互相串了
+    assert inactive_reason("consolidate_model", with_profile) == ""
+    assert "接管" in inactive_reason(
+        "consolidate_model", Settings(consolidate_model_profile_id=5)
+    )
+    # 还在兜底的调用参数不能被误报成不生效
+    assert inactive_reason("max_tokens", with_profile) == ""
+    assert inactive_reason("effort", with_profile) == ""
+
+
+async def test_settings_payload_carries_inactive_reason(client: AsyncClient) -> None:
+    fields = {f["key"]: f for f in (await client.get("/api/settings")).json()["fields"]}
+    assert fields["provider"]["inactive_reason"] == ""
+
+    await client.patch("/api/settings", json={"chat_model_profile_id": 3})
+
+    fields = {f["key"]: f for f in (await client.get("/api/settings")).json()["fields"]}
+    assert "接管" in fields["provider"]["inactive_reason"]
+
+
+def test_tests_never_read_the_developers_env_file() -> None:
+    """`Settings()` 在测试里必须只看代码默认值，不看仓库根的 `.env`。
+
+    钉的是 `tests/conftest.py` 顶部那两行。没有它们的时候，开发机 `.env` 里随便加一项
+    就能让一批毫不相关的用例失败（真实发生过：加了 `OPENAI_BASE_URL` 之后，
+    `ModelTarget.from_settings` 的自动接管分支让 5 个思考开关用例开始报
+    `'openai' != 'deepseek'`），而 CI 里没有 `.env`，两边结论相反。
+    """
+    assert Settings.model_config.get("env_file") is None
+    # provider 的代码默认值必须是干净的，不带任何本机痕迹
+    assert "provider" not in Settings().model_fields_set

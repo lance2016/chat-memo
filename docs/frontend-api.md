@@ -11,11 +11,15 @@
 模型服务和具体模型已经分开管理。服务只保存协议、地址和凭据引用，API Key 仍放在环境变量；模型档案保存具体 `model_id`、显示名称和能力声明。
 
 ```text
-GET  /api/models?purpose=chat
+GET  /api/models?purpose=chat|consolidation|title
 POST /api/models/services
 POST /api/models/profiles
 POST /api/models/default
 ```
+
+`purpose` 决定模型档案的用途：`chat` 是聊天默认，`consolidation` 是每日整理默认，
+`title` 是新会话标题生成默认。未设置标题档案时，标题继续沿用旧的硅基流动/智谱配置，
+再退回聊天模型；图片生成模型不能作为标题默认。
 
 聊天请求可以携带当前选择的模型档案；首次使用后会固定到会话：
 
@@ -23,16 +27,52 @@ POST /api/models/default
 {
   "conversation_id": 12,
   "content": "你好",
-  "model_profile_id": 3
+  "model_profile_id": 3,
+  "thinking": true,
+  "thinking_effort": "high"
 }
 ```
 
 聊天模型至少需要 `streaming=true` 和 `tool_calling=true`。前端应只展示 `available=true` 的档案；不可用原因由 `reason` 返回。
+每个档案还会返回 `thinking_default`、`thinking_efforts` 和
+`thinking_effort_default`。`thinking_efforts=[]` 表示模型支持思考开关、但当前协议没有
+可移植的深度参数；前端不要根据模型名称自行猜档位。模型档案可用
+`thinking_efforts` 缩小协议默认档位，避免给不支持某个强度的模型发送无效值。
+内置 DeepSeek 是明确的服务级特例：按[官方思考模式文档](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode)
+返回 `thinking_efforts=["low","high","max"]`、默认 `high`。开启时后端发送
+`reasoning_effort` 和 `extra_body.thinking.type=enabled`；关闭时只发送
+`extra_body.thinking.type=disabled`，不发送残留的 effort。其他 OpenAI 兼容服务
+仍不会自动继承这些档位。
 
 ## 更新日志
 
 按批次记录，**新的在最上面**。每批只列「相对上一批的变化」，方便对照着做增量。
 详细说明都在下面对应章节里。
+
+### 第 12 批 · 设置体验与工具管理 ✅
+
+| 变化 | 前端行为 |
+|---|---|
+| 新增可写配置 `toolkits_disabled`（group=`tools`） | 工具从开发者选项移到一级「工具」分区；按工具组启停，保存后影响下一次模型请求 |
+| 浏览器个人资料扩展 | 支持用户名、文字头像、主题色和图片头像；图片上传后可拖拽、缩放并裁成方形 |
+| 语音状态按需加载 | 打开「语音」分区后才请求 TTS/ASR 状态；保存非语音字段不再触发语音服务探测 |
+| 自定义弹窗统一焦点行为 | 头像裁剪和调试详情支持 Focus Trap、Escape、背景滚动锁定及关闭后焦点恢复 |
+
+个人资料属于当前浏览器偏好，不经过后端 API；`toolkits_disabled` 属于运行时配置并持久化到数据库。
+
+### 第 11 批 · 设置分层 ✅
+
+| 变化 | 前端行为 |
+|---|---|
+| `fields[]` 新增 `advanced` | `true` 的收进各分区底部的折叠块。前端**删掉**了原有的四份 `*PrimaryFieldKeys` 硬编码名单 |
+| `fields[]` 新增 `capability` | 能力没启用时不渲染该组字段，改成一句「启用它需要做什么」 |
+| 语音 / 语音输入分区 | 关着或服务离线时只显示开关和启用说明，不再摆出十几个输入框 |
+| 时间线分区 | 通知关闭时隐藏「每日简报与补发」（纯推送行为），提醒规则加降级说明；`notify_public_base_url` 挪回通知分区 |
+| `fields[]` 新增 `inactive_reason` | 带上它的行压暗并给出原因；模型分区额外给一句「要换模型请去档案列表」 |
+
+原因：53 个可写字段全部平铺在同一层，新手分不清「不配就跑不起来」和「不配就少一个功能」。
+语音那 15 个字段尤其误导 —— 它们依赖宿主机的 mlx-audio 和几 GB 权重，
+而默认值本来就是关的。
 
 ### 第 10 批 · 图片附件 ✅
 
@@ -126,8 +166,7 @@ Obsidian 知识库（只读）接入：`.env` 配置 `VAULT_PATH` 后模型多�
 **行为变化**：同一会话不再允许并发生成（之前会让历史错乱）。前端发送时禁用按钮即可，
 真撞上了会收到 `error` 事件而不是坏数据。
 
-**这批里还没做的**：`env_only` 字段的只读展示（后端已在响应里返回，设置页当前直接跳过了，
-用户看不到「哪些配置只能改 .env」）。
+`env_only` 字段现已在「运行与环境」中只读展示；密钥仍不回传，只显示是否配置以及修改方式。
 
 ### 第 3 批 · 已实现 ✅
 
@@ -213,7 +252,13 @@ GET /api/settings
      "choices": ["low","medium","high","xhigh","max"], "provider": "anthropic",
      "group": ""},
     {"key": "tts_mode", "label": "语音播放", "kind": "enum",
-     "choices": ["off","manual","auto"], "provider": "", "group": "tts"}
+     "choices": ["off","manual","auto"], "provider": "", "group": "tts",
+     "advanced": false, "capability": "voice"},
+    {"key": "tts_timeout", "label": "合成超时（秒）", "kind": "int",
+     "minimum": 5, "maximum": 600, "provider": "", "group": "tts",
+     "advanced": true, "capability": "voice"},
+    {"key": "toolkits_disabled", "label": "停用工具组", "kind": "str",
+     "choices": [], "minimum": null, "maximum": 256, "provider": "", "group": "tools"}
   ],
   "providers": [
     {"value": "deepseek",  "available": true,  "reason": ""},
@@ -240,7 +285,10 @@ GET /api/settings
 | `fields[].kind` | `str` / `text` / `int` / `bool` / `enum`，决定用输入框、多行文本框、数字框、开关还是下拉。🆕 `text` 的校验规则和 `str` 完全一样，只是提示前端用 `<textarea>` |
 | `fields[].minimum/maximum` | 数字是范围，字符串是长度。前端先校验一次，后端仍会再验 |
 | `fields[].provider` | 非空表示只在该 provider 下有意义（如 `effort` 只对 anthropic），可按当前 provider 过滤或折叠 |
-| `fields[].group` | 🆕 第 5 批。界面分区：`""` = 模型与整理，`"prompt"` = 人格与指令，`"tts"` = 语音，`"debug"` = 调试。按它分组渲染，以后加分区前端不用动 |
+| `fields[].group` | 界面分组提示：`""` = 通用模型/整理，`"prompt"` = 人格与指令，`"tools"` = 工具，`"skills"` = 技能，`"notify"` = 通知，`"tts"` / `"asr"` = 语音，`"debug"` = 调试；`"model-routing"` 是内部兼容字段，不直接渲染 |
+| `fields[].advanced` | 🆕 第 11 批。`true` = **默认折叠**。判据是「改了多半更糟」（超时、上限、格式），不是「不常用」。**别再在前端维护 primary 名单** —— 后端加字段时会一并声明 |
+| `fields[].inactive_reason` | 🆕 第 11 批。非空 = 这项**当前不生效**，内容是人话的原因。照原样显示，**不要禁用输入** —— 接管它的档案被删或停用时它又会重新兜底。目前只有旧的厂商/模型字段在设了模型档案时会带上 |
+| `fields[].capability` | 🆕 第 11 批。非空表示这项属于某个可选能力（`voice` / `voice_input` / `notify` / `skills` / `debug`）。该能力没启用时，整组不该占据首屏：先说清楚启用它需要做什么（比如语音要先跑本地 mlx-audio 并下载权重），再显示这些字段 |
 | `providers[].available` | `false` 时该选项置灰并显示 `reason` |
 | `env_only` | 这些只能改 `.env`，**界面上不要给入口**（密钥、数据库、CORS、日志） |
 
@@ -415,10 +463,16 @@ async function regenerate(conversationId: number, messages: ApiMessage[], target
 POST /api/chat
 Content-Type: application/json
 
-{"conversation_id": 3, "content": "记住：我用 uv 管理 Python 依赖，从不用 pip"}
+{"conversation_id": 3, "content": "记住：我用 uv 管理 Python 依赖，从不用 pip", "thinking": true, "thinking_effort": "high"}
 ```
 
-带图片时先把每张图 `POST /api/attachments`（multipart，字段名 `file`）拿到 id，
+`thinking` 是这一轮的开关，同时会成为该会话后续轮次的覆盖值。
+`thinking_effort` 只在本轮启用思考时发送，必须属于所选模型档案返回的
+`thinking_efforts`；不支持可调深度的模型应省略该字段。
+DeepSeek 工具调用产生的 `reasoning_content` 会在后续工具子轮次完整回传；这是
+官方接口的必需字段，缺失时上游会返回 400。
+
+带附件时先把每个文件 `POST /api/attachments`（multipart，字段名 `file`）拿到 id，
 再把 id 放进 `attachment_ids`：
 
 ```json
@@ -428,8 +482,16 @@ Content-Type: application/json
 `content` 和 `attachment_ids` **不能同时为空**，但任意一个为空都合法 ——
 只贴一张图不配文字是正常用法。
 
-⚠️ 当前模型看不了图、又没配视觉模型档案时，服务端回一个 `error` 事件而不是
-静默把图丢掉。前端可以先看 `GET /api/settings` 的 `vision_enabled` 提前禁用入口。
+支持两类附件，服务端按内容判定后在响应里回 `kind`：
+
+| `kind` | 接受什么 | 前端怎么渲染 |
+|---|---|---|
+| `image` | PNG / JPEG / GIF / WebP（按文件头认，不信 `content_type`） | 缩略图，authed fetch 换 blob URL |
+| `file` | `.txt` / `.md` / `.markdown`，必须是 UTF-8 纯文本 | 文件卡片，**不要**去拉正文 |
+
+⚠️ **`vision_enabled` 只管 `image` 那一半。** 当前模型看不了图、又没配视觉模型档案时，
+带图发送会收到一个 `error` 事件；但 txt / md 任何模型都读得了，所以上传入口
+**不该**整个禁用掉，只该在说明文案里讲清楚这时只能传文本。
 
 响应是 `text/event-stream`，每个事件一行 `data: {...}`，事件之间空一行。
 
@@ -625,12 +687,14 @@ Anthropic 是 `input_tokens`）。要展示的话用 [`/api/usage`](#用量统�
 **刷新一次页面就没了** —— 因为权威历史里的那个块被丢掉了。
 
 图片正文用 `GET /api/attachments/{id}` 取，记得走 authed fetch 换 blob URL。
+`kind: "file"` 的附件**不要**走这条路：它在界面上就是一张带文件名的卡片，
+正文只在服务端 hydrate 时展开给模型看，前端拉下来也没地方放。
 
 ### 规整规则
 
 ```ts
 export type Turn =
-  | { kind: "user"; text: string; attachments?: { id: number; filename: string }[] }
+  | { kind: "user"; text: string; attachments?: { id: number; kind?: string; filename: string }[] }
   | { kind: "assistant"; text: string; thinking: string; tools: ToolActivity[] };
 
 export function toTurns(messages: ApiMessage[]): Turn[] {
@@ -962,7 +1026,7 @@ GET /api/tools
     "input_schema": {"type": "object", "properties": {"command": {...}}, "required": ["command"]},
     "category": "memory", "category_label": "长期记忆",
     "enabled": true, "availability": "可用于所有对话",
-    "protocols": ["anthropic", "openai_compatible"],
+    "protocols": ["anthropic", "openai_compatible", "openai_responses"],
     "native_protocol": "anthropic"
   }]
 }
@@ -1774,7 +1838,7 @@ POST /api/jobs/consolidate?day=2026-08-05
 
 ### 5. 设置页 `/settings`
 
-运行时配置在这里直接改，改完立刻生效。
+设置页按「个人资料、通用、助手、模型、工具、技能、每日回顾、提醒、语音、系统、高级」分区。浏览器偏好即时保存；运行时配置集中保存后立刻生效。
 
 **照着 `fields` 动态渲染**，不要写死字段列表——后端加配置项时前端不用改：
 
@@ -1803,13 +1867,10 @@ POST /api/jobs/consolidate?day=2026-08-05
 - 400 的 `detail` 是可直接展示的中文，贴在对应字段下面即可
 - 加一个「立即备份」按钮调 `POST /api/jobs/backup`，**会阻塞几秒**，要 loading；
   成功后显示 `dump_file` 和 `memory_files`
-- 🚧 **第 5 批待做**：按 `fields[].group` 分区渲染（`""` 归「模型与整理」，`"tts"` 归「语音」，
-  `"debug"` 归「调试」，调试区详见[调试](#调试看清每次发了什么)）。
-  语音区顶部放 `GET /api/tts/status` 的在线状态灯 + 一个「试听」按钮
-  （拿当前表单里未保存的 `voice` / `instruct` 调 `/speech`）。详见[语音播放](#语音播放)
-- 🚧 **第 6 批待做**：状态灯从「离线」变「在线」时调一次 `POST /api/tts/warmup`，
-  把首次合成的权重加载（十几秒）挪到用户点播放之前。返回 `{"seconds": 12.4}`，
-  失败也是 200 + `seconds: 0`，不用报错
+- 已按 `fields[].group` / `advanced` / `capability` 分区和渐进披露；工具和技能均为一级分区
+- 语音区进入时才读取 `GET /api/tts/status` 与 ASR 状态，避免可选本地服务拖慢整个设置页
+- 状态灯从离线变在线时会调用一次 `POST /api/tts/warmup`；失败不阻塞其他设置
+- 工具分区从 `GET /api/tools` 展示依赖状态，并通过 `toolkits_disabled` 控制是否对模型暴露
 
 ### 聊天页的进阶交互（已实现）
 
@@ -1817,9 +1878,8 @@ POST /api/jobs/consolidate?day=2026-08-05
 - **归档**：比删除温和且可逆
 - **本轮用量**：`done` 事件里就有 `usage`，在消息末尾显示一个淡淡的 token 数
 
-会话级思考开关（`PATCH /api/conversations/{id}` 的 `thinking` 三态）后端和
-`lib/api.ts` 里都还在，但顶栏的下拉已经撤掉了——目前没有界面入口，
-默认值统一在设置页看。要恢复的话接口是现成的。
+会话级思考开关（`PATCH /api/conversations/{id}` 的 `thinking` 三态）由首页和会话输入框提供；
+可用强度来自当前模型档案，浏览器按模型档案记住最近选择，不再在设置页维护第二套冲突默认值。
 
 ---
 
@@ -1897,8 +1957,14 @@ export interface SettingField {
   maximum: number | null;
   /** 非空表示只在该 provider 下有意义（如 effort 只对 anthropic） */
   provider: string;
-  /** 🆕 第 5 批。界面分区："" = 模型与整理，"tts" = 语音，"debug" = 调试 */
+  /** 界面分组提示；model-routing 是内部兼容字段，不直接渲染 */
   group: string;
+  /** true = 默认收入当前分区的高级折叠区 */
+  advanced?: boolean;
+  /** 可选能力标识；未启用时先显示启用说明 */
+  capability?: "voice" | "voice_input" | "notify" | "skills" | "debug" | string;
+  /** 当前不生效的人类可读原因；显示但不要禁用输入 */
+  inactive_reason?: string;
   /** true = values 中永远返回空串；前端只能用密码输入一次性替换，不得回显原值 */
   secret?: boolean;
 }
@@ -2125,7 +2191,11 @@ curl localhost:18000/health      # {"status":"ok","provider":"deepseek",...}
 ```
 
 浏览器打开 `http://localhost:13000`。后端日志用 `docker compose logs -f api`，
-前端编译和热更新日志用 `docker compose logs -f frontend`。
+前端编译和热更新日志用 `docker compose logs -f frontend`；Phoenix 也会随默认栈启动，
+界面地址为 `http://localhost:16006`。
+
+API 默认启用源码热重载。生产或需要稳定运行后台 ticker 时，在 `.env` 设置
+`RELOAD=0` 后重新执行 `docker compose up -d`；不需要手动启用 profile。
 
 宿主机端口由 `.env` 的 `FRONTEND_PORT` 和 `API_PORT` 控制。浏览器请求同源
 `/backend`，前端容器通过 `http://api:8000` 转发，因此调整宿主机端口不影响容器通信。

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, Download, FileText, Package, RefreshCw, Trash2, TriangleAlert, Upload } from "lucide-react";
+import { ChevronRight, Download, Package, Plus, RefreshCw, Trash2, TriangleAlert, Upload, X } from "lucide-react";
 import { deleteSkill, errorMessage, getSkill, installSkill, listSkills, setSkillEnabled, uploadSkill } from "@/lib/api";
 import type { Skill, SkillCatalog, SkillDetail, SkillInstallResult } from "@/lib/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -13,37 +13,41 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-function SkillRow({ skill, busy, onToggle, onRemove, onInspect }: {
+function SkillRow({ skill, busy, onToggle, onInspect }: {
   skill: Skill;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
-  onRemove: () => void;
   onInspect: () => void;
 }) {
   return <div className={`skill-row ${skill.enabled && !skill.error ? "active" : ""} ${skill.error ? "broken" : ""}`}>
-    <div className="skill-row-main">
-      <div className="skill-row-title">
-        <code>{skill.name}</code>
-        {skill.version && <span className="skill-version">v{skill.version}</span>}
-        {skill.error && <span className="skill-broken-flag"><TriangleAlert size={12} />无法加载</span>}
-      </div>
-      <p>{skill.error || skill.description}</p>
-      {skill.warning && !skill.error && <p className="skill-row-warning"><TriangleAlert size={11} />{skill.warning}</p>}
-      <div className="skill-row-meta">
-        <span>{skill.source}</span>
-        <span>{skill.files.length} 个附带文件 · {formatSize(skill.size_bytes)}</span>
-        {skill.license && <span>{skill.license}</span>}
-      </div>
-    </div>
-    <div className="skill-row-actions">
-      <button className="ghost-button" type="button" onClick={onInspect} disabled={busy}><FileText size={13} />查看</button>
-      <label className="settings-toggle-inline" title={skill.error ? "解析失败的技能不会进对话" : "关掉后模型看不到这个技能"}>
-        <input type="checkbox" checked={skill.enabled} disabled={busy || Boolean(skill.error)} onChange={(event) => onToggle(event.target.checked)} />
-        <span className="toggle-track" aria-hidden="true"><span /></span>
-      </label>
-      <button className="icon-button danger-hover" type="button" aria-label={`删除技能 ${skill.name}`} onClick={onRemove} disabled={busy}><Trash2 size={14} /></button>
-    </div>
+    <button className="skill-row-open" type="button" aria-label={`查看技能 ${skill.name}`} onClick={onInspect} disabled={busy}>
+      <span className="skill-row-icon" aria-hidden="true"><Package size={16} /></span>
+      <span className="skill-row-main">
+        <span className="skill-row-title">
+          <code>{skill.name}</code>
+          {skill.version && <span className="skill-version">v{skill.version}</span>}
+          {skill.error && <span className="skill-broken-flag"><TriangleAlert size={12} />无法加载</span>}
+        </span>
+        <span className="skill-row-description">{skill.error || skill.description}</span>
+        {skill.warning && !skill.error && <span className="skill-row-warning"><TriangleAlert size={11} />{skill.warning}</span>}
+        <span className="skill-row-meta">
+          <span>{skill.source}</span>
+          <span>{skill.files.length} 个附带文件 · {formatSize(skill.size_bytes)}</span>
+          {skill.license && <span>{skill.license}</span>}
+        </span>
+      </span>
+      <ChevronRight className="skill-row-chevron" size={16} aria-hidden="true" />
+    </button>
+    <label className="settings-toggle-inline" title={skill.error ? "解析失败的技能不会进对话" : "关掉后模型看不到这个技能"}>
+      <input type="checkbox" aria-label={`${skill.enabled ? "停用" : "启用"}技能 ${skill.name}`} checked={skill.enabled} disabled={busy || Boolean(skill.error)} onChange={(event) => onToggle(event.target.checked)} />
+      <span className="toggle-track" aria-hidden="true"><span /></span>
+    </label>
   </div>;
+}
+
+function closeDetailState(setDetail: (value: SkillDetail | null) => void, setDetailTarget: (value: Skill | null) => void) {
+  setDetail(null);
+  setDetailTarget(null);
 }
 
 export function SkillsPanel() {
@@ -53,12 +57,25 @@ export function SkillsPanel() {
   const [message, setMessage] = useState("");
   const [skipped, setSkipped] = useState<SkillInstallResult["skipped"]>([]);
   const [source, setSource] = useState("");
+  const [installOpen, setInstallOpen] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [busyName, setBusyName] = useState("");
   const [removeTarget, setRemoveTarget] = useState<Skill | null>(null);
   const [detail, setDetail] = useState<SkillDetail | null>(null);
+  const [detailTarget, setDetailTarget] = useState<Skill | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!installOpen && !detail) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (installOpen && !installing) setInstallOpen(false);
+      else if (detail && !detailLoading) closeDetailState(setDetail, setDetailTarget);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [detail, detailLoading, installOpen, installing]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -87,6 +104,7 @@ export function SkillsPanel() {
       setSkipped(result.skipped ?? []);
       setSource("");
       await load();
+      setInstallOpen(false);
     } catch (cause) {
       setError(errorMessage(cause, "安装失败"));
     } finally {
@@ -123,6 +141,7 @@ export function SkillsPanel() {
   };
 
   const inspect = async (skill: Skill) => {
+    setDetailTarget(skill);
     setDetailLoading(true);
     setError("");
     try {
@@ -135,61 +154,66 @@ export function SkillsPanel() {
   };
 
   return <div className="skills-panel">
-    <div className="skills-overview">
-      <div><strong>{catalog?.total ?? 0}</strong><span>已安装</span></div>
-      <div><strong>{catalog?.active ?? 0}</strong><span>对话中生效</span></div>
-      <div><strong className={catalog?.enabled ? "value-success" : ""}>{catalog ? catalog.enabled ? "已开启" : "已关闭" : "—"}</strong><span>技能总开关</span></div>
-    </div>
-
-    <form className="skill-install-form" onSubmit={(event) => { event.preventDefault(); if (source.trim()) void runInstall(() => installSkill(source.trim())); }}>
-      <input
-        type="text"
-        value={source}
-        placeholder="anthropics/skills/skills/pdf 或一个 .zip 地址"
-        onChange={(event) => setSource(event.target.value)}
-        disabled={installing}
-      />
-      <button className="primary-button" type="submit" disabled={installing || !source.trim()}><Download size={13} />{installing ? "安装中…" : "安装"}</button>
-      <button className="ghost-button" type="button" onClick={() => fileRef.current?.click()} disabled={installing}><Upload size={13} />上传 zip</button>
-      <input
-        ref={fileRef}
-        type="file"
-        accept=".zip"
-        hidden
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          event.target.value = "";
-          if (file) void runInstall(() => uploadSkill(file));
-        }}
-      />
-    </form>
-    <p className="skill-install-hint">
-      支持 <code>owner/repo</code>、<code>owner/repo/子目录@分支</code>、GitHub 网页地址和 zip 直链。
-      技能是第三方写的操作说明，装之前先看清楚内容 —— 模型会照着做。
-    </p>
-
-    {error && <div className="settings-error"><TriangleAlert size={14} /><span>{error}</span></div>}
-    {message && <div className="settings-success">{message}</div>}
-    {skipped.length > 0 && <div className="skill-skipped-list">
-      <strong><TriangleAlert size={13} />跳过了 {skipped.length} 个</strong>
-      {skipped.map((item) => <div key={item.path}><code>{item.path}</code><span>{item.reason}</span></div>)}
-    </div>}
-
-    {loading && !catalog ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能…</div>
-      : catalog?.skills.length ? <div className="skill-list">
-        {catalog.skills.map((skill) => <SkillRow
-          key={skill.name}
-          skill={skill}
-          busy={busyName === skill.name}
-          onToggle={(enabled) => void toggle(skill, enabled)}
-          onRemove={() => setRemoveTarget(skill)}
-          onInspect={() => void inspect(skill)}
-        />)}
-      </div> : <div className="debug-empty">
-        <Package size={16} />
-        <strong>还没有技能</strong>
-        <span>装一个试试，或者把技能目录直接拷进 {catalog?.root || "技能目录"}。</span>
+    <section className="skills-group skills-install-section" aria-labelledby="skills-manage-heading">
+      <h3 className="settings-group-label" id="skills-manage-heading">管理</h3>
+      <div className="skills-group-surface">
+        <button className="skill-add-row" type="button" onClick={() => { setError(""); setInstallOpen(true); }}>
+          <span className="skill-add-icon" aria-hidden="true"><Plus size={18} /></span>
+          <span><strong>添加技能</strong><small>从 GitHub 地址或 ZIP 文件安装</small></span>
+          <ChevronRight size={16} aria-hidden="true" />
+        </button>
+      </div>
+      {error && !installOpen && <div className="settings-error"><TriangleAlert size={14} /><span>{error}</span></div>}
+      {message && <div className="settings-success">{message}</div>}
+      {skipped.length > 0 && <div className="skill-skipped-list">
+        <strong><TriangleAlert size={13} />跳过了 {skipped.length} 个</strong>
+        {skipped.map((item) => <div key={item.path}><code>{item.path}</code><span>{item.reason}</span></div>)}
       </div>}
+    </section>
+
+    <section className="skills-group skills-library-section" aria-labelledby="skills-library-heading">
+      <header className="skills-library-heading">
+        <h3 className="settings-group-label" id="skills-library-heading">已安装</h3>
+        <span>{catalog ? `${catalog.total} 个 · ${catalog.active} 个已启用` : "正在读取"}</span>
+      </header>
+      <div className="skills-group-surface">
+        {loading && !catalog ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能…</div>
+          : catalog?.skills.length ? <div className="skill-list">
+          {catalog.skills.map((skill) => <SkillRow
+            key={skill.name}
+            skill={skill}
+            busy={busyName === skill.name}
+            onToggle={(enabled) => void toggle(skill, enabled)}
+            onInspect={() => void inspect(skill)}
+          />)}
+          </div> : <div className="debug-empty">
+          <Package size={18} />
+          <strong>还没有技能</strong>
+          <span>安装一个技能，或把技能目录拷进 {catalog?.root || "技能目录"}。</span>
+          </div>}
+      </div>
+    </section>
+
+    {installOpen && <div className="debug-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !installing) setInstallOpen(false); }}>
+      <section className="debug-dialog skill-install-dialog" role="dialog" aria-modal="true" aria-labelledby="skill-install-title">
+        <header className="debug-dialog-header">
+          <div><h2 id="skill-install-title">添加技能</h2><p>粘贴可信来源，或选择本地 ZIP 文件。</p></div>
+          <button className="icon-button" type="button" aria-label="关闭添加技能" onClick={() => setInstallOpen(false)} disabled={installing}><X size={16} /></button>
+        </header>
+        <form className="skill-install-form" onSubmit={(event) => { event.preventDefault(); if (source.trim()) void runInstall(() => installSkill(source.trim())); }}>
+          <label htmlFor="skill-source">GitHub 或 ZIP 地址</label>
+          <div className="skill-install-source-row">
+            <input id="skill-source" type="text" value={source} aria-label="技能来源" placeholder="github.com/owner/repo/tree/main/skills/name" autoFocus onChange={(event) => setSource(event.target.value)} disabled={installing} />
+            <button className="primary-button" type="submit" disabled={installing || !source.trim()}><Download size={14} />{installing ? "安装中…" : "安装"}</button>
+          </div>
+          <div className="skill-install-divider"><span>或</span></div>
+          <button className="skill-upload-button" type="button" onClick={() => fileRef.current?.click()} disabled={installing}><Upload size={17} /><span><strong>选择 ZIP 文件</strong><small>从这台设备上传</small></span><ChevronRight size={16} /></button>
+          <input ref={fileRef} type="file" accept=".zip" hidden onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void runInstall(() => uploadSkill(file)); }} />
+        </form>
+        {error && <div className="settings-error"><TriangleAlert size={14} /><span>{error}</span></div>}
+        <p className="skill-install-hint">技能会向模型提供任务说明。仅安装你信任的来源。</p>
+      </section>
+    </div>}
 
     <ConfirmDialog
       open={Boolean(removeTarget)}
@@ -201,17 +225,18 @@ export function SkillsPanel() {
       onConfirm={() => void remove()}
     />
 
-    {(detail || detailLoading) && <div className="debug-dialog-backdrop" role="presentation" onClick={() => setDetail(null)}>
+    {(detail || detailLoading) && <div className="debug-dialog-backdrop" role="presentation" onClick={() => closeDetailState(setDetail, setDetailTarget)}>
       <section className="debug-dialog skill-detail-dialog" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
         <header className="debug-dialog-header">
           <div><span className="card-kicker">SKILL.md</span><h2>{detail?.name ?? "读取中…"}</h2></div>
-          <button className="icon-button" type="button" aria-label="关闭技能详情" onClick={() => setDetail(null)}><ChevronRight size={16} /></button>
+          <button className="icon-button" type="button" aria-label="关闭技能详情" onClick={() => closeDetailState(setDetail, setDetailTarget)}><X size={16} /></button>
         </header>
         {detailLoading ? <div className="settings-loading"><RefreshCw size={15} className="spin" />读取技能正文…</div> : detail && <div className="skill-detail-body">
           <p className="skill-detail-description">{detail.description}</p>
           {detail.files.length > 0 && <div className="skill-detail-files"><strong>附带文件</strong><ul>{detail.files.map((file) => <li key={file}><code>{file}</code></li>)}</ul></div>}
           <Markdown>{detail.body || detail.error || "（正文是空的）"}</Markdown>
         </div>}
+        {detailTarget && <footer className="skill-detail-footer"><button className="danger-button" type="button" aria-label={`删除技能 ${detailTarget.name}`} onClick={() => { setRemoveTarget(detailTarget); closeDetailState(setDetail, setDetailTarget); }}><Trash2 size={14} />删除技能</button></footer>}
       </section>
     </div>}
   </div>;

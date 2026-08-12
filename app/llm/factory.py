@@ -13,6 +13,7 @@ from __future__ import annotations
 from app.config import Settings, get_settings
 from app.llm.anthropic_provider import AnthropicProvider
 from app.llm.deepseek_provider import DeepSeekProvider
+from app.llm.openai_responses_provider import OpenAIResponsesProvider
 from app.llm.provider import LLMProvider
 from app.llm.target import ModelTarget
 
@@ -20,6 +21,7 @@ _BY_PROTOCOL = {
     "anthropic": AnthropicProvider,
     # DeepSeek 的实现本来就是纯 OpenAI 兼容调用，所有走这个协议的服务共用它
     "openai_compatible": DeepSeekProvider,
+    "openai_responses": OpenAIResponsesProvider,
 }
 
 

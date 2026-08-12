@@ -16,6 +16,7 @@ from app.llm.catalog import (
     is_credential_ref,
     resolve_model_target,
 )
+from app.llm.target import thinking_efforts_for
 from app.security import require_api_key
 from app.settings_store import apply, resolve_settings
 
@@ -25,11 +26,13 @@ router = APIRouter(
     dependencies=[Depends(require_api_key)],
 )
 
+ThinkingEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
 
 class ServiceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     slug: str = Field(pattern=r"^[a-z][a-z0-9_-]{1,79}$")
-    protocol: Literal["anthropic", "openai_compatible"]
+    protocol: Literal["anthropic", "openai_compatible", "openai_responses"]
     base_url: str = Field(default="", max_length=500)
     # 只保存变量名，例如 OPENROUTER_API_KEY；不接受真正的 key。
     credential_ref: str = Field(default="", max_length=120, pattern=r"^$|^[A-Z][A-Z0-9_]*$")
@@ -48,6 +51,8 @@ class ProfileCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=160)
     capabilities: dict[str, bool] = Field(default_factory=dict)
     context_window_tokens: int | None = Field(default=None, ge=16_384, le=2_000_000)
+    thinking_efforts: list[ThinkingEffort] | None = None
+    thinking_effort_default: ThinkingEffort | None = None
 
 
 class ProfilePatch(BaseModel):
@@ -55,11 +60,13 @@ class ProfilePatch(BaseModel):
     display_name: str | None = Field(default=None, max_length=160)
     capabilities: dict[str, bool] | None = None
     context_window_tokens: int | None = Field(default=None, ge=16_384, le=2_000_000)
+    thinking_efforts: list[ThinkingEffort] | None = None
+    thinking_effort_default: ThinkingEffort | None = None
     enabled: bool | None = None
 
 
 class DefaultModelRequest(BaseModel):
-    purpose: Literal["chat", "consolidation"] = "chat"
+    purpose: Literal["chat", "consolidation", "title"] = "chat"
     profile_id: int | None = None
 
 
@@ -78,9 +85,29 @@ def _check_credential_ref(ref: str) -> None:
         )
 
 
+def _check_thinking_efforts(
+    protocol: str,
+    service_slug: str,
+    efforts: list[str] | tuple[str, ...],
+    default: str | None,
+) -> None:
+    supported = thinking_efforts_for(protocol, service_slug)
+    unsupported = [value for value in efforts if value not in supported]
+    if unsupported:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"协议 {protocol} 不支持思考深度：{', '.join(unsupported)}",
+        )
+    if default is not None and default not in efforts:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "默认思考深度必须包含在该模型支持的档位中",
+        )
+
+
 @router.get("")
 async def list_models(
-    purpose: Literal["chat", "consolidation"] = "chat",
+    purpose: Literal["chat", "consolidation", "title"] = "chat",
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     return await catalog_payload(session, purpose=purpose)
@@ -188,11 +215,31 @@ async def create_profile(
     if existing_slug is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "模型档案 slug 已存在")
     capabilities = {**DEFAULT_CAPABILITIES, **payload.capabilities}
-    if service.protocol == "anthropic":
-        capabilities.update({"thinking": True, "json_mode": True})
+    protocol_defaults = (
+        {"thinking": True, "json_mode": True, "vision": True}
+        if service.protocol in {"anthropic", "openai_responses"}
+        else {"thinking": True}
+        if service.slug == "deepseek"
+        else {}
+    )
+    for key, value in protocol_defaults.items():
+        if key not in payload.capabilities:
+            capabilities[key] = value
     options: dict[str, Any] = {"managed_by_runtime": False}
     if payload.context_window_tokens is not None:
         options["context_window_tokens"] = payload.context_window_tokens
+    efforts = (
+        payload.thinking_efforts
+        if payload.thinking_efforts is not None
+        else list(thinking_efforts_for(service.protocol, service.slug))
+    )
+    _check_thinking_efforts(
+        service.protocol, service.slug, efforts, payload.thinking_effort_default
+    )
+    if payload.thinking_efforts is not None:
+        options["thinking_efforts"] = list(dict.fromkeys(payload.thinking_efforts))
+    if payload.thinking_effort_default is not None:
+        options["thinking_effort_default"] = payload.thinking_effort_default
     session.add(
         ModelProfile(
             service_id=service.id,
@@ -216,8 +263,13 @@ async def update_profile(
     profile = await session.get(ModelProfile, profile_id)
     if profile is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型档案不存在")
+    service = await session.get(ModelService, profile.service_id)
+    if service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务不存在")
     changes = payload.model_dump(exclude_unset=True)
     context_window_tokens = changes.pop("context_window_tokens", None)
+    thinking_efforts = changes.pop("thinking_efforts", None)
+    thinking_effort_default = changes.pop("thinking_effort_default", None)
     for key, value in changes.items():
         setattr(profile, key, value.strip() if isinstance(value, str) else value)
     options = {**(profile.options or {}), "managed_by_runtime": False}
@@ -226,6 +278,25 @@ async def update_profile(
             options.pop("context_window_tokens", None)
         else:
             options["context_window_tokens"] = context_window_tokens
+    if "thinking_efforts" in payload.model_fields_set:
+        if thinking_efforts is None:
+            options.pop("thinking_efforts", None)
+        else:
+            options["thinking_efforts"] = list(dict.fromkeys(thinking_efforts))
+    if "thinking_effort_default" in payload.model_fields_set:
+        if thinking_effort_default is None:
+            options.pop("thinking_effort_default", None)
+        else:
+            options["thinking_effort_default"] = thinking_effort_default
+    effective_efforts = options.get("thinking_efforts")
+    if not isinstance(effective_efforts, list):
+        effective_efforts = list(
+            thinking_efforts_for(service.protocol, service.slug)
+        )
+    effective_default = options.get("thinking_effort_default")
+    _check_thinking_efforts(
+        service.protocol, service.slug, effective_efforts, effective_default
+    )
     profile.options = options
     await session.flush()
     return await catalog_payload(session)
@@ -261,10 +332,14 @@ async def set_default_model(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
         if payload.purpose == "chat" and not target.capabilities.get("tool_calling", False):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "聊天默认模型必须支持工具调用")
+        if payload.purpose == "title" and not target.capabilities.get("text_generation", True):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "标题默认模型必须支持文本生成")
     key = (
         "chat_model_profile_id"
         if payload.purpose == "chat"
         else "consolidate_model_profile_id"
+        if payload.purpose == "consolidation"
+        else "title_model_profile_id"
     )
     await apply(session, {key: payload.profile_id}, settings)
     await session.flush()

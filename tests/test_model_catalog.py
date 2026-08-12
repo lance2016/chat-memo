@@ -32,6 +32,54 @@ async def test_catalog_exposes_builtin_services_and_profiles(
     # 断言的是**值**没泄露，不是变量名 —— reason 里会写「未配置 ANTHROPIC_API_KEY」，
     # 那正是要告诉人的信息。原来匹配 "api_key" 子串会把它一起判成泄露。
     assert all("sk-" not in str(profile) for profile in body["profiles"])
+    anthropic = next(
+        profile for profile in body["profiles"] if profile["service_slug"] == "anthropic"
+    )
+    deepseek = next(
+        profile for profile in body["profiles"] if profile["service_slug"] == "deepseek"
+    )
+    assert anthropic["thinking_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert anthropic["thinking_effort_default"] in anthropic["thinking_efforts"]
+    assert isinstance(anthropic["thinking_default"], bool)
+    # DeepSeek documents a service-specific Chat Completions dialect.  It must
+    # not be confused with the generic OpenAI-compatible protocol default.
+    assert deepseek["capabilities"]["thinking"] is True
+    assert deepseek["thinking_efforts"] == ["low", "high", "max"]
+    assert deepseek["thinking_effort_default"] == "high"
+
+
+async def test_builtin_openai_catalog_contains_clipproxy_models(
+    client: AsyncClient,
+) -> None:
+    body = (await client.get("/api/models")).json()
+    profiles = [
+        profile
+        for profile in body["profiles"]
+        if profile["service_slug"] == "openai-codex"
+    ]
+
+    assert {profile["model_id"] for profile in profiles} >= {
+        "gpt-5.4",
+        "gpt-5.6-luna",
+        "codex-auto-review",
+        "gpt-image-1.5",
+        "gpt-5.4-mini",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-image-2",
+        "gpt-5.3-codex-spark",
+    }
+    luna = next(profile for profile in profiles if profile["model_id"] == "gpt-5.6-luna")
+    openai_service = next(
+        service for service in body["services"] if service["slug"] == "openai-codex"
+    )
+    if openai_service["enabled"]:
+        assert luna["is_default"] is True
+    for model_id in ("gpt-image-1.5", "gpt-image-2"):
+        image_model = next(profile for profile in profiles if profile["model_id"] == model_id)
+        assert image_model["available"] is False
+        assert image_model["capabilities"]["tool_calling"] is False
 
 
 async def test_can_add_service_and_model_profile(client: AsyncClient) -> None:
@@ -55,6 +103,7 @@ async def test_can_add_service_and_model_profile(client: AsyncClient) -> None:
             "service_id": service["id"],
             "model_id": "qwen-test",
             "display_name": "本地 Qwen 测试",
+            "capabilities": {"thinking": True},
         },
     )
     assert profile_response.status_code == 201
@@ -65,6 +114,9 @@ async def test_can_add_service_and_model_profile(client: AsyncClient) -> None:
     )
     assert profile["available"] is True
     assert profile["service_name"] == "本地 OpenAI 兼容服务"
+    # Do not leak DeepSeek's request dialect to arbitrary compatible services.
+    assert profile["thinking_efforts"] == []
+    assert profile["thinking_effort_default"] is None
 
     default_response = await client.post(
         "/api/models/default",
@@ -72,6 +124,71 @@ async def test_can_add_service_and_model_profile(client: AsyncClient) -> None:
     )
     assert default_response.status_code == 200
     assert default_response.json()["default_profile_id"] == profile["id"]
+
+    title_default_response = await client.post(
+        "/api/models/default",
+        json={"purpose": "title", "profile_id": profile["id"]},
+    )
+    assert title_default_response.status_code == 200
+    assert title_default_response.json()["default_profile_id"] == profile["id"]
+
+
+async def test_profile_can_narrow_reasoning_efforts(client: AsyncClient) -> None:
+    service_response = await client.post(
+        "/api/models/services",
+        json={
+            "name": "Responses subset",
+            "slug": "responses-subset",
+            "protocol": "openai_responses",
+            "base_url": "http://localhost:9999/v1",
+        },
+    )
+    service_id = next(
+        item["id"]
+        for item in service_response.json()["services"]
+        if item["slug"] == "responses-subset"
+    )
+    created = await client.post(
+        "/api/models/profiles",
+        json={
+            "service_id": service_id,
+            "model_id": "reasoning-subset",
+            "thinking_efforts": ["low", "high"],
+            "thinking_effort_default": "high",
+        },
+    )
+    assert created.status_code == 201
+    profile = next(
+        item
+        for item in created.json()["profiles"]
+        if item["model_id"] == "reasoning-subset"
+    )
+    assert profile["thinking_efforts"] == ["low", "high"]
+    assert profile["thinking_effort_default"] == "high"
+
+    # Narrowing the list cannot leave a stale, invalid default behind.
+    invalid = await client.patch(
+        f"/api/models/profiles/{profile['id']}",
+        json={"thinking_efforts": ["low"]},
+    )
+    assert invalid.status_code == 400
+    assert "默认思考深度" in invalid.json()["detail"]
+
+    updated = await client.patch(
+        f"/api/models/profiles/{profile['id']}",
+        json={
+            "thinking_efforts": ["low"],
+            "thinking_effort_default": "low",
+        },
+    )
+    assert updated.status_code == 200
+    narrowed = next(
+        item
+        for item in updated.json()["profiles"]
+        if item["id"] == profile["id"]
+    )
+    assert narrowed["thinking_efforts"] == ["low"]
+    assert narrowed["thinking_effort_default"] == "low"
 
 
 async def test_credential_value_never_appears_in_catalog(
@@ -237,12 +354,13 @@ async def test_concurrent_first_load_does_not_collide(session: AsyncSession) -> 
         await ensure_builtin_catalog(session)
     await session.commit()
 
-    from sqlalchemy import func, select as sa_select
+    from sqlalchemy import func
+    from sqlalchemy import select as sa_select
 
     from app.db.models import ModelService
 
     count = await session.scalar(sa_select(func.count(ModelService.id)))
-    assert count == 2
+    assert count == 3
 
     assert asyncio  # 保持导入可读性，真正的并发覆盖见集成验证
 

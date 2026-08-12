@@ -5,7 +5,7 @@ import datetime as dt
 import json
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,6 +17,7 @@ from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent import build_agent_context
+from app.attachments import store as attachment_store
 from app.attachments.hydrate import AttachmentHydrator
 from app.chat.service import (
     ChatService,
@@ -28,15 +29,30 @@ from app.chat.service import (
 from app.config import get_settings
 from app.db.models import (
     Attachment,
+    ConsolidationRun,
     Conversation,
     ConversationSummary,
+    DailyDigest,
+    KbRead,
+    Memory,
+    MemoryRead,
+    MemoryVersion,
     Message,
+    Notification,
+    OpenLoop,
+    TimelineItem,
     live_message,
 )
 from app.db.session import get_session, get_sessionmaker
-from app.llm.catalog import resolve_model_target, resolve_vision_target
+from app.debug.recorder import recorder
+from app.llm.catalog import (
+    resolve_model_target,
+    resolve_title_target,
+    resolve_vision_target,
+)
+from app.llm.factory import get_provider
 from app.llm.target import ModelTarget
-from app.llm.title import get_title_client
+from app.llm.title import TitleClient, get_title_client
 from app.obs import current_trace_id
 from app.obs.tracing import apply_tracing
 from app.search import search as run_search
@@ -67,6 +83,10 @@ class ChatRequest(BaseModel):
     web_search: bool = False
     # 先上传拿到 id，发送时才挂到消息上。
     attachment_ids: list[int] = Field(default_factory=list)
+    # Composer-level override. None keeps the conversation/global default.
+    thinking: bool | None = None
+    # Validated against the selected profile's capability metadata below.
+    thinking_effort: str | None = Field(default=None, max_length=24)
 
     @model_validator(mode="after")
     def _not_empty(self) -> ChatRequest:
@@ -112,7 +132,7 @@ async def get_runtime_settings(
     return {
         **describe(settings, overrides),
         # 兼容前端已有的运行时卡片
-        "provider": target.service_slug,
+        "provider": "openai" if target.protocol == "openai_responses" else target.service_slug,
         "model": target.model_id,
         "thinking_default": target.thinking_default,
         "thinking_toggle": True,
@@ -144,6 +164,8 @@ async def update_runtime_settings(
         payload.setdefault("chat_model_profile_id", None)
     if "consolidate_model" in payload:
         payload.setdefault("consolidate_model_profile_id", None)
+    if "title_model" in payload:
+        payload.setdefault("title_model_profile_id", None)
     try:
         await apply(session, payload, await resolve_settings(session, base))
     except SettingError as exc:
@@ -339,6 +361,23 @@ class ConversationClearOut(BaseModel):
     deleted_summaries: int
 
 
+class DataClearOut(BaseModel):
+    deleted_conversations: int
+    deleted_messages: int
+    deleted_summaries: int
+    deleted_memories: int
+    deleted_memory_versions: int
+    deleted_memory_reads: int
+    deleted_kb_reads: int
+    deleted_daily_digests: int
+    deleted_open_loops: int
+    deleted_timeline_items: int
+    deleted_consolidation_runs: int
+    deleted_notifications: int
+    deleted_attachments: int
+    deleted_attachment_files: int
+
+
 class ConversationHitOut(BaseModel):
     conversation_id: int
     title: str
@@ -448,6 +487,59 @@ async def clear_conversations(
         deleted_conversations=conversation_result.rowcount or 0,
         deleted_messages=message_result.rowcount or 0,
         deleted_summaries=summary_result.rowcount or 0,
+    )
+
+
+@router.delete("/data", response_model=DataClearOut)
+async def clear_all_data(session: AsyncSession = Depends(get_session)) -> DataClearOut:
+    """清空设置页所说的全部用户数据，但保留应用配置和已安装能力。
+
+    这是独立于「清空会话」的强 destructive 操作：记忆版本也会删掉，不能再回滚；
+    每日回顾、关注事项和时间线也一起删，避免删除对话后留下无法解释的派生内容。
+    附件正文在数据库事务提交后清理，因为它们不存于数据库。
+    """
+    attachment_result = await session.execute(sa_delete(Attachment))
+    message_result = await session.execute(sa_delete(Message))
+    summary_result = await session.execute(sa_delete(ConversationSummary))
+    conversation_result = await session.execute(sa_delete(Conversation))
+    memory_result = await session.execute(sa_delete(Memory))
+    memory_version_result = await session.execute(sa_delete(MemoryVersion))
+    memory_read_result = await session.execute(sa_delete(MemoryRead))
+    kb_read_result = await session.execute(sa_delete(KbRead))
+    digest_result = await session.execute(sa_delete(DailyDigest))
+    open_loop_result = await session.execute(sa_delete(OpenLoop))
+    timeline_result = await session.execute(sa_delete(TimelineItem))
+    consolidation_result = await session.execute(sa_delete(ConsolidationRun))
+    notification_result = await session.execute(sa_delete(Notification))
+
+    # Commit before touching the content-addressed files. If the database fails,
+    # the blobs remain available for a retry instead of leaving dangling rows.
+    await session.commit()
+    deleted_attachment_files = attachment_store.clear_blobs(get_settings())
+    recorder.clear()
+
+    logger.warning(
+        "清空全部用户数据：conversations=%s memories=%s timeline=%s attachments=%s",
+        conversation_result.rowcount or 0,
+        memory_result.rowcount or 0,
+        timeline_result.rowcount or 0,
+        attachment_result.rowcount or 0,
+    )
+    return DataClearOut(
+        deleted_conversations=conversation_result.rowcount or 0,
+        deleted_messages=message_result.rowcount or 0,
+        deleted_summaries=summary_result.rowcount or 0,
+        deleted_memories=memory_result.rowcount or 0,
+        deleted_memory_versions=memory_version_result.rowcount or 0,
+        deleted_memory_reads=memory_read_result.rowcount or 0,
+        deleted_kb_reads=kb_read_result.rowcount or 0,
+        deleted_daily_digests=digest_result.rowcount or 0,
+        deleted_open_loops=open_loop_result.rowcount or 0,
+        deleted_timeline_items=timeline_result.rowcount or 0,
+        deleted_consolidation_runs=consolidation_result.rowcount or 0,
+        deleted_notifications=notification_result.rowcount or 0,
+        deleted_attachments=attachment_result.rowcount or 0,
+        deleted_attachment_files=deleted_attachment_files,
     )
 
 
@@ -716,7 +808,7 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
     conversation_id = payload.conversation_id
     if conversation_id is None:
         async with get_sessionmaker()() as session:
-            conversation = Conversation()
+            conversation = Conversation(thinking=payload.thinking)
             session.add(conversation)
             await session.commit()
             await session.refresh(conversation)
@@ -748,6 +840,21 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     settings,
                     profile_id=payload.model_profile_id or conversation.model_profile_id,
                 )
+                if payload.thinking is True and not target.supports_thinking:
+                    yield _sse({"type": "error", "message": "当前模型不支持思考模式"})
+                    return
+                if payload.thinking_effort is not None:
+                    if payload.thinking_effort not in target.thinking_efforts:
+                        detail = (
+                            f"当前模型不支持可调思考深度"
+                            if not target.thinking_efforts
+                            else f"无效的思考深度，可选：{', '.join(target.thinking_efforts)}"
+                        )
+                        yield _sse({"type": "error", "message": detail})
+                        return
+                    target = replace(target, effort=payload.thinking_effort)
+                if payload.thinking is not None:
+                    conversation.thinking = payload.thinking
                 if not target.supports_tools:
                     yield _sse({"type": "error", "message": "当前模型不支持工具调用，无法运行记忆和时间线功能"})
                     return
@@ -761,10 +868,14 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     if target.supports_vision
                     else await resolve_vision_target(session, settings)
                 )
+                # ⚠️ 判据是「这批附件里有没有图」，不是「有没有附件」——
+                # txt / md 任何模型都读得了，拿它去撞视觉拦截是纯误伤。
                 if (
-                    payload.attachment_ids
-                    and not target.supports_vision
+                    not target.supports_vision
                     and vision_target is None
+                    and await attachment_store.has_images(
+                        session, payload.attachment_ids
+                    )
                 ):
                     # 明确报错而不是把图悄悄丢掉。静默丢弃的症状是模型答非所问，
                     # 而用户根本不会想到是图没发出去。
@@ -781,14 +892,25 @@ async def _stream(payload: ChatRequest) -> AsyncIterator[str]:
                     conversation_id=conversation.id,
                     web_search=payload.web_search,
                 )
+                title_client = get_title_client(settings)
+                title_target = await resolve_title_target(session, settings)
+                if title_target is not None:
+                    title_client = TitleClient(
+                        settings=settings,
+                        provider=get_provider(settings, target=title_target),
+                        target=title_target,
+                    )
+
                 service = ChatService(
                     session=session,
                     provider=context.provider,
                     executor=context.executor,
                     settings=settings,
                     model_profile_id=target.profile_id,
-                    # 配了 ZHIPU_API_KEY 才有；没配则为 None，标题退回聊天 provider
-                    title_client=get_title_client(settings),
+                    service_slug=target.service_slug,
+                    # 模型目录指定了标题档案就优先使用；否则保留旧的硅基流动/智谱链路，
+                    # 再否则退回当前聊天 provider。
+                    title_client=title_client,
                     hydrator=AttachmentHydrator(
                         session,
                         settings,

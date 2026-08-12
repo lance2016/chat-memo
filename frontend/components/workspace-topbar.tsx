@@ -1,7 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, BookOpen, CalendarClock, CalendarDays, Home, LoaderCircle, MoreHorizontal, Pencil, Settings2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, CalendarCheck2, ChevronUp, Clock3, Home, LoaderCircle, MessageCircle, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -10,12 +11,12 @@ import type { Conversation } from "@/lib/types";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { SearchTrigger } from "@/components/global-search";
 import { InputDialog } from "@/components/input-dialog";
-import { ThemeControl } from "@/components/theme-control";
-import { LanguageControl } from "@/components/language-control";
 import { useI18n } from "@/components/i18n-provider";
 import type { TranslationKey } from "@/lib/i18n";
 import { confirmAppNavigation } from "@/lib/navigation-guard";
 import { useToast } from "@/components/toast";
+import { newConversationEvent } from "@/components/keyboard-shortcuts";
+import { defaultPreferences, isProfileAvatarImage, preferencesChangeEvent, profileInitials, readPreferences, type UserPreferences } from "@/lib/preferences";
 
 export type WorkspacePage = "chat" | "memories" | "review" | "timeline" | "settings";
 
@@ -39,12 +40,13 @@ export function notifyWorkspaceSelectedConversationChanged(conversationId: numbe
 }
 
 const navigation = [
-  { key: "chat" as const, href: "/", label: "nav.chat" as TranslationKey, icon: Home },
-  { key: "memories" as const, href: "/memories", label: "nav.memories" as TranslationKey, icon: BookOpen },
-  { key: "review" as const, href: "/review", label: "nav.review" as TranslationKey, icon: CalendarDays },
-  { key: "timeline" as const, href: "/timeline", label: "nav.timeline" as TranslationKey, icon: CalendarClock },
-  { key: "settings" as const, href: "/settings", label: "nav.settings" as TranslationKey, icon: Settings2 },
+  { key: "chat" as const, href: "/", label: "nav.chat" as TranslationKey, icon: Home, tone: "blue" },
+  { key: "memories" as const, href: "/memories", label: "nav.memories" as TranslationKey, icon: BookOpen, tone: "indigo" },
+  { key: "review" as const, href: "/review", label: "nav.review" as TranslationKey, icon: CalendarCheck2, tone: "violet" },
+  { key: "timeline" as const, href: "/timeline", label: "nav.timeline" as TranslationKey, icon: Clock3, tone: "orange" },
+  { key: "settings" as const, href: "/settings", label: "nav.settings" as TranslationKey, icon: Settings2, tone: "gray" },
 ];
+const sidebarNavigation = navigation.filter(({ key }) => key !== "chat" && key !== "settings");
 const workspaceRoutes = navigation.map(({ href }) => href);
 const warmedRoutes = new Set<string>();
 const CONVERSATION_PAGE_SIZE = 20;
@@ -61,14 +63,15 @@ export function MemoryMark({ compact = false }: { compact?: boolean }) {
   </span>;
 }
 
-export function MemoryBrand() {
+export function MemoryBrand({ iconOnly = false }: { iconOnly?: boolean }) {
   const { t } = useI18n();
   return <Link className="memory-brand-link" href="/" aria-label={t("workspace.backHome")} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); else notifyWorkspaceSelectedConversationChanged(null); }}>
-    <Image className="memory-brand-lockup" src="/morning-memory-wordmark.png" alt="朝花夕拾" width={220} height={59} sizes="(max-width: 980px) 56px, 220px" priority />
+    <MemoryMark />
+    {!iconOnly && <span className="workspace-brand-copy"><strong>{t("app.title")}</strong><small>{t("app.tagline")}</small></span>}
   </Link>;
 }
 
-export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage; className?: string }) {
+export function WorkspaceNav({ active, className = "", items = navigation }: { active: WorkspacePage; className?: string; items?: typeof navigation }) {
   const { t } = useI18n();
   const router = useRouter();
   const prefetch = (href: string) => {
@@ -84,22 +87,67 @@ export function WorkspaceNav({ active, className = "" }: { active: WorkspacePage
   };
 
   return <nav className={`workspace-nav ${className}`} aria-label={t("nav.main")}>
-    {navigation.map(({ key, href, label, icon: Icon }) => key === active
-      ? <span className="active" aria-current="page" key={key}><Icon size={18} /><span>{t(label)}</span></span>
-      : <Link href={href} key={key} onPointerEnter={() => prefetch(href)} onFocus={() => prefetch(href)} onTouchStart={() => prefetch(href)} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={18} /><span>{t(label)}</span></Link>)}
+    {items.map(({ key, href, label, icon: Icon, tone }) => key === active
+      ? <span className="active" aria-current="page" aria-label={t(label)} title={t(label)} data-label={t(label)} key={key}><span className={`workspace-nav-icon tone-${tone}`} aria-hidden="true"><Icon size={15} /></span><span className="workspace-nav-label">{t(label)}</span></span>
+      : <Link href={href} aria-label={t(label)} title={t(label)} data-label={t(label)} key={key} onPointerEnter={() => prefetch(href)} onFocus={() => prefetch(href)} onTouchStart={() => prefetch(href)} onClick={(event) => { if (!confirmAppNavigation()) event.preventDefault(); }}><span className={`workspace-nav-icon tone-${tone}`} aria-hidden="true"><Icon size={15} /></span><span className="workspace-nav-label">{t(label)}</span></Link>)}
   </nav>;
 }
 
 export function WorkspaceProfile() {
   const { t } = useI18n();
-  return <div className="workspace-profile">
-    <Link href="/settings" className="workspace-avatar" aria-label={t("workspace.openSettings")}>L</Link>
-    <span><strong>Lance</strong><small>{t("workspace.localMemory")}</small></span>
-    <Link href="/settings" className="workspace-profile-settings" aria-label={t("workspace.openSettings")}><Settings2 size={15} /></Link>
+  const [open, setOpen] = useState(false);
+  const [preferences, setPreferences] = useState<UserPreferences>(defaultPreferences);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!shellRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    };
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    setPreferences(readPreferences());
+    const sync = (event: Event) => {
+      const detail = (event as CustomEvent<UserPreferences>).detail;
+      setPreferences(detail ?? readPreferences());
+    };
+    window.addEventListener(preferencesChangeEvent(), sync);
+    return () => window.removeEventListener(preferencesChangeEvent(), sync);
+  }, []);
+
+  const menuLinks = [
+    { href: "/settings", label: t("nav.settings"), icon: Settings2 },
+  ];
+
+  return <div className="workspace-profile-shell" ref={shellRef}>
+    {open && <div className="workspace-profile-menu" role="menu" aria-label={t("workspace.tools")}>
+      {menuLinks.map(({ href, label, icon: Icon }) => <Link href={href} role="menuitem" key={href} onClick={(event) => { setOpen(false); if (!confirmAppNavigation()) event.preventDefault(); }}><Icon size={15} /><span>{label}</span></Link>)}
+    </div>}
+    <button className="workspace-profile" type="button" ref={triggerRef} aria-label={t("workspace.openMenu")} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <span className={`workspace-avatar tone-${preferences.profileTone}`} aria-hidden="true">{isProfileAvatarImage(preferences.profileAvatar) ? <>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={preferences.profileAvatar} alt="" />
+      </> : profileInitials(preferences.profileName || "Lance", preferences.profileAvatar)}</span>
+      <span className="workspace-profile-copy"><strong>{preferences.profileName || "Lance"}</strong><small>{t("workspace.localMemory")}</small></span>
+      <ChevronUp className="workspace-profile-chevron" size={14} aria-hidden="true" />
+    </button>
   </div>;
 }
 
-export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: string }) {
+export function WorkspaceTopbar({ active, sidebarCollapsed = false, onSidebarCollapsedChange }: { active: WorkspacePage; subtitle?: string; sidebarCollapsed?: boolean; onSidebarCollapsedChange?: (collapsed: boolean) => void }) {
   const { t } = useI18n();
   const toast = useToast();
   const router = useRouter();
@@ -114,6 +162,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const [renameDraft, setRenameDraft] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const recentListRef = useRef<HTMLDivElement>(null);
@@ -236,12 +285,14 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
       if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
       if (event.target instanceof Element && event.target.closest(".workspace-sidebar-conversation-more")) return;
       setMenuTarget(null);
+      setMenuPosition(null);
     };
     // role="menu" 此前只有 Escape 和首项聚焦，方向键完全没实现 ——
     // 读屏会宣告「菜单」，用户按 ↓ 却毫无反应。
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setMenuTarget(null);
+        setMenuPosition(null);
         // 焦点必须回到触发它的 ⋯ 按钮，否则键盘用户被扔回文档开头。
         window.requestAnimationFrame(() => triggerRef.current?.focus());
         return;
@@ -265,8 +316,45 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     };
   }, [menuTarget]);
 
+  /**
+   * The action menu used to live inside the scrollable conversation list.
+   * Focusing its first item could scroll that list, and overflow clipping made
+   * the menu cover or hide the chat pane at narrow widths. Position the menu
+   * in a body-level layer instead, while keeping it anchored to its trigger.
+   */
+  const positionConversationMenu = useCallback(() => {
+    if (!menuTarget || !triggerRef.current || !menuRef.current) return;
+    const trigger = triggerRef.current.getBoundingClientRect();
+    const menu = menuRef.current.getBoundingClientRect();
+    const edge = 8;
+    const gap = 8;
+    const width = menu.width || 172;
+    const height = menu.height || 124;
+    let left = trigger.right + gap;
+    if (left + width > window.innerWidth - edge) left = trigger.left - width - gap;
+    left = Math.max(edge, Math.min(left, window.innerWidth - width - edge));
+    let top = trigger.top - 5;
+    if (top + height > window.innerHeight - edge) top = window.innerHeight - height - edge;
+    top = Math.max(edge, top);
+    setMenuPosition({ left, top });
+  }, [menuTarget]);
+
+  useLayoutEffect(() => {
+    if (!menuTarget) return;
+    positionConversationMenu();
+    const reposition = () => positionConversationMenu();
+    window.addEventListener("resize", reposition);
+    // Capture scrolling from the list and any page-level scroll container.
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [menuTarget, positionConversationMenu, recentConversations]);
+
   const openRename = (conversation: Conversation) => {
     setMenuTarget(null);
+    setMenuPosition(null);
     setRenameDraft(conversation.title);
     setRenameTarget(conversation);
   };
@@ -294,6 +382,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
   const applyArchived = async (conversation: Conversation, archived: boolean) => {
     const updated = await archiveConversation(conversation.id, archived);
     setMenuTarget(null);
+    setMenuPosition(null);
     setRecentConversations((current) => current.filter((item) => item.id !== conversation.id));
     notifyWorkspaceConversationsChanged({ type: "archived", conversation: updated, archived });
     if (currentConversationId() === conversation.id) router.push("/");
@@ -340,10 +429,48 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
     }
   };
 
+  const beginNewConversation = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    setMenuTarget(null);
+    setMenuPosition(null);
+    if (!confirmAppNavigation()) {
+      event.preventDefault();
+      return;
+    }
+    if (active === "chat" && selectedConversationId === null) {
+      event.preventDefault();
+      window.dispatchEvent(new Event(newConversationEvent));
+      return;
+    }
+    setSelectedConversationId(null);
+    notifyWorkspaceSelectedConversationChanged(null);
+  };
+
   return <>
-    <aside className="workspace-sidebar">
-      <MemoryBrand />
-      <WorkspaceNav active={active} />
+    <aside className="workspace-sidebar" id="workspace-primary-sidebar">
+      <div className="workspace-sidebar-header">
+        {sidebarCollapsed
+          ? <button className="workspace-sidebar-compact-brand" type="button" aria-label={t("workspace.expandSidebar")} aria-controls="workspace-primary-sidebar" aria-expanded="false" title={t("workspace.expandSidebar")} onClick={() => onSidebarCollapsedChange?.(false)}>
+            <MemoryMark />
+            <PanelLeftOpen className="workspace-sidebar-compact-expand-icon" size={20} aria-hidden="true" />
+          </button>
+          : <>
+            <MemoryBrand iconOnly />
+            <div className="workspace-sidebar-header-actions">
+              <SearchTrigger />
+              <button className="workspace-sidebar-toggle" type="button" aria-label={t("workspace.collapseSidebar")} aria-controls="workspace-primary-sidebar" aria-expanded="true" title={t("workspace.collapseSidebar")} onClick={() => onSidebarCollapsedChange?.(true)}>
+                <PanelLeftClose size={18} />
+              </button>
+            </div>
+          </>}
+      </div>
+      <div className="workspace-sidebar-primary-actions">
+        <Link className="workspace-new-conversation" href="/" aria-label={t("shortcuts.newChat")} title={`${t("shortcuts.newChat")} · ⌘N`} onClick={beginNewConversation}><Plus size={17} aria-hidden="true" /><span>{t("shortcuts.newChat")}</span><kbd>⌘N</kbd></Link>
+      </div>
+      {sidebarCollapsed && <div className="workspace-sidebar-compact-actions" aria-label={t("workspace.tools")}>
+        <SearchTrigger />
+        <button className="workspace-sidebar-compact-recent" type="button" aria-label={t("workspace.recent")} title={t("workspace.recent")} onClick={() => { setShowArchived(false); onSidebarCollapsedChange?.(false); }}><MessageCircle size={20} aria-hidden="true" /></button>
+      </div>}
+      {!sidebarCollapsed && <WorkspaceNav active={active} className="workspace-sidebar-feature-nav" items={sidebarNavigation} />}
       <div className="workspace-sidebar-recent">
         <div className="workspace-sidebar-recent-heading">
           <span>{showArchived ? t("workspace.archived") : t("workspace.recent")}</span>
@@ -358,7 +485,7 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
         >
           {loadingConversations && !recentConversations.length && <small><LoaderCircle size={12} className="spin" />{t("workspace.loadingConversations")}</small>}
           {recentConversations.map((conversation) => <div className={`workspace-sidebar-conversation ${selectedConversationId === conversation.id ? "selected" : ""}`} key={conversation.id}>
-            <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
+            <Link href={`/?conversation=${conversation.id}`} title={conversation.title} aria-current={selectedConversationId === conversation.id ? "page" : undefined} onClick={(event) => { setMenuTarget(null); setMenuPosition(null); if (!confirmAppNavigation()) event.preventDefault(); else setSelectedConversationId(conversation.id); }}><span>{conversation.title}</span></Link>
             <button
               className="workspace-sidebar-conversation-more"
               ref={menuTarget?.id === conversation.id ? triggerRef : undefined}
@@ -366,33 +493,52 @@ export function WorkspaceTopbar({ active }: { active: WorkspacePage; subtitle?: 
               aria-label={t("workspace.conversationActions", { title: conversation.title })}
               aria-haspopup="menu"
               aria-expanded={menuTarget?.id === conversation.id}
-              onClick={() => setMenuTarget((current) => current?.id === conversation.id ? null : conversation)}
+              onClick={() => {
+                if (menuTarget?.id === conversation.id) {
+                  setMenuTarget(null);
+                  setMenuPosition(null);
+                } else {
+                  setMenuPosition(null);
+                  setMenuTarget(conversation);
+                }
+              }}
             ><MoreHorizontal size={16} /></button>
-            {menuTarget?.id === conversation.id && <div className="workspace-conversation-menu" role="menu" aria-label={t("workspace.conversationActions", { title: conversation.title })} ref={menuRef}>
-              <button type="button" role="menuitem" onClick={() => openRename(conversation)} disabled={busyId !== null}><Pencil size={15} /><span>{t("workspace.rename")}</span></button>
-              <button type="button" role="menuitem" onClick={() => void toggleConversationArchived(conversation)} disabled={busyId !== null}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}<span>{showArchived ? t("workspace.restore") : t("workspace.archive")}</span></button>
-              <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setDeleteTarget(conversation); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
-            </div>}
           </div>)}
           {loadingConversations && recentConversations.length > 0 && <small><LoaderCircle size={12} className="spin" />{t("workspace.loadingConversations")}</small>}
           {!loadingConversations && !recentConversations.length && !conversationLoadError && <small>{showArchived ? t("workspace.noArchived") : t("workspace.noRecent")}</small>}
           {conversationLoadError && <><small className="workspace-sidebar-recent-error" role="alert">{conversationLoadError}</small><button className="workspace-sidebar-load-more" type="button" onClick={loadMoreConversations}>{t("workspace.retry")}</button></>}
           {!loadingConversations && !conversationLoadError && hasMoreConversations && <button className="workspace-sidebar-load-more" type="button" ref={recentListEndRef} onClick={loadMoreConversations}>{t("workspace.loadMore")}</button>}
-          {!loadingConversations && !conversationLoadError && !hasMoreConversations && recentConversations.length > 0 && <small>{t("workspace.allConversationsLoaded")}</small>}
         </div>
-        <button className="workspace-sidebar-recent-filter" type="button" onClick={() => { setMenuTarget(null); setShowArchived((value) => !value); }}>
-          {showArchived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+        <button className="workspace-sidebar-recent-filter" type="button" onClick={() => { setMenuTarget(null); setMenuPosition(null); setShowArchived((value) => !value); }}>
+          {showArchived ? <ArrowLeft size={15} /> : <Archive size={15} />}
           <span>{showArchived ? t("workspace.backToRecent") : t("workspace.archived")}</span>
         </button>
       </div>
       <footer className="workspace-sidebar-footer">
-        <div className="workspace-sidebar-tools" aria-label={t("workspace.tools")}><SearchTrigger /><LanguageControl /><ThemeControl /></div>
         <WorkspaceProfile />
       </footer>
     </aside>
+    {menuTarget && typeof document !== "undefined" && createPortal(
+      <div
+        className="workspace-conversation-menu"
+        role="menu"
+        aria-label={t("workspace.conversationActions", { title: menuTarget.title })}
+        ref={menuRef}
+        style={{
+          left: menuPosition?.left ?? 0,
+          top: menuPosition?.top ?? 0,
+          visibility: menuPosition ? "visible" : "hidden",
+        }}
+      >
+        <button type="button" role="menuitem" onClick={() => openRename(menuTarget)} disabled={busyId !== null}><Pencil size={15} /><span>{t("workspace.rename")}</span></button>
+        <button type="button" role="menuitem" onClick={() => void toggleConversationArchived(menuTarget)} disabled={busyId !== null}>{showArchived ? <ArchiveRestore size={15} /> : <Archive size={15} />}<span>{showArchived ? t("workspace.restore") : t("workspace.archive")}</span></button>
+        <button className="danger" type="button" role="menuitem" onClick={() => { setMenuTarget(null); setMenuPosition(null); setDeleteTarget(menuTarget); }} disabled={busyId !== null}><Trash2 size={15} /><span>{t("workspace.delete")}</span></button>
+      </div>,
+      document.body,
+    )}
     <header className="workspace-mobile-topbar">
       <MemoryBrand />
-      <div><SearchTrigger /><LanguageControl /><ThemeControl /></div>
+      <div><Link className="workspace-mobile-new-conversation" href="/" aria-label={t("shortcuts.newChat")} title={t("shortcuts.newChat")} onClick={beginNewConversation}><Plus size={18} /></Link><SearchTrigger /></div>
     </header>
     <WorkspaceNav active={active} className="workspace-mobile-nav" />
     <ConfirmDialog

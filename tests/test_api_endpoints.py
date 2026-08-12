@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Conversation, ConversationSummary, DailyDigest, Message
+from app.db.models import Conversation, ConversationSummary, DailyDigest, Message, OpenLoop, TimelineItem
 from app.db.session import get_session
 from app.main import create_app
 from app.memory.store import MemoryStore
@@ -55,6 +55,40 @@ async def test_clear_all_conversations_keeps_memory_data(
     }
     assert (await client.get("/api/conversations")).json() == []
     assert (await client.get("/api/memories/keep.md")).json()["content"] == "保留"
+
+
+async def test_clear_all_data_removes_user_content(
+    client: AsyncClient, session: AsyncSession
+) -> None:
+    conversation = await seed_conversation(session)
+    session.add_all(
+        [
+            Message(conversation_id=conversation.id, role="user", content=[], search_text="内容"),
+            ConversationSummary(conversation_id=conversation.id, summary="摘要", up_to_message_id=1),
+            DailyDigest(day=dt.date.today(), headline="今天", highlights=[]),
+            OpenLoop(text="后续事项", opened_on=dt.date.today()),
+            TimelineItem(title="会议", starts_at=dt.datetime.now(dt.UTC)),
+        ]
+    )
+    await MemoryStore(session, actor="manual").create("/memories/remove.md", "删除我")
+    await session.commit()
+
+    response = await client.delete("/api/data")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_conversations"] == 1
+    assert body["deleted_messages"] == 1
+    assert body["deleted_summaries"] == 1
+    assert body["deleted_memories"] == 1
+    assert body["deleted_daily_digests"] == 1
+    assert body["deleted_open_loops"] == 1
+    assert body["deleted_timeline_items"] == 1
+    assert (await client.get("/api/conversations")).json() == []
+    assert (await client.get("/api/memories")).json() == []
+    assert (await client.get("/api/review/days")).json() == []
+    assert (await client.get("/api/timeline")).json() == []
+    assert (await client.get("/api/open-loops")).json() == []
 
 
 async def test_import_memory_json_is_isolated_and_idempotent(
@@ -117,7 +151,11 @@ async def test_tool_catalog_exposes_names_descriptions_and_schemas(
     assert memory["native_protocol"] == "anthropic"
     assert "command" in memory["input_schema"]["required"]
     # 协议清单从 provider 注册表推导，不是写死的厂商名
-    assert set(memory["protocols"]) == {"anthropic", "openai_compatible"}
+    assert set(memory["protocols"]) == {
+        "anthropic",
+        "openai_compatible",
+        "openai_responses",
+    }
 
 
 async def test_tool_catalog_matches_what_chat_actually_registers(

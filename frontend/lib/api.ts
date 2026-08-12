@@ -6,6 +6,7 @@ import type {
   ChatEvent,
   Conversation,
   ConversationClearResult,
+  DataClearResult,
   ConversationContext,
   ConversationSummary,
   ConsolidateResult,
@@ -147,14 +148,14 @@ export function getRuntimeSettings() {
   return request<RuntimeSettings>("/api/settings");
 }
 
-export function getModelCatalog(purpose: "chat" | "consolidation" = "chat") {
+export function getModelCatalog(purpose: "chat" | "consolidation" | "title" = "chat") {
   return request<ModelCatalog>(`/api/models?purpose=${purpose}`);
 }
 
 export function createModelService(input: {
   name: string;
   slug: string;
-  protocol: "anthropic" | "openai_compatible";
+  protocol: "anthropic" | "openai_compatible" | "openai_responses";
   base_url?: string;
   credential_ref?: string;
 }) {
@@ -177,6 +178,8 @@ export function createModelProfile(input: {
   display_name?: string;
   capabilities?: Record<string, boolean>;
   context_window_tokens?: number;
+  thinking_efforts?: string[] | null;
+  thinking_effort_default?: string | null;
 }) {
   return request<ModelCatalog>("/api/models/profiles", {
     method: "POST",
@@ -191,7 +194,7 @@ export function updateModelProfile(id: number, changes: Record<string, unknown>)
   });
 }
 
-export function setDefaultModel(purpose: "chat" | "consolidation", profileId: number | null) {
+export function setDefaultModel(purpose: "chat" | "consolidation" | "title", profileId: number | null) {
   return request<ModelCatalog>("/api/models/default", {
     method: "POST",
     body: JSON.stringify({ purpose, profile_id: profileId }),
@@ -424,6 +427,10 @@ export function clearConversations() {
   return request<ConversationClearResult>("/api/conversations", { method: "DELETE" });
 }
 
+export function clearAllData() {
+  return request<DataClearResult>("/api/data", { method: "DELETE" });
+}
+
 export function archiveConversation(id: number, archived = true) {
   return request<Conversation>(`/api/conversations/${id}/archive?archived=${archived}`, { method: "POST" });
 }
@@ -643,6 +650,8 @@ export async function streamChat(
   signal?: AbortSignal,
   webSearchEnabled = false,
   attachmentIds: number[] = [],
+  thinking?: boolean,
+  thinkingEffort?: string | null,
 ) {
   const headers = new Headers({ "Content-Type": "application/json" });
   const apiKey = process.env.NEXT_PUBLIC_API_KEY;
@@ -653,7 +662,15 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ conversation_id: conversationId, content, model_profile_id: modelProfileId, web_search: webSearchEnabled, attachment_ids: attachmentIds }),
+      body: JSON.stringify({
+        conversation_id: conversationId,
+        content,
+        model_profile_id: modelProfileId,
+        web_search: webSearchEnabled,
+        attachment_ids: attachmentIds,
+        thinking,
+        thinking_effort: thinking ? thinkingEffort ?? undefined : undefined,
+      }),
       signal,
     });
   } catch (cause) {

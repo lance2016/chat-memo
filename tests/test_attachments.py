@@ -16,13 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.attachments import store
 from app.attachments.errors import InvalidAttachment, InvalidAttachmentPath
 from app.attachments.hydrate import (
+    TEXT_INLINE_CHARS,
     AttachmentHydrator,
     collect_ref_ids,
     placeholder_hydrate,
     ref_block,
 )
 from app.attachments.image import sniff
-from app.attachments.paths import blob_path, normalize_digest, safe_filename
+from app.attachments.paths import (
+    blob_path,
+    content_disposition,
+    normalize_digest,
+    safe_filename,
+)
+from app.attachments.text import decode, looks_like_text
 from app.config import Settings
 from app.llm.deepseek_provider import to_openai_messages, to_openai_parts
 from app.llm.target import DEFAULT_CAPABILITIES, ModelTarget
@@ -110,6 +117,19 @@ def test_safe_filename_strips_paths_and_quotes() -> None:
     assert safe_filename(None) == "image"
 
 
+def test_content_disposition_survives_a_chinese_filename() -> None:
+    """HTTP 头只能是 latin-1，而中文文件名很常见。
+
+    不做这层转换的症状不是乱码，是下载接口整个 500（starlette 在 init_headers
+    里抛 UnicodeEncodeError），界面上那张图变成一个警告图标。
+    """
+    header = content_disposition("截图 2026年7月19日.png")
+    header.encode("latin-1")  # 塞进响应头之前必须能编码，编不了就是 500
+    assert "filename*=UTF-8''" in header
+    assert "%E6%88%AA" in header  # 真名字在 filename* 里
+    assert 'filename="' in header  # ASCII 兜底那份也在
+
+
 # ---------- 落盘：内容寻址，同一张图只占一份 ----------
 
 
@@ -139,7 +159,135 @@ async def test_upload_rejects_oversized_files(
         await store.save_upload(session, settings, png_bytes(), filename="a.png")
 
 
+# ---------- 文本附件：扩展名选路，内容才是准入判据 ----------
+
+
+def test_text_suffix_picks_the_route_but_not_the_verdict() -> None:
+    assert looks_like_text("notes.md") and looks_like_text("README.MD")
+    assert looks_like_text("a.txt")
+    assert not looks_like_text("a.png") and not looks_like_text("noextension")
+
+    # 改名成 .md 的二进制仍然要被内容挡下来 —— 扩展名不构成准入
+    with pytest.raises(InvalidAttachment):
+        decode(png_bytes(), filename="fake.md")
+
+
+def test_decode_normalizes_bom_and_crlf() -> None:
+    mime, text = decode("﻿# 标题\r\n正文\r\n".encode(), filename="a.md")
+    assert mime == "text/markdown"
+    assert text == "# 标题\n正文\n"
+    assert decode(b"hi", filename="a.txt")[0] == "text/plain"
+
+
+def test_decode_rejects_non_utf8_and_control_bytes() -> None:
+    # 猜编码猜错的代价是一整篇乱码进上下文，不如直接拒绝
+    with pytest.raises(InvalidAttachment):
+        decode("中文".encode("gbk"), filename="a.txt")
+    with pytest.raises(InvalidAttachment):
+        decode(b"ok\x00then", filename="a.txt")
+
+
+async def test_text_upload_gets_its_own_kind_and_size_limit(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    settings = settings_for(tmp_path, attachment_text_max_bytes=32)
+    row = await store.save_upload(session, settings, b"# hi", filename="a.md")
+    await session.commit()
+
+    assert row.kind == "file"
+    assert row.mime == "text/markdown"
+    assert (row.width, row.height) == (0, 0)
+    assert store.read_text(settings, row) == "# hi"
+
+    # 文本走的是自己那档上限，不是 10MB 的图片上限
+    with pytest.raises(InvalidAttachment) as caught:
+        await store.save_upload(session, settings, b"x" * 33, filename="b.txt")
+    assert "文本文件" in str(caught.value)
+
+
+async def test_has_images_ignores_text_attachments(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """聊天入口的视觉拦截靠它。判错的症状是给纯文本模型传 .md 被拒绝发送。"""
+    settings = settings_for(tmp_path)
+    doc = await store.save_upload(session, settings, b"# hi", filename="a.md")
+    image = await store.save_upload(session, settings, png_bytes(), filename="a.png")
+    await session.commit()
+
+    assert await store.has_images(session, [doc.id]) is False
+    assert await store.has_images(session, []) is False
+    assert await store.has_images(session, [doc.id, image.id]) is True
+
+
 # ---------- hydrate：分支只看 target 的能力，不看厂商 ----------
+
+
+async def test_text_attachment_expands_for_any_model(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """看不了图的模型照样读得了 txt / md —— 文本不走 supports_vision 那个分支。"""
+    settings = settings_for(tmp_path)
+    row = await store.save_upload(
+        session, settings, "# 待办\n- 写文档".encode(), filename="todo.md"
+    )
+    await session.commit()
+
+    hydrator = AttachmentHydrator(
+        session, settings, target=target_with(False), vision_target=None
+    )
+    out = await hydrator.hydrate([{"role": "user", "content": [ref_block(row)]}])
+
+    text = out[0]["content"][0]["text"]
+    assert out[0]["content"][0]["type"] == "text"
+    assert "- 写文档" in text
+    assert f"#{row.id}" in text and "todo.md" in text
+    # 没走视觉那条路，不该留下任何描述
+    assert row.vision_description == ""
+
+
+async def test_text_attachment_fence_survives_a_markdown_code_block(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """正文自带 ``` 时围栏要加长，否则后半段正文会跑到围栏外面。"""
+    settings = settings_for(tmp_path)
+    body = "见下：\n```python\nprint(1)\n```\n完"
+    row = await store.save_upload(session, settings, body.encode(), filename="a.md")
+    await session.commit()
+
+    hydrator = AttachmentHydrator(session, settings, target=target_with(True))
+    out = await hydrator.hydrate([{"role": "user", "content": [ref_block(row)]}])
+
+    text = out[0]["content"][0]["text"]
+    assert "````\n" in text
+    assert text.rstrip().endswith("````")
+
+
+async def test_oversized_text_is_truncated_but_says_so(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    """截断可以，静默截断不行 —— 模型要知道自己看的是片段。"""
+    settings = settings_for(tmp_path)
+    row = await store.save_upload(
+        session, settings, b"x" * (TEXT_INLINE_CHARS + 500), filename="big.log.md"
+    )
+    await session.commit()
+
+    hydrator = AttachmentHydrator(session, settings, target=target_with(True))
+    out = await hydrator.hydrate([{"role": "user", "content": [ref_block(row)]}])
+
+    text = out[0]["content"][0]["text"]
+    assert text.count("x") == TEXT_INLINE_CHARS
+    assert "片段" in text
+
+
+def test_placeholder_hydrate_labels_files_as_files() -> None:
+    out = placeholder_hydrate(
+        [{"role": "user", "content": [{"type": "attachment_ref", "id": 1, "kind": "file", "filename": "a.md"}]}]
+    )
+    assert out[0]["content"][0] == {"type": "text", "text": "[文件 a.md]"}
+
+
+
 
 
 async def test_vision_model_gets_a_real_image_block(

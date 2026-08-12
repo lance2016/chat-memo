@@ -150,3 +150,21 @@ def test_runtime_context_reports_active_provider() -> None:
     )
     assert "claude-opus-5" in anthropic
     assert "deepseek" not in anthropic
+
+
+def test_runtime_context_prefers_the_resolved_service_over_the_provider_field() -> None:
+    """选了模型档案之后，身份要按实际解析出的服务报。
+
+    `settings.provider` 在有 `chat_model_profile_id` 时已经不参与解析了
+    （见 `app/llm/catalog.py` 的 `resolve_model_target`）。拿它当出处，
+    模型会被告知自己跑在 deepseek 上，而实际调用的是 Anthropic 的档案。
+    """
+    text = build_runtime_context(
+        Settings(provider="deepseek"),
+        dt.datetime(2026, 8, 6),
+        model="claude-opus-5",
+        service="anthropic",
+    )
+
+    assert "anthropic / claude-opus-5" in text
+    assert "deepseek" not in text

@@ -6,9 +6,10 @@ import { WorkspaceFrame } from "@/components/workspace-frame";
 import { I18nProvider } from "@/components/i18n-provider";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
+import "./ios-system.css";
 
 export const metadata: Metadata = {
-  title: "个人 AI 助手",
+  title: "朝花夕拾",
   description: "带有长期记忆的个人 AI 助手",
   icons: { icon: "/morning-memory-logo.png" },
 };

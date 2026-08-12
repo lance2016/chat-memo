@@ -62,7 +62,7 @@ class RequestSnapshot:
 
     def summary(self) -> dict[str, Any]:
         """列表用的轻量版，不带 payload —— 完整历史动辄几十 KB。"""
-        messages = self.payload.get("messages", [])
+        messages = self.payload.get("messages", self.payload.get("input", []))
         return {
             "id": self.id,
             "at": self.at.isoformat(),
@@ -141,6 +141,8 @@ def _system_text(payload: dict[str, Any]) -> str:
         return system
     if isinstance(system, list):
         return "\n".join(b.get("text", "") for b in system if isinstance(b, dict))
+    if isinstance(payload.get("instructions"), str):
+        return payload["instructions"]
     first = (payload.get("messages") or [{}])[0]
     if first.get("role") == "system":
         return _flatten(first.get("content"))
@@ -193,7 +195,11 @@ def outline(payload: dict[str, Any]) -> list[str]:
     if system:
         lines.append(f"system({len(system)}) {_preview(system)}")
 
-    for i, message in enumerate(payload.get("messages", [])):
+    messages = payload.get("messages", payload.get("input", []))
+    for i, message in enumerate(messages):
+        if not isinstance(message, dict):
+            lines.append(f"[{i}] input     {_preview(message)}")
+            continue
         role = message.get("role", "?")
         if role == "system":
             continue  # 上面已经单独列过
@@ -215,5 +221,19 @@ def outline(payload: dict[str, Any]) -> list[str]:
             parts = ["(空)"]
         lines.append(f"[{i}] {role:<9} {parts[0]}")
         lines.extend(f"{'':<4} {'':<9} {p}" for p in parts[1:])
+
+    for i, item in enumerate(messages):
+        if not isinstance(item, dict) or item.get("type") not in {
+            "function_call",
+            "function_call_output",
+        }:
+            continue
+        if item["type"] == "function_call":
+            lines.append(
+                f"[{i}] function  {item.get('name', '?')} "
+                f"{_preview(item.get('arguments', ''), 40)}"
+            )
+        else:
+            lines.append(f"[{i}] tool      {_preview(item.get('output', ''), 70)}")
 
     return lines

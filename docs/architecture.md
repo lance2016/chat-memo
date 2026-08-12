@@ -28,7 +28,7 @@
 | 可观测性 | **Arize Phoenix** + OpenTelemetry / OpenInference | 默认开启，开关在设置页 |
 | 语音 | 本地 **mlx-audio**（HTTP） | TTS 和 ASR 共用一个进程和一把串行锁 |
 | 推送 | **Bark** | 唯一的通知渠道 |
-| 测试 / 检查 | pytest + pytest-asyncio、ruff | 623 个后端用例，跑在内存 SQLite 上 |
+| 测试 / 检查 | pytest + pytest-asyncio、ruff | 快速用例跑内存 SQLite；CI 另跑 PostgreSQL 17 + pgvector 迁移冒烟检查 |
 
 **部署形态**：docker compose 四个容器 —— `api`、`db`、`frontend`、`phoenix`。
 没有独立 worker、没有消息队列、没有 Redis（明确评审否决过，见 roadmap「明确不做」）。

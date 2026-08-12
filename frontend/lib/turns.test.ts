@@ -41,7 +41,7 @@ describe("toTurns", () => {
       created_at: "",
     }];
     expect(toTurns(messages)).toEqual([
-      { kind: "user", text: "这是什么", attachments: [{ id: 3, filename: "err.png" }], messageId: 7 },
+      { kind: "user", text: "这是什么", attachments: [{ id: 3, kind: "image", filename: "err.png" }], messageId: 7 },
     ]);
   });
 
