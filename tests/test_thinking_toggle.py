@@ -113,6 +113,20 @@ async def test_selected_deepseek_effort_is_sent_only_while_thinking() -> None:
     assert recorder.calls[0]["reasoning_effort"] == "max"
 
 
+async def test_deepseek_v4_pro_uses_the_flash_request_contract() -> None:
+    """V4 Pro 只更换 model id，其余 DeepSeek 请求参数保持一致。"""
+    from dataclasses import replace
+
+    provider, recorder = deepseek_with_recorder()
+    provider.target = replace(provider.target, model_id="deepseek-v4-pro")
+
+    await drain(provider, thinking=True)
+
+    assert recorder.calls[0]["model"] == "deepseek-v4-pro"
+    assert recorder.calls[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert recorder.calls[0]["reasoning_effort"] == "high"
+
+
 async def test_complete_uses_the_same_deepseek_thinking_contract() -> None:
     provider, recorder = deepseek_with_recorder()
 

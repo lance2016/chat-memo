@@ -48,6 +48,55 @@ async def test_catalog_exposes_builtin_services_and_profiles(
     assert deepseek["thinking_effort_default"] == "high"
 
 
+async def test_builtin_deepseek_catalog_contains_v4_flash_and_pro(
+    client: AsyncClient,
+) -> None:
+    """V4 Pro 与 Flash 共用 DeepSeek 服务、能力和思考参数。"""
+    body = (await client.get("/api/models")).json()
+    profiles = {
+        profile["model_id"]: profile
+        for profile in body["profiles"]
+        if profile["service_slug"] == "deepseek"
+    }
+
+    assert profiles.keys() >= {"deepseek-v4-flash", "deepseek-v4-pro"}
+    for model_id in ("deepseek-v4-flash", "deepseek-v4-pro"):
+        profile = profiles[model_id]
+        assert profile["protocol"] == "openai_compatible"
+        assert profile["capabilities"]["thinking"] is True
+        assert profile["thinking_efforts"] == ["low", "high", "max"]
+        assert profile["thinking_effort_default"] == "high"
+
+    assert profiles["deepseek-v4-flash"]["is_default"] is True
+
+
+async def test_adding_v4_pro_does_not_replace_an_existing_flash_profile(
+    session: AsyncSession,
+) -> None:
+    """升级已有目录时，新增型号必须新增记录，不能复用主 slug 覆盖 Flash。"""
+    from sqlalchemy import select
+
+    from app.config import Settings
+    from app.db.models import ModelProfile, ModelService
+    from app.llm.catalog import ensure_builtin_catalog
+
+    await ensure_builtin_catalog(
+        session, Settings(deepseek_model="deepseek-v4-flash")
+    )
+    await ensure_builtin_catalog(
+        session, Settings(deepseek_model="deepseek-v4-pro")
+    )
+
+    model_ids = set(
+        await session.scalars(
+            select(ModelProfile.model_id)
+            .join(ModelService, ModelProfile.service_id == ModelService.id)
+            .where(ModelService.slug == "deepseek")
+        )
+    )
+    assert model_ids >= {"deepseek-v4-flash", "deepseek-v4-pro"}
+
+
 async def test_builtin_openai_catalog_contains_clipproxy_models(
     client: AsyncClient,
 ) -> None:

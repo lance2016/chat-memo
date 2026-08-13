@@ -17,6 +17,7 @@ import { VoiceInputButton } from "@/components/voice-input-button";
 import { useI18n } from "@/components/i18n-provider";
 import { usePhoenixUrl } from "@/lib/phoenix";
 import { useDismissOnOutside } from "@/lib/use-dismiss-on-outside";
+import { PetCompanion } from "@/components/pet-companion";
 
 interface LiveTool extends ToolActivity { status: "running" | "done"; }
 
@@ -541,7 +542,7 @@ function HomeDashboard({ input, memoryCount, sending, backgroundResponseTitle, c
         <div className="home-capture-foot"><div className="home-capture-tools"><ComposerToolMenu enabled={webSearchEnabled} available={webSearchAvailable} disabled={sending} onChange={onWebSearchChange} onPickImage={onPickImage} imageAvailable={visionAvailable} /><ThinkingControl profile={thinkingProfile} enabled={thinkingEnabled} effort={thinkingEffort} disabled={sending} onEnabledChange={onThinkingChange} onEffortChange={onThinkingEffortChange} /></div><div className="home-capture-actions"><ContextIndicator context={context} /><ModelPicker catalog={modelCatalog} value={modelProfileId} disabled={sending} onChange={onModelChange} /><VoiceInputButton disabled={sending} onTranscript={onTranscription} /><button className="home-send" type="submit" disabled={(!input.trim() && attachments.length === 0) || sending || uploading > 0} aria-label={t("chat.send")}><Send size={16} /></button></div></div>
       </form>
       <div className="home-pills" aria-label={t("chat.home.question")}><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.organize"))}>{t("chat.home.prompt.organize")}</button><button type="button" disabled={sending} onClick={() => onInput(t("chat.home.prompt.review"))}>{t("chat.home.prompt.review")}</button></div>
-
+      <PetCompanion />
     </div>
   </div>;
 }

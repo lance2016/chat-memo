@@ -54,6 +54,14 @@ BUILTIN_SERVICES = (
     },
 )
 
+# DeepSeek 的 V4 Flash / Pro 共用同一个 Chat Completions 接口和请求方言。
+# ``deepseek_model`` 仍决定旧配置的默认模型；这里额外登记在售型号，让用户能在
+# 模型目录里直接切换，而不需要手工新建一份完全相同的服务配置。
+DEEPSEEK_BUILTIN_MODELS = (
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+)
+
 
 def _openai_model_ids(settings: Settings) -> tuple[str, ...]:
     """返回内置 OpenAI 服务的模型清单，并把全局默认模型排在第一位。"""
@@ -63,6 +71,12 @@ def _openai_model_ids(settings: Settings) -> tuple[str, ...]:
         model_ids.insert(0, settings.openai_model)
     # 保持配置文件即使被误填重复模型时也只建一个档案。
     return tuple(dict.fromkeys(model_ids))
+
+
+def _deepseek_model_ids(settings: Settings) -> tuple[str, ...]:
+    """返回内置 DeepSeek 型号，并把旧配置选择的模型排在第一位。"""
+    model_ids = [settings.deepseek_model, *DEEPSEEK_BUILTIN_MODELS]
+    return tuple(dict.fromkeys(model_id for model_id in model_ids if model_id))
 
 
 def _builtin_capabilities(protocol: str, model_id: str) -> dict[str, bool]:
@@ -203,22 +217,33 @@ async def ensure_builtin_catalog(
             if slug == "openai-codex":
                 service.enabled = bool(base_url)
 
-        model_ids = _openai_model_ids(settings) if slug == "openai-codex" else (model_id,)
-        existing_profiles = {
-            profile.model_id: profile
+        if slug == "openai-codex":
+            model_ids = _openai_model_ids(settings)
+        elif slug == "deepseek":
+            model_ids = _deepseek_model_ids(settings)
+        else:
+            model_ids = (model_id,)
+        managed_profiles = [
+            profile
             for profile in (
                 await session.scalars(
                     select(ModelProfile).where(ModelProfile.service_id == service.id)
                 )
             ).all()
             if (profile.options or {}).get("managed_by_runtime", False)
-        }
+        ]
+        existing_profiles = {profile.model_id: profile for profile in managed_profiles}
+        primary_profile_slug = f"builtin:{slug}"
+        primary_profile_exists = any(
+            profile.slug == primary_profile_slug for profile in managed_profiles
+        )
         for index, current_model_id in enumerate(model_ids):
-            # 兼容此前只创建了 builtin:openai-codex 的版本；后续模型使用稳定 slug，
-            # 这样重复启动不会产生重复档案。
+            # 兼容此前每个内置服务只创建一个 ``builtin:<service>`` 档案的版本；
+            # 后续模型把 model id 放进 slug。旧部署在新增型号成为 legacy 默认时，
+            # 主 slug 仍被旧型号占用，不能把旧记录原地改名后又在下一轮改回来。
             profile_slug = (
-                f"builtin:{slug}"
-                if slug != "openai-codex" or index == 0
+                primary_profile_slug
+                if index == 0 and not primary_profile_exists
                 else f"builtin:{slug}:{current_model_id}"
             )
             profile = existing_profiles.get(current_model_id)
@@ -234,6 +259,9 @@ async def ensure_builtin_catalog(
                     options={"managed_by_runtime": True},
                 )
                 existing_profiles[current_model_id] = profile
+                primary_profile_exists = (
+                    primary_profile_exists or profile.slug == primary_profile_slug
+                )
             if (profile.options or {}).get("managed_by_runtime", False):
                 profile.model_id = current_model_id
                 profile.display_name = f"{prefix} · {current_model_id}"
